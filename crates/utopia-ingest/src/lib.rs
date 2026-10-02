@@ -179,10 +179,23 @@ pub use parsers::plain_text as decode_text;
 pub use provenance::{Origin, Provenance, Segment};
 pub use reading::Reading;
 
-/// 解析产物：纯文本 + 可选结构信息。
+/// 解析产物：纯文本 + 可选结构信息和可观测的解析警告。
 #[derive(Debug)]
 pub struct ParsedDoc {
     pub text: String,
+    pub warnings: Vec<ParseWarning>,
+}
+
+/// 解析器到了安全上限，正文有意只保留一部分；`detail` 说明省略的范围。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParseWarning {
+    pub kind: &'static str,
+    pub detail: serde_json::Value,
+}
+
+impl ParseWarning {
+    pub const SPREADSHEET_ROWS_TRUNCATED: &'static str = "spreadsheet.rows_truncated";
+    pub const CSV_RECORDS_TRUNCATED: &'static str = "csv.records_truncated";
 }
 
 /// 读出字要靠哪一种模型（0040）
@@ -317,7 +330,7 @@ pub fn parse(filename: &str, bytes: &[u8]) -> anyhow::Result<ParsedDoc> {
     // 魔数探测优先于扩展名（扩展名可能撒谎）
     let kind = infer::get(bytes).map(|t| t.extension()).unwrap_or("");
 
-    let text = match (kind, ext.as_str()) {
+    let (text, warnings) = match (kind, ext.as_str()) {
         ("pdf", _) | (_, "pdf") => {
             let text = parsers::pdf(bytes)?;
             // 文本层是空的：扫描件，字在图里
@@ -328,12 +341,12 @@ pub fn parse(filename: &str, bytes: &[u8]) -> anyhow::Result<ParsedDoc> {
                 }
                 .into());
             }
-            text
+            (text, Vec::new())
         }
-        ("docx", _) | (_, "docx") => parsers::docx(bytes)?,
+        ("docx", _) | (_, "docx") => (parsers::docx(bytes)?, Vec::new()),
         ("xlsx", _) | (_, "xlsx") | (_, "xls") | (_, "ods") => parsers::spreadsheet(bytes)?,
-        ("pptx", _) | (_, "pptx") => parsers::pptx(bytes)?,
-        (_, "html") | (_, "htm") => parsers::html(bytes)?,
+        ("pptx", _) | (_, "pptx") => (parsers::pptx(bytes)?, Vec::new()),
+        (_, "html") | (_, "htm") => (parsers::html(bytes)?, Vec::new()),
         (_, "csv") | (_, "tsv") => parsers::csv_text(bytes, ext == "tsv")?,
         // md/json/yaml/xml/log/txt 及一切未识别格式：按文本解码（编码探测覆盖 GBK 等）。
         // 解码之前先看是不是二进制：老式 .doc、压缩包、可执行文件解出来是乱码，
@@ -343,14 +356,14 @@ pub fn parse(filename: &str, bytes: &[u8]) -> anyhow::Result<ParsedDoc> {
                 Unreadable("This file is not in a format that can be read as text".into()).into(),
             )
         }
-        _ => parsers::plain_text(bytes),
+        _ => (parsers::plain_text(bytes), Vec::new()),
     };
 
     let text = normalize(&text);
     if text.trim().is_empty() {
         return Err(Unreadable("No text could be extracted from this file".into()).into());
     }
-    Ok(ParsedDoc { text })
+    Ok(ParsedDoc { text, warnings })
 }
 
 /// 压缩连续空白行，统一换行符。

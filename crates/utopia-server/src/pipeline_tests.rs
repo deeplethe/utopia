@@ -21,6 +21,7 @@
 //!
 //! 没有 `UTOPIA_DATABASE_URL` 时跳过而不是失败。自建自拆，绝不碰已有的库。
 
+use std::fmt::Write as _;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use utopia_core::models::Proposer;
@@ -422,6 +423,43 @@ async fn a_file_that_needs_a_reader_waits_and_says_so() -> anyhow::Result<()> {
     assert_eq!(alerts[0]["name"], "contract-scan.png");
     assert_eq!(alerts[0]["reader"], "ocr");
     assert_eq!(alerts[1]["reader"], "transcribe");
+    f.cleanup().await
+}
+
+/// 解析器到达安全上限时，文档照旧可用，但消息中心必须明说只读了一部分。
+#[tokio::test]
+async fn a_truncated_csv_keeps_the_document_ready_and_reports_the_omitted_records(
+) -> anyhow::Result<()> {
+    let Some(mut f) = fixture(FakeEmbed::new(Duration::ZERO)).await? else {
+        return Ok(());
+    };
+    // The assertion is about parser observability, not chunking. One large chunk keeps the
+    // database-backed test focused and cheap.
+    f.state.chunk_tokens = 1_000_000;
+    let mut csv = String::from("id,name\n");
+    for id in 1..=10_000 {
+        writeln!(csv, "{id},customer-{id}").unwrap();
+    }
+    let doc = f
+        .document_with_bytes("customers.csv", csv.as_bytes())
+        .await?;
+
+    super::process_document(&f.state, doc).await?;
+
+    let row = utopia_store::documents::get(&f.pool, doc).await?;
+    assert_eq!(row.status, "ready", "the readable prefix remains available");
+    let alerts = f.alerts("document.contents_truncated").await?;
+    assert_eq!(alerts.len(), 1, "{alerts:?}");
+    assert_eq!(alerts[0]["name"], "customers.csv");
+    assert_eq!(alerts[0]["warnings"][0]["kind"], "csv.records_truncated");
+    assert_eq!(
+        alerts[0]["warnings"][0]["detail"],
+        serde_json::json!({
+            "records_read": 10_000,
+            "records_total": 10_001,
+            "records_omitted": 1,
+        })
+    );
     f.cleanup().await
 }
 

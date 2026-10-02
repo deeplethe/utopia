@@ -118,6 +118,8 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
         .route("/auth/oidc/status", get(oidc_routes::status))
         .route("/auth/oidc/start", get(oidc_routes::start))
         .route("/auth/oidc/callback", get(oidc_routes::callback))
+        // 受信的另一个应用拿它用户刚到手的 ID token 换一个会话（0066）
+        .route("/auth/oidc/exchange", post(oidc_routes::exchange))
         // 我自己的绑定：看、解绑。绑定走 `/auth/oidc/start?link=1`，由本人完成
         .route(
             "/auth/oidc/me",
@@ -667,6 +669,9 @@ async fn jobs_noop(
 
 #[cfg(test)]
 mod rule_metadata_tests;
+
+#[cfg(test)]
+mod oidc_exchange_tests;
 
 #[cfg(test)]
 mod rule_expression_tests;

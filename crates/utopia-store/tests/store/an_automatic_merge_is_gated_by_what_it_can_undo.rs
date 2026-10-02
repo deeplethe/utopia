@@ -109,8 +109,8 @@ async fn seed(pool: &PgPool) -> anyhow::Result<Fixture> {
 async fn fact(pool: &PgPool, kb: Uuid, s: Uuid, p: Uuid, o: Uuid) -> anyhow::Result<Uuid> {
     let id = Uuid::now_v7();
     sqlx::query(
-        "INSERT INTO facts (id, kb_id, subject_id, predicate_id, object_id)
-         VALUES ($1, $2, $3, $4, $5)",
+        "INSERT INTO facts (id, kb_id, subject_id, predicate_id, object_id, attested_from)
+         VALUES ($1, $2, $3, $4, $5, NULL)",
     )
     .bind(id)
     .bind(kb)

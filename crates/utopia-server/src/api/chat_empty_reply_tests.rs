@@ -399,6 +399,8 @@ mod registry_tests;
 mod resolved_tests;
 #[path = "chat_restated_tests.rs"]
 mod restated_tests;
+#[path = "chat_retrieval_failure_tests.rs"]
+mod retrieval_failure_tests;
 #[path = "chat_retry_tests.rs"]
 mod retry_tests;
 #[path = "chat_sources_tests.rs"]

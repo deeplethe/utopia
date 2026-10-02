@@ -8,6 +8,9 @@
 //! 操作在台账上记成被冒充的人（0014：身份来自本人）。管理员现在只能看与解绑。
 //!
 //! 绝不按身份提供方的 email 这类可变声明自动关联，首次登录也绝不自动开账号。
+//!
+//! **另一个应用可以拿它刚登录到的 ID token 换一个会话**（`exchange`，0066）：同一个
+//! 身份提供方、受信的 audience 列表、十分钟内签发、只换一次，映射规则与登录相同。
 
 use crate::{
     auth::{self, AuthUser},
@@ -46,12 +49,18 @@ const DOC_LIMIT: usize = 256 * 1024;
 const TOKEN_LIMIT: usize = 64 * 1024;
 /// 发现文档与 JWKS 的缓存时长。轮换密钥时 `kid` 找不到会强制刷新一次
 const CACHE_TTL: Duration = Duration::from_secs(600);
+/// 同一地址两次强制刷新之间至少隔这么久。`kid` 由请求方写，`exchange` 又不需要登录：
+/// 不设冷却的话，编一个 `kid` 就能让服务器每次都去问一遍身份提供方
+const FORCE_COOLDOWN: Duration = Duration::from_secs(60);
 
 struct Config {
     issuer: String,
     client_id: String,
     secret: Option<String>,
     redirect: String,
+    /// `exchange` 收哪些 client 的 ID token。空 = 不开放换会话。与 Utopia 共用一个
+    /// client 的部署把 Utopia 自己的 client id 写进来
+    exchange_audiences: Vec<String>,
     /// 本地开发：允许 issuer 与各端点走回环地址上的明文 HTTP。只认 localhost /
     /// 127.0.0.1 / ::1，公网地址照旧只能 HTTPS
     loopback_http: bool,
@@ -71,6 +80,13 @@ fn config() -> Result<Config, AppError> {
             .ok()
             .filter(|s| !s.is_empty()),
         redirect: get("UTOPIA_OIDC_REDIRECT_URI")?,
+        exchange_audiences: std::env::var("UTOPIA_OIDC_EXCHANGE_AUDIENCES")
+            .unwrap_or_default()
+            .split(',')
+            .map(str::trim)
+            .filter(|a| !a.is_empty())
+            .map(String::from)
+            .collect(),
         loopback_http: std::env::var("UTOPIA_OIDC_ALLOW_LOOPBACK_HTTP")
             .is_ok_and(|v| matches!(v.trim(), "1" | "true")),
     };
@@ -153,6 +169,7 @@ fn cache() -> &'static Cache {
 /// 都会让服务器去问一次身份提供方
 async fn cached_json(url: &reqwest::Url, force: bool) -> Result<Value, Refusal> {
     let key = url.to_string();
+    let force = force && force_allowed(&key).await;
     if !force {
         if let Some((at, v)) = cache().lock().await.get(&key) {
             if at.elapsed() < CACHE_TTL {
@@ -173,6 +190,22 @@ async fn cached_json(url: &reqwest::Url, force: bool) -> Result<Value, Refusal> 
         .await
         .insert(key, (Instant::now(), v.clone()));
     Ok(v)
+}
+
+/// 这一次强制刷新放不放行：冷却期内的一律退回读缓存。先记下时刻再去取，
+/// 同时到的一批请求里只有一个真去问身份提供方
+async fn force_allowed(key: &str) -> bool {
+    static LAST: std::sync::OnceLock<tokio::sync::Mutex<HashMap<String, Instant>>> =
+        std::sync::OnceLock::new();
+    let mut last = LAST.get_or_init(Default::default).lock().await;
+    if last
+        .get(key)
+        .is_some_and(|at| at.elapsed() < FORCE_COOLDOWN)
+    {
+        return false;
+    }
+    last.insert(key.to_string(), Instant::now());
+    true
 }
 
 async fn metadata(c: &Config) -> Result<Value, Refusal> {
@@ -342,7 +375,9 @@ pub struct Callback {
 #[derive(Clone, Deserialize)]
 struct Claims {
     sub: String,
-    nonce: String,
+    /// 登录拿到的令牌带着本次流程的 nonce；换会话的令牌是别人的流程签的，未必有
+    #[serde(default)]
+    nonce: Option<String>,
     iat: i64,
     #[serde(default)]
     azp: Option<String>,
@@ -372,6 +407,21 @@ fn verify_token(
     keys: &JwkSet,
     nonce: &str,
 ) -> Result<Claims, AppError> {
+    let claims = verify_for(c, id_token, keys, &[c.client_id.as_str()])?;
+    if claims.nonce.as_deref() != Some(nonce) {
+        return Err(AppError::Unauthorized);
+    }
+    Ok(claims)
+}
+
+/// 签名、issuer、有效期与 audience：令牌得是配置的 issuer 签给 `audiences` 之一的。
+/// `azp` 出现时（或 audience 不止一个时）也必须在其中
+fn verify_for(
+    c: &Config,
+    id_token: &str,
+    keys: &JwkSet,
+    audiences: &[&str],
+) -> Result<Claims, AppError> {
     let header = decode_header(id_token).map_err(|_| AppError::Unauthorized)?;
     if header.alg != Algorithm::RS256 {
         return Err(AppError::Unauthorized);
@@ -380,7 +430,7 @@ fn verify_token(
     let mut validation = Validation::new(Algorithm::RS256);
     validation.validate_nbf = true;
     validation.set_issuer(&[&c.issuer]);
-    validation.set_audience(&[&c.client_id]);
+    validation.set_audience(audiences);
     validation.set_required_spec_claims(&["exp", "iss", "aud", "sub", "iat"]);
     let claims = decode::<Claims>(
         id_token,
@@ -389,16 +439,117 @@ fn verify_token(
     )
     .map_err(|_| AppError::Unauthorized)?
     .claims;
-    if claims.nonce != nonce
-        || claims.sub.is_empty()
+    let trusted = |a: &String| audiences.contains(&a.as_str());
+    if claims.sub.is_empty()
         || claims.iat > chrono::Utc::now().timestamp() + 60
-        || claims.azp.as_ref().is_some_and(|a| a != &c.client_id)
+        || claims.azp.as_ref().is_some_and(|a| !trusted(a))
         || (claims.aud.as_array().is_some_and(|a| a.len() > 1)
-            && claims.azp.as_deref() != Some(c.client_id.as_str()))
+            && !claims.azp.as_ref().is_some_and(trusted))
     {
         return Err(AppError::Unauthorized);
     }
     Ok(claims)
+}
+
+/// 换会话的 ID token 最多多旧：它是登录一完成就拿来换的
+const EXCHANGE_MAX_AGE_SECS: i64 = 600;
+
+/// 一个刚签发的、签给受信 audience 之一的 ID token
+fn verify_exchange_token(c: &Config, id_token: &str, keys: &JwkSet) -> Result<Claims, AppError> {
+    let audiences: Vec<&str> = c.exchange_audiences.iter().map(String::as_str).collect();
+    let claims = verify_for(c, id_token, keys, &audiences)?;
+    if claims.iat < chrono::Utc::now().timestamp() - EXCHANGE_MAX_AGE_SECS {
+        return Err(AppError::Unauthorized);
+    }
+    Ok(claims)
+}
+
+#[derive(Deserialize)]
+pub struct Exchange {
+    id_token: String,
+}
+
+/// 另一个应用（client id 在 `UTOPIA_OIDC_EXCHANGE_AUDIENCES` 里）让它的用户在同一个
+/// 身份提供方登录，再拿刚到手的 ID token 换一个 Utopia 会话，以那个人的身份调这里的
+/// API。映射与 SSO 登录一样只认本人绑定过的身份；这里不开账号，也不绑定。
+/// 没配 SSO 或没配受信 audience 时就当这个端点不存在
+pub async fn exchange(
+    State(s): State<AppState>,
+    Json(body): Json<Exchange>,
+) -> ApiResult<Json<Value>> {
+    let Some(c) = config().ok().filter(|c| !c.exchange_audiences.is_empty()) else {
+        return Err(AppError::NotFound.into());
+    };
+    let unavailable = |r: Refusal| {
+        tracing::warn!(reason = %r.reason, "SSO exchange: identity provider unavailable");
+        AppError::invalid("oidc_unavailable", "The identity provider is unavailable")
+    };
+    let meta = metadata(&c).await.map_err(unavailable)?;
+    let jwks_url = endpoint(&c, &meta, "jwks_uri").map_err(unavailable)?;
+    let parse = |v: Value| {
+        serde_json::from_value::<JwkSet>(v).map_err(|e| refuse("unavailable", format!("jwks: {e}")))
+    };
+    let mut keys =
+        parse(cached_json(&jwks_url, false).await.map_err(unavailable)?).map_err(unavailable)?;
+    let kid = decode_header(&body.id_token).ok().and_then(|h| h.kid);
+    if pick_key(&keys, kid.as_deref()).is_none() {
+        keys =
+            parse(cached_json(&jwks_url, true).await.map_err(unavailable)?).map_err(unavailable)?;
+    }
+    let claims = verify_exchange_token(&c, &body.id_token, &keys)?;
+
+    // 一次性：令牌的哈希落一行，活过令牌还能被接受的每一刻；插不进去就是换过了。
+    // 只按 `iat` 算：十分钟的新鲜度没有宽限，而 `exp` 的校验有 60 秒宽限——按 `exp` 记的话，
+    // 过期后的那一分钟里行已经扫掉、令牌却还验得过，能再换一次。多留的一分钟给应用和库的钟差
+    sqlx::query("DELETE FROM oidc_exchanges WHERE expires_at < now()")
+        .execute(&s.pool)
+        .await?;
+    let until = claims.iat + EXCHANGE_MAX_AGE_SECS + 60;
+    let spent = sqlx::query(
+        "INSERT INTO oidc_exchanges (token_hash, expires_at) VALUES ($1, to_timestamp($2))
+         ON CONFLICT DO NOTHING",
+    )
+    .bind(
+        Sha256::digest(body.id_token.as_bytes())
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>(),
+    )
+    .bind(until as f64)
+    .execute(&s.pool)
+    .await?;
+    if spent.rows_affected() == 0 {
+        return Err(
+            AppError::invalid("oidc_replayed", "This ID token has already been exchanged").into(),
+        );
+    }
+
+    let user_id: Option<Uuid> = sqlx::query_scalar(
+        "SELECT i.user_id FROM oidc_identities i JOIN users u ON u.id = i.user_id
+          WHERE i.issuer = $1 AND i.subject = $2 AND u.deactivated_at IS NULL",
+    )
+    .bind(&c.issuer)
+    .bind(&claims.sub)
+    .fetch_optional(&s.pool)
+    .await?;
+    let user_id = user_id.ok_or_else(|| {
+        AppError::invalid(
+            "oidc_unlinked",
+            "This SSO identity is not linked to a Utopia account",
+        )
+    })?;
+    let (token, expires_at) = auth::issue_session(&s, user_id)?;
+    let _ = utopia_store::audit::record(
+        &s.pool,
+        None,
+        user_id,
+        "auth.oidc_exchange",
+        "user",
+        Some(user_id),
+        json!({"issuer": c.issuer, "client": claims.azp.or_else(|| claims.aud.as_str().map(String::from))}),
+    )
+    .await;
+    Ok(Json(json!({"token": token, "expires_at": expires_at})))
 }
 
 /// 回调办成的是哪一件事
@@ -741,12 +892,21 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn a_forced_refresh_waits_out_its_cooldown() {
+        let key = "https://id.example.test/cooldown-test";
+        assert!(super::force_allowed(key).await);
+        assert!(!super::force_allowed(key).await);
+        assert!(super::force_allowed("https://id.example.test/another").await);
+    }
+
     fn config() -> super::Config {
         super::Config {
             issuer: "https://id.example.test".into(),
             client_id: "utopia-test".into(),
             secret: None,
             redirect: "https://utopia.example.test/api/v1/auth/oidc/callback".into(),
+            exchange_audiences: vec!["sibling-app".into(), "utopia-test".into()],
             loopback_http: false,
         }
     }
@@ -813,5 +973,60 @@ mod tests {
         second.common.key_id = Some("other".into());
         two.keys.push(second);
         assert!(super::verify_token(&c, &no_kid, &two, "expected").is_err());
+    }
+
+    #[test]
+    fn exchange_accepts_only_fresh_tokens_of_a_trusted_client() {
+        use jsonwebtoken::{encode, Algorithm, EncodingKey, Header};
+        use serde_json::json;
+        let c = config();
+        let key = EncodingKey::from_rsa_pem(include_bytes!(
+            "../../tests/fixtures/oidc_test_only_key.pem"
+        ))
+        .unwrap();
+        let keys: jsonwebtoken::jwk::JwkSet = serde_json::from_str(include_str!(
+            "../../tests/fixtures/oidc_test_only_jwks.json"
+        ))
+        .unwrap();
+        let now = chrono::Utc::now().timestamp();
+        let valid = json!({"iss":c.issuer,"aud":c.client_id,"sub":"person-123","nonce":"theirs","iat":now,"exp":now+300});
+        let mut header = Header::new(Algorithm::RS256);
+        header.kid = Some("fixture".into());
+        let sign = |claims: &serde_json::Value| encode(&header, claims, &key).unwrap();
+        assert_eq!(
+            super::verify_exchange_token(&c, &sign(&valid), &keys)
+                .unwrap()
+                .sub,
+            "person-123"
+        );
+        for (field, value) in [
+            ("aud", json!("other-client")),
+            ("aud", json!([c.client_id, "other-client"])),
+            ("azp", json!("other-client")),
+            ("iat", json!(now - 3600)),
+            ("exp", json!(now - 3600)),
+            ("iss", json!("https://other.example.test")),
+        ] {
+            let mut invalid = valid.clone();
+            invalid[field] = value;
+            assert!(
+                super::verify_exchange_token(&c, &sign(&invalid), &keys).is_err(),
+                "accepted invalid {field}"
+            );
+        }
+        let mut multi = valid.clone();
+        multi["aud"] = json!([c.client_id, "other-client"]);
+        multi["azp"] = json!(c.client_id);
+        assert!(super::verify_exchange_token(&c, &sign(&multi), &keys).is_ok());
+
+        // 另一个应用用它自己的 client id；不在受信列表里的照样不认
+        let mut sibling = valid.clone();
+        sibling["aud"] = json!("sibling-app");
+        assert!(super::verify_exchange_token(&c, &sign(&sibling), &keys).is_ok());
+        let closed = super::Config {
+            exchange_audiences: Vec::new(),
+            ..config()
+        };
+        assert!(super::verify_exchange_token(&closed, &sign(&valid), &keys).is_err());
     }
 }

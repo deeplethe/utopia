@@ -22,16 +22,17 @@ evaluator; a clock time without a zone is a date; world time renders in UTC, rec
 viewer's zone [0024, 0013]. GitHub and Jira timestamps are written to the second [0013].
 
 **An unknown bound reaches as far as the evidence.** A missing start is not "since always": the lower
-bound is `valid_from` or else `attested_from`, the earliest document date among the row's evidence.
+bound is `valid_from` or else `attested_from`, the date the text of the row's own section speaks
+from, and null when the document states none [0064].
 An ending with no date is not "still holds": `valid_to_precision = 'unknown'` with `attested_to`,
 the date of the document that said it was over. An open end still reads as holds until told
 otherwise [0022]. Anchors are copied by every superseding writer and moved only earlier.
 
 **The temporal engine** (`temporal.rs`) works only on `state` relations declared functional or
 inverse-functional. A new value closes the open one before it; an undated or dated ending closes
-the open row it ends through a superseding row; a start-less row is ordered by its earliest dated
-evidence (`doc_time_source` content or source only) and closes its predecessor as ended-unknown
-there; ends the engine drew are marked `end_derived` and recomputed in one pass whenever a timeline
+the open row it ends through a superseding row; a start-less row is ordered by its attestation,
+the same anchor the reads use, and closes its predecessor as ended-unknown there; one with no
+attestation has no place and its pair goes to a person [0022 revised 2026-10-03, #1054]; ends the engine drew are marked `end_derived` and recomputed in one pass whenever a timeline
 changes, so the result depends on which rows exist and not on arrival order; a relation unique on
 both sides sits on two timelines under one lock; a deadline stated relative to an event is stored as
 written and flagged `relative` [0022 revised, #679]. **A successor takes over on how its start was

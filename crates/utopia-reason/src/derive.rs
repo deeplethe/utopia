@@ -128,8 +128,15 @@ pub fn overlap(
     Some((from, to))
 }
 
-/// 从某个主语出发的一条边：(宾语, 起, 止, 事实 id)。
-type Hop = (Uuid, Option<i64>, Option<i64>, Uuid);
+/// 邻接表里的一条边：(另一端, 起, 止, 支撑它的事实 id 列表)。
+///
+/// 第四项是**列表**而不是单个 id：这一项也会装进派生出来的边，而派生的证明可以
+/// 有好几条前提。只留第一条的话，传递再接一条派生边时，证明就短了——链上少一条
+/// 前提，而 `validity` 只对留下来的那几条求交集，于是结论的有效期比实际宽。
+type Hop = (Uuid, Option<i64>, Option<i64>, Vec<Uuid>);
+
+/// 半开区间 `[from, to)`，两端可空。
+type Span = (Option<i64>, Option<i64>);
 
 /// 派生的中间态:一个 (主语, 宾语) 对是怎么来的。
 #[derive(Clone)]
@@ -147,6 +154,8 @@ struct Reached {
 /// 规则就无处安放。
 type Triple = (Uuid, Uuid, Uuid);
 
+// 同一个 triple 可以有几段互不包含的有效期；被更宽区间完全覆盖的那段不再另留一份。
+
 /// 拿公理推一遍这批边。
 ///
 /// **全局不动点，不再按谓词分组。** 三条规则会串起来：
@@ -163,15 +172,19 @@ type Triple = (Uuid, Uuid, Uuid);
 pub fn derive(edges: &[TimedEdge], axioms: &HashMap<Uuid, Axioms>) -> Derivation {
     let mut out = Derivation::default();
 
-    // 断言过的三元组。**派生撞上它就让路**——asserted > derived 是硬性的
-    let asserted: HashSet<Triple> = edges
-        .iter()
-        .map(|e| (e.edge.predicate, e.edge.subject, e.edge.object))
-        .collect();
+    // 断言过的时序三元组。**派生撞上它就让路**——asserted > derived 是硬性的；
+    // 判断的是区间覆盖，不只是等值，所以无时间/更宽的一段也能挡住窄的派生。
+    let mut asserted: HashMap<Triple, Vec<Span>> = HashMap::new();
+    for e in edges {
+        asserted
+            .entry((e.edge.predicate, e.edge.subject, e.edge.object))
+            .or_default()
+            .push((e.from, e.to));
+    }
 
-    // 已经推出来的 → 怎么来的。同一条只留第一条证明：多条路径都能推出同一件事
-    // 时，展示哪一条对用户没有区别，而全存下来会让证明树的规模跟着路径数走
-    let mut reached: HashMap<Triple, Reached> = HashMap::new();
+    // 已经推出来的 → 怎么来的。继续展开时既看区间也看证明长度：覆盖同一段时间
+    // 的短证明能在深度上限前再多走几步，不能被先到的长证明挡掉。
+    let mut reached: HashMap<Triple, Vec<(Span, Reached)>> = HashMap::new();
     // **封顶仍按谓词计**：那个常量的含义没变（一个谓词最多推两万条），
     // 而 `Derivation::capped` 回的也是谓词列表。跨谓词之后若改成全局一个数，
     // 界面上「哪个谓词太密」就答不出来了
@@ -181,10 +194,17 @@ pub fn derive(edges: &[TimedEdge], axioms: &HashMap<Uuid, Axioms>) -> Derivation
     // 从 (谓词, 主语) 出发能走的边，传递用。派生出来的也进来——它们已经是
     // 我们的断言了，链上不该因为「来路不同」断掉
     let mut adj: HashMap<(Uuid, Uuid), Vec<Hop>> = HashMap::new();
+    // 新边也可能是链的右半段：左半段已离开 frontier，不能等它再展开一次。
+    // 按宾语索引入边，才能把后到的 B→C 接到已经见过的 A→B 上。
+    let mut incoming: HashMap<(Uuid, Uuid), Vec<Hop>> = HashMap::new();
     for e in edges {
         adj.entry((e.edge.predicate, e.edge.subject))
             .or_default()
-            .push((e.edge.object, e.from, e.to, e.edge.fact));
+            .push((e.edge.object, e.from, e.to, vec![e.edge.fact]));
+        incoming
+            .entry((e.edge.predicate, e.edge.object))
+            .or_default()
+            .push((e.edge.subject, e.from, e.to, vec![e.edge.fact]));
     }
 
     let mut frontier: Vec<(Triple, Reached)> = edges
@@ -200,9 +220,9 @@ pub fn derive(edges: &[TimedEdge], axioms: &HashMap<Uuid, Axioms>) -> Derivation
             )
         })
         .collect();
-    // 起始 frontier 的顺序跟着入参走，而入参顺序不保证——排一次，
+    // 起始 frontier 的顺序跟着入参走，而入参顺序不保证——按完整事实身份排一次，
     // 同一个库两次推导才给得出同一份结果
-    frontier.sort_by_key(|(t, _)| *t);
+    frontier.sort_by_key(|(t, acc)| (*t, acc.from, acc.to));
 
     // 轮数上限是**兜底**，真正的界在下面那条 `premises.len() >= MAX_DEPTH`：
     // 常量的含义是「路径最长 12」，按前提条数算才对得上。轮数只防病态输入
@@ -252,15 +272,16 @@ pub fn derive(edges: &[TimedEdge], axioms: &HashMap<Uuid, Axioms>) -> Derivation
                     &mut out,
                     &mut next,
                     &mut adj,
+                    &mut incoming,
                 ) {
                     continue;
                 }
             }
 
-            // ---- 传递：需要接一条同谓词的出边
+            // ---- 传递：新边既能作左半段，也能作右半段
             if ax.transitive {
                 let outs = adj.get(&(pred, obj)).cloned().unwrap_or_default();
-                for (c, from, to, fact) in outs {
+                for (c, from, to, hop_premises) in outs {
                     // **不推自环。** `A p A` 在一个传递+反对称的谓词上是矛盾
                     // 而不是知识，R0 那边会把这个环连路径一起报出来
                     if subj == c {
@@ -276,7 +297,7 @@ pub fn derive(edges: &[TimedEdge], axioms: &HashMap<Uuid, Axioms>) -> Derivation
                         &acc,
                         nf,
                         nt,
-                        Some(fact),
+                        Some(&hop_premises),
                         &asserted,
                         &mut reached,
                         &mut per_pred,
@@ -284,11 +305,40 @@ pub fn derive(edges: &[TimedEdge], axioms: &HashMap<Uuid, Axioms>) -> Derivation
                         &mut out,
                         &mut next,
                         &mut adj,
+                        &mut incoming,
+                    );
+                }
+                let ins = incoming.get(&(pred, subj)).cloned().unwrap_or_default();
+                for (a, from, to, premises) in ins {
+                    if a == obj {
+                        continue;
+                    }
+                    let Some((nf, nt)) = overlap((from, to), (acc.from, acc.to)) else {
+                        continue;
+                    };
+                    // emit 按左、右顺序拼证明；后到的是右边，不能把整条路径倒过来。
+                    let prefix = Reached { from, to, premises };
+                    emit(
+                        (pred, a, obj),
+                        pred,
+                        Rule::Transitive,
+                        &prefix,
+                        nf,
+                        nt,
+                        Some(&acc.premises),
+                        &asserted,
+                        &mut reached,
+                        &mut per_pred,
+                        &mut capped,
+                        &mut out,
+                        &mut next,
+                        &mut adj,
+                        &mut incoming,
                     );
                 }
             }
         }
-        next.sort_by_key(|(t, _)| *t);
+        next.sort_by_key(|(t, acc)| (*t, acc.from, acc.to));
         frontier = next;
     }
 
@@ -296,6 +346,16 @@ pub fn derive(edges: &[TimedEdge], axioms: &HashMap<Uuid, Axioms>) -> Derivation
     capped.sort();
     out.capped = capped;
     out
+}
+
+/// `outer` 是否覆盖 `inner`。两端都为 `None` 表示无界，因此能覆盖任何同向区间。
+fn span_contains(outer: Span, inner: Span) -> bool {
+    outer
+        .0
+        .is_none_or(|outer| inner.0.is_some_and(|inner| outer <= inner))
+        && outer
+            .1
+            .is_none_or(|outer| inner.1.is_some_and(|inner| outer >= inner))
 }
 
 /// 落一条派生，并把它接进邻接表供后续传递使用。返回 true = 这个谓词封顶了。
@@ -312,57 +372,96 @@ fn emit(
     acc: &Reached,
     from: Option<i64>,
     to: Option<i64>,
-    // 传递多用掉的那一条前提；一跳规则没有
-    extra_premise: Option<Uuid>,
-    asserted: &HashSet<Triple>,
-    reached: &mut HashMap<Triple, Reached>,
+    // 传递多用掉的那一条边所依赖的全部前提；一跳规则没有
+    extra_premises: Option<&[Uuid]>,
+    asserted: &HashMap<Triple, Vec<Span>>,
+    reached: &mut HashMap<Triple, Vec<(Span, Reached)>>,
     per_pred: &mut HashMap<Uuid, usize>,
     capped: &mut HashSet<Uuid>,
     out: &mut Derivation,
     next: &mut Vec<(Triple, Reached)>,
     adj: &mut HashMap<(Uuid, Uuid), Vec<Hop>>,
+    incoming: &mut HashMap<(Uuid, Uuid), Vec<Hop>>,
 ) -> bool {
     let (pred, subj, obj) = t;
     // 自环不推，任何规则都一样：`A p A` 是矛盾不是知识
     if subj == obj {
         return false;
     }
-    // 断言优先；已经推过的不重复推——**逆的互指靠这一条收敛**：
-    // `p⁻¹ = q` 且 `q⁻¹ = p` 时，第二轮推回来的那条已经在 reached 里
-    if asserted.contains(&t) || reached.contains_key(&t) {
+    let span = (from, to);
+    // 断言优先；无时间断言也覆盖日期的派生。
+    if asserted
+        .get(&t)
+        .into_iter()
+        .flatten()
+        .copied()
+        .any(|outer| span_contains(outer, span))
+    {
         return false;
     }
-    let n = per_pred.entry(pred).or_insert(0);
-    if *n >= MAX_DERIVED_PER_PREDICATE {
-        capped.insert(pred);
-        return true;
-    }
-    *n += 1;
-
     let mut premises = acc.premises.clone();
-    if let Some(p) = extra_premise {
-        premises.push(p);
+    if let Some(extra) = extra_premises {
+        premises.extend_from_slice(extra);
     }
+    // 深度上限在这里再判一次。展开 frontier 时那条 `premises.len() >= MAX_DEPTH`
+    // 只看得到当前这一份；传递接上来的那条边可能自带好几条前提，一次就能把长度
+    // 顶过上限，所以**拼完之后**才是判得上限的地方
+    if premises.len() > MAX_DEPTH {
+        return false;
+    }
+
+    let previous = reached.entry(t).or_default();
+    // 同一段时间的长证明只能挡住重复展示，不能挡住短证明继续展开：否则先走了
+    // 绕路，就可能在 12 条前提处停下，而本来存在一条 12 条以内能走完的捷径。
+    // 区间与长度都被覆盖才丢掉；逆的互指仍会在同长的证明处收敛。
+    let covered = previous
+        .iter()
+        .any(|(outer, _)| span_contains(*outer, span));
+    if previous
+        .iter()
+        .any(|(outer, proof)| span_contains(*outer, span) && proof.premises.len() <= premises.len())
+    {
+        return false;
+    }
+    if !covered {
+        let n = per_pred.entry(pred).or_insert(0);
+        if *n >= MAX_DERIVED_PER_PREDICATE {
+            capped.insert(pred);
+            return true;
+        }
+        *n += 1;
+    }
+
     let r = Reached {
         from,
         to,
         premises: premises.clone(),
     };
-    reached.insert(t, r.clone());
-    // 派生出来的边也能被后续传递接上
-    if let Some(&first) = premises.first() {
-        adj.entry((pred, subj))
-            .or_default()
-            .push((obj, from, to, first));
-    }
-    out.facts.push(Derived {
-        predicate: pred,
-        via,
-        subject: subj,
-        object: obj,
-        rule,
-        premises,
+    previous.retain(|(old_span, proof)| {
+        !(span_contains(span, *old_span) && premises.len() <= proof.premises.len())
     });
+    previous.push((span, r.clone()));
+    // 派生出来的边也能被后续传递接上。**整份证明都要带上**：邻接表里的这一项
+    // 以后会被当作前提拼进下一条派生，只留首条会让链上的证明越拼越短
+    if !premises.is_empty() {
+        for (index, key, other) in [(adj, (pred, subj), obj), (incoming, (pred, obj), subj)] {
+            let hops = index.entry(key).or_default();
+            hops.retain(|(end, f, t, proof)| {
+                *end != other || !(span_contains(span, (*f, *t)) && premises.len() <= proof.len())
+            });
+            hops.push((other, from, to, premises.clone()));
+        }
+    }
+    if !covered {
+        out.facts.push(Derived {
+            predicate: pred,
+            via,
+            subject: subj,
+            object: obj,
+            rule,
+            premises,
+        });
+    }
     next.push((t, r));
     false
 }
@@ -411,8 +510,6 @@ pub struct RuleClash {
     pub pairs: Vec<(usize, usize)>,
 }
 
-/// 半开区间 `[from, to)`，两端可空
-type Span = (Option<i64>, Option<i64>);
 /// (谓词, 一端) → 另一端的边：(另一端, 事实, 区间)。functional 两个方向各一份
 type ByEnd = HashMap<(Uuid, Uuid), Vec<(Uuid, Uuid, Span)>>;
 /// 一条规则的身份：声明所在的谓词 + 规则种类
@@ -715,6 +812,38 @@ mod tests {
     }
 
     #[test]
+    fn a_chained_derivation_keeps_every_premise() {
+        // 4→1→2 推出 4→2，而 4→2 已经是一条证明；传递再接 2→3 时，那条派生边
+        // 自带的两条前提要一起进证明。少了任一条，`validity` 就只对留下的前提求
+        // 交集，结论会比实际宽
+        let edges = [
+            te(1, 1, 2, Some(0), Some(100)),
+            te(2, 2, 3, Some(40), Some(50)),
+            te(3, 4, 1, Some(0), Some(100)),
+        ];
+        let d = derive(&edges, &transitive());
+        let to3 = d
+            .facts
+            .iter()
+            .find(|x| x.subject == n(4) && x.object == n(3))
+            .expect("4→3 应由 4→1→2→3 推出");
+        assert_eq!(
+            to3.premises,
+            vec![f(3), f(1), f(2)],
+            "证明要带上链上三条前提，中间那条派生边的两条都在内"
+        );
+        let by_fact: HashMap<Uuid, _> = edges
+            .iter()
+            .map(|x| (x.edge.fact, (x.from, x.to)))
+            .collect();
+        assert_eq!(
+            validity(&to3.premises, &by_fact),
+            Some((Some(40), Some(50))),
+            "有效期应是三条前提的交集，而不是漏掉中间那条的宽区间"
+        );
+    }
+
+    #[test]
     fn asserted_beats_derived() {
         // 1→2、2→3 已经推得出 1→3，而 1→3 也被断言过 → 不重复派生
         let edges = [e(1, 1, 2), e(2, 2, 3), e(3, 1, 3)];
@@ -799,6 +928,76 @@ mod tests {
             "证明长度不该超过深度上限，实际 {longest}"
         );
         assert!(!d.facts.is_empty(), "有上限不等于什么都不推");
+    }
+
+    fn edges_with_shortcuts() -> Vec<TimedEdge> {
+        // 21→8→16 与 14→1→7→12 都有捷径；先碰到绕路的证明，不该让
+        // 后到的短证明失去继续推导的机会。11→20 的最短路径恰好 12 条前提。
+        [
+            (12, 0),
+            (7, 12),
+            (15, 10),
+            (1, 7),
+            (2, 5),
+            (8, 16),
+            (13, 21),
+            (5, 13),
+            (6, 14),
+            (14, 12),
+            (21, 8),
+            (0, 20),
+            (10, 2),
+            (21, 16),
+            (14, 1),
+            (11, 15),
+            (16, 6),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(i, (s, o))| e(i as u8, s, o))
+        .collect()
+    }
+
+    #[test]
+    fn a_shorter_proof_keeps_a_chain_within_the_depth_limit() {
+        let edges = edges_with_shortcuts();
+        let d = derive(&edges, &transitive());
+        let chain = d
+            .facts
+            .iter()
+            .find(|x| x.subject == n(11) && x.object == n(20))
+            .expect("12 条前提能走完的链不能被先到的长证明挡住");
+        assert_eq!(chain.premises.len(), MAX_DEPTH);
+        assert!(d.facts.iter().all(|x| x.premises.len() <= MAX_DEPTH));
+        let distinct: HashSet<_> = d.facts.iter().map(|x| (x.subject, x.object)).collect();
+        assert_eq!(distinct.len(), d.facts.len(), "短证明不再物化同一段事实");
+        assert!(d.capped.is_empty());
+    }
+
+    #[test]
+    fn shorter_proofs_do_not_spend_the_output_cap_twice() {
+        let component = edges_with_shortcuts();
+        // 多个互不相连的副本共用一个谓词；每份都含需要重新展开的短证明。
+        // 封顶数的是实际产出的事实，不能拿这些替代证明抵扣额度。
+        let edges: Vec<_> = (0..300u128)
+            .flat_map(|copy| {
+                component.iter().enumerate().map(move |(i, e)| TimedEdge {
+                    edge: Edge {
+                        fact: Uuid::from_u128(100_000 + copy * 32 + i as u128),
+                        predicate: e.edge.predicate,
+                        subject: Uuid::from_u128(copy * 32 + e.edge.subject.as_bytes()[0] as u128),
+                        object: Uuid::from_u128(copy * 32 + e.edge.object.as_bytes()[0] as u128),
+                    },
+                    ..*e
+                })
+            })
+            .collect();
+        let d = derive(&edges, &transitive());
+        assert_eq!(d.facts.len(), MAX_DERIVED_PER_PREDICATE);
+        assert_eq!(d.capped, vec![n(99)]);
+        let distinct: HashSet<_> = d.facts.iter().map(|x| (x.subject, x.object)).collect();
+        assert_eq!(distinct.len(), d.facts.len());
+        assert!(d.facts.iter().all(|x| x.premises.len() <= MAX_DEPTH));
     }
 
     #[test]
@@ -1015,6 +1214,227 @@ mod tests {
         assert!(
             got.contains(&(Q, 3, 1)),
             "**逆产出的边要进邻接表**，否则传递接不上它"
+        );
+    }
+
+    #[test]
+    fn a_late_right_hand_edge_completes_an_existing_chain() {
+        for (source, target) in [(Q, P), (P, Q)] {
+            for inverse in [false, true] {
+                let ax = HashMap::from([
+                    (
+                        source,
+                        Axioms {
+                            inverse_of: inverse.then_some(target),
+                            sub_property_of: (!inverse).then_some(target),
+                            ..Default::default()
+                        },
+                    ),
+                    (
+                        target,
+                        Axioms {
+                            transitive: true,
+                            ..Default::default()
+                        },
+                    ),
+                ]);
+                let left = ep(target, 1, 1, 2);
+                let right = if inverse {
+                    ep(source, 2, 3, 2)
+                } else {
+                    ep(source, 2, 2, 3)
+                };
+                for edges in [[left, right], [right, left]] {
+                    let d = derive(&edges, &ax);
+                    let chain = d
+                        .facts
+                        .iter()
+                        .find(|x| x.predicate == target && x.subject == n(1) && x.object == n(3))
+                        .expect("右边晚一步推出，不能让已展开的左边再也接不上它");
+                    assert_eq!(chain.rule, Rule::Transitive);
+                    assert_eq!(chain.via, target);
+                    assert_eq!(chain.premises, vec![f(1), f(2)]);
+                    assert!(d.capped.is_empty());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_late_right_hand_edge_keeps_the_whole_prefix_and_its_span() {
+        let ax = HashMap::from([
+            (
+                P,
+                Axioms {
+                    transitive: true,
+                    ..Default::default()
+                },
+            ),
+            (
+                Q,
+                Axioms {
+                    sub_property_of: Some(P),
+                    ..Default::default()
+                },
+            ),
+            (
+                R,
+                Axioms {
+                    sub_property_of: Some(Q),
+                    ..Default::default()
+                },
+            ),
+        ]);
+        let edges = [
+            tep(P, 1, 1, 2, Some(0), Some(30)),
+            tep(P, 2, 2, 3, Some(10), Some(40)),
+            tep(R, 3, 3, 4, Some(20), Some(50)),
+            tep(R, 4, 3, 5, Some(30), Some(50)),
+        ];
+        let spans = edges
+            .iter()
+            .map(|e| (e.edge.fact, (e.from, e.to)))
+            .collect();
+        let d = derive(&edges, &ax);
+        let chain = d
+            .facts
+            .iter()
+            .find(|x| x.predicate == P && x.subject == n(1) && x.object == n(4))
+            .expect("右边跨两轮到达时，已派生的左边也要接得上");
+        assert_eq!(chain.premises, vec![f(1), f(2), f(3)]);
+        assert_eq!(
+            validity(&chain.premises, &spans),
+            Some((Some(20), Some(30)))
+        );
+        assert!(
+            !d.facts
+                .iter()
+                .any(|x| x.predicate == P && x.subject == n(1) && x.object == n(5)),
+            "前缀止于 30，右边始于 30，半开区间没有交集"
+        );
+    }
+
+    /// 同一个 triple 可以有几段时间都成立。第二段不能被第一段挡在传递之外，
+    /// 而且输入顺序怎么排，时间闭包都要一样。
+    #[test]
+    fn distinct_intervals_for_one_triple_survive_axiom_steps_in_any_order() {
+        let ax = HashMap::from([
+            (
+                P,
+                Axioms {
+                    inverse_of: Some(Q),
+                    ..Default::default()
+                },
+            ),
+            (
+                Q,
+                Axioms {
+                    transitive: true,
+                    ..Default::default()
+                },
+            ),
+        ]);
+        let early = tep(P, 1, 1, 2, Some(0), Some(10));
+        let late = tep(P, 2, 1, 2, Some(20), Some(30));
+        let cb = tep(Q, 3, 3, 2, Some(20), Some(30));
+        let spans = HashMap::from([
+            (f(1), (Some(0), Some(10))),
+            (f(2), (Some(20), Some(30))),
+            (f(3), (Some(20), Some(30))),
+        ]);
+        let closure = |edges: [TimedEdge; 3]| {
+            let d = derive(&edges, &ax);
+            let mut closure: Vec<_> = d
+                .facts
+                .iter()
+                .map(|x| {
+                    let (from, to) = validity(&x.premises, &spans).expect("派生区间应当可求");
+                    (x.predicate, x.subject, x.object, from, to)
+                })
+                .collect();
+            closure.sort();
+            closure
+        };
+
+        let early_first = closure([early, late, cb]);
+        let late_first = closure([late, early, cb]);
+
+        assert_eq!(early_first, late_first, "闭包不能随 fact 输入顺序改变");
+        assert!(
+            early_first.contains(&(Q, n(2), n(1), Some(0), Some(10))),
+            "第一段 B q A 也要保留"
+        );
+        assert!(
+            early_first.contains(&(Q, n(2), n(1), Some(20), Some(30))),
+            "第二段 B q A 要保留"
+        );
+        assert!(
+            early_first.contains(&(Q, n(3), n(1), Some(20), Some(30))),
+            "第二段 B q A 必须还能和 C q B 接成 C q A"
+        );
+    }
+
+    /// 断言的一段区间如果覆盖了派生出来的更窄区间，就不再留下第二条同 triple 的事实。
+    #[test]
+    fn an_asserted_interval_covers_a_narrower_derivation() {
+        let edges = [
+            te(1, 1, 2, Some(10), Some(20)),
+            te(2, 2, 3, Some(10), Some(20)),
+            te(3, 1, 3, Some(0), Some(100)),
+        ];
+        let d = derive(&edges, &transitive());
+        assert!(
+            d.facts.is_empty(),
+            "断言 [0,100) 已覆盖推出来的 [10,20)，不该再派生一份"
+        );
+    }
+
+    /// 无时间断言表示一直成立，也覆盖有日期的同 triple 派生。
+    #[test]
+    fn an_undated_assertion_covers_a_dated_derivation() {
+        let edges = [
+            te(1, 1, 2, Some(10), Some(20)),
+            te(2, 2, 3, Some(10), Some(20)),
+            te(3, 1, 3, None, None),
+        ];
+        let d = derive(&edges, &transitive());
+        assert!(
+            d.facts.is_empty(),
+            "无时间断言覆盖 [10,20)，不该推出一条说得更少的同 triple 事实"
+        );
+    }
+
+    /// 两条路径分别推出 [0,100) 与 [10,20)：宽的保留，窄的丢掉；输入反序也一样。
+    #[test]
+    fn a_wider_route_suppresses_a_narrower_derivation() {
+        let edges = [
+            te(1, 1, 2, Some(0), Some(100)),
+            te(2, 2, 4, Some(0), Some(100)),
+            te(3, 1, 3, Some(10), Some(20)),
+            te(4, 3, 4, Some(10), Some(20)),
+        ];
+        let by_fact: HashMap<_, _> = edges
+            .iter()
+            .map(|e| (e.edge.fact, (e.from, e.to)))
+            .collect();
+        let spans = |edges: [TimedEdge; 4]| {
+            let d = derive(&edges, &transitive());
+            let mut spans: Vec<_> = d
+                .facts
+                .iter()
+                .filter(|x| x.subject == n(1) && x.object == n(4))
+                .map(|x| validity(&x.premises, &by_fact).expect("派生区间应当可求"))
+                .collect();
+            spans.sort();
+            spans
+        };
+
+        let broad = (Some(0), Some(100));
+        assert_eq!(spans(edges), vec![broad], "只留下覆盖更宽的 [0,100)");
+        assert_eq!(
+            spans([edges[3], edges[2], edges[1], edges[0]]),
+            vec![broad],
+            "输入反序不能把被覆盖的窄区间又放回来"
         );
     }
 

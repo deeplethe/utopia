@@ -63,6 +63,9 @@ pub mod kind {
     /// 在管理页「模型」里配上之后会自己重新处理。没有这一条，传上来的扫描件只是悄悄地
     /// 什么都没有——0005 里一直空着的 `document.no_text_layer` 就是它
     pub const DOCUMENT_NEEDS_READER: &str = "document.needs_reader";
+    /// 库级：解析器的安全上限到了，正文只是文件的一部分。`severity = warning`，
+    /// `min_role = editor`：文件已经可搜，但搜索和回答不包含被省略的那一段。
+    pub const DOCUMENT_CONTENTS_TRUNCATED: &str = "document.contents_truncated";
 }
 
 /// 一次故障。打包成结构体不只是为了参数个数——调用点写 `severity: "error"`

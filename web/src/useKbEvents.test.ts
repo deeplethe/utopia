@@ -36,6 +36,19 @@ describe("a burst of events buys one refetch", () => {
     expect(seen).toEqual([["graph"], ["graph"]]);
   });
 
+  it("a broader key covers a narrower queued key regardless of their arrival order", () => {
+    for (const keys of [
+      [["graph", "kb"], ["graph"]],
+      [["graph"], ["graph", "kb"]],
+    ]) {
+      const seen: unknown[] = [];
+      const { push, flush } = createInvalidationCoalescer((key) => seen.push(key), 300);
+      for (const key of keys) push(key);
+      flush();
+      expect(seen).toEqual([["graph"]]);
+    }
+  });
+
   it("flushing on unmount delivers what was pending instead of dropping it", () => {
     const seen: unknown[] = [];
     const { push, flush } = createInvalidationCoalescer((key) => seen.push(key), 300);

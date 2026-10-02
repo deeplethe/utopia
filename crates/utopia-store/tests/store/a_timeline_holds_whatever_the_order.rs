@@ -138,6 +138,13 @@ async fn arrive_on(
         confidence,
     )
     .await?;
+    if doc.is_some_and(|(at, _)| at.is_none()) {
+        // 模拟文档抽取的无时间行（0064）；人工写入口的 None 缺省是此刻。
+        sqlx::query("UPDATE facts SET attested_from = NULL WHERE id = $1")
+            .bind(id)
+            .execute(pool)
+            .await?;
+    }
     if let Some(c) = chunk {
         utopia_store::graph::add_evidence(pool, id, c, Some(value), None).await?;
     }

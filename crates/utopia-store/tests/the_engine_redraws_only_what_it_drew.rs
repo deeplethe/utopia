@@ -170,6 +170,13 @@ async fn observe(pool: &PgPool, f: &Fixture, x: Seen<'_>) -> anyhow::Result<Uuid
         x.confidence,
     )
     .await?;
+    if x.from.is_none() && x.doc.is_none() {
+        // 模拟文档没有时间（0064），不使用人工写入口的此刻见证。
+        sqlx::query("UPDATE facts SET attested_from = NULL WHERE id = $1")
+            .bind(id)
+            .execute(pool)
+            .await?;
+    }
     if let Some(c) = chunk {
         if x.described {
             // 描述出来的块必须带锚（0058 的 CHECK）：图在文件里的哪一块

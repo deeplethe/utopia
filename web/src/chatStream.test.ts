@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { S } from "./i18n";
+import { en } from "./i18n/en";
+import { zh } from "./i18n/zh";
 import { ApiError, reattachChat, streamChat, type ChatHandlers } from "./api";
 vi.mock("./i18n", () => ({
   S: {
@@ -90,6 +93,21 @@ describe("a chat stream that fails", () => {
     const text = failed({ error: "maximum context length is 16384 tokens", code: "context_too_long" });
     expect(await replay(text)).toEqual([["error", "Worded: start a new conversation"]]);
     expect(await replay(text, true)).toEqual([["error", "Worded: start a new conversation"]]);
+  });
+  it.each([en, zh])("distinguishes mapping retrieval from document search in either stream", async (strings) => {
+    const original = S.err;
+    S.err = strings.err;
+    try {
+      for (const code of ["mapping_search_failed", "search_failed"] as const) {
+        const text = failed({ error: "Could not retrieve relevant mappings.", code });
+        const expected = [["error", strings.err[code]]];
+        expect(await replay(text)).toEqual(expected);
+        expect(await replay(text, true)).toEqual(expected);
+      }
+      expect(strings.err.mapping_search_failed).not.toBe(strings.err.search_failed);
+    } finally {
+      S.err = original;
+    }
   });
   it("keeps the server's sentence for a code the table does not have", async () => {
     expect(await replay(failed({ error: "Some new failure", code: "unlisted_code" })))

@@ -39,6 +39,8 @@ export function useKb(): {
   workspaces: Workspace[];
   setWorkspace: (id: string) => void;
   setKb: (id: string) => void;
+  /** 工作区和库的列表都取回来了：`kb` 为空是真的没有库，不是还在加载 */
+  settled: boolean;
 } {
   const queryClient = useQueryClient();
   const selectedId = useSyncExternalStore(wsStore.subscribe, wsStore.get);
@@ -120,5 +122,6 @@ export function useKb(): {
     workspaces: list,
     setWorkspace: wsStore.set,
     setKb,
+    settled: workspaces.isFetched && (!ws || kbs.isFetched),
   };
 }

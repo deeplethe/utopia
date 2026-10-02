@@ -362,6 +362,35 @@ impl Reply {
     }
 }
 
+#[derive(Default)]
+struct SseBuffer {
+    bytes: Vec<u8>,
+    after_cr: bool,
+}
+
+impl SseBuffer {
+    fn push(&mut self, chunk: &[u8]) {
+        // SSE accepts LF, CRLF and bare CR. Remember CR across HTTP chunks so its
+        // following LF cannot turn one line ending into a spurious empty line.
+        // Keep UTF-8 as bytes until a whole frame has arrived.
+        for &byte in chunk {
+            if self.after_cr && byte == b'\n' {
+                self.after_cr = false;
+                continue;
+            }
+            self.after_cr = byte == b'\r';
+            self.bytes.push(if self.after_cr { b'\n' } else { byte });
+        }
+    }
+
+    fn next_frame(&mut self) -> Option<String> {
+        let end = self.bytes.windows(2).position(|w| w == b"\n\n")?;
+        let frame = String::from_utf8_lossy(&self.bytes[..end]).into_owned();
+        self.bytes.drain(..end + 2);
+        Some(frame)
+    }
+}
+
 #[derive(Clone)]
 pub struct LlmClient {
     http: reqwest::Client,
@@ -624,18 +653,16 @@ impl LlmClient {
             return Err(failure("LLM", status, retry_after, &parsed, &raw));
         };
         let mut bytes = resp.bytes_stream();
-        let (mut buf, mut answer) = (Vec::new(), String::new());
+        let (mut buf, mut answer) = (SseBuffer::default(), String::new());
         let (mut saw_frame, mut ended) = (false, false);
         let mut finish_reason: Option<String> = None;
         let mut usage: Option<Usage> = None;
         while let Some(part) = bytes.next().await {
             let part = part.map_err(Unreachable)?;
             // 网络片段可能断在 UTF-8 字符中间，等完整 SSE 帧到齐再解码。
-            buf.extend_from_slice(&part);
+            buf.push(&part);
             // SSE 帧以空行分隔；最后一个不完整的帧留在 buf 里等下一片
-            while let Some(pos) = buf.windows(2).position(|w| w == b"\n\n") {
-                let frame = String::from_utf8_lossy(&buf[..pos]).into_owned();
-                buf.drain(..pos + 2);
+            while let Some(frame) = buf.next_frame() {
                 self.take_frame(
                     &frame,
                     &mut answer,
@@ -647,7 +674,7 @@ impl LlmClient {
             }
         }
         // **收尾那一帧也算**：末尾不跟空行的实现有的是，丢掉它就是丢掉答案的尾巴
-        let rest = String::from_utf8_lossy(&buf);
+        let rest = String::from_utf8_lossy(&buf.bytes);
         if !rest.trim().is_empty() {
             self.take_frame(
                 &rest,
@@ -860,7 +887,7 @@ impl LlmClient {
 
         let mut bytes = resp.bytes_stream();
         let stream = async_stream::try_stream! {
-            let mut buf = Vec::new();
+            let mut buf = SseBuffer::default();
             let mut content = String::new();
             let mut calls: Vec<ToolCall> = Vec::new();
             let mut finish_reason = None;
@@ -868,10 +895,8 @@ impl LlmClient {
             'outer: while let Some(part) = bytes.next().await {
                 let part = part?;
                 // 网络片段可能断在 UTF-8 字符中间，等完整 SSE 帧到齐再解码。
-                buf.extend_from_slice(&part);
-                while let Some(pos) = buf.windows(2).position(|w| w == b"\n\n") {
-                    let frame = String::from_utf8_lossy(&buf[..pos]).into_owned();
-                    buf.drain(..pos + 2);
+                buf.push(&part);
+                while let Some(frame) = buf.next_frame() {
                     for line in frame.lines() {
                         let Some(data) = line.strip_prefix("data:").map(str::trim) else {
                             continue;
@@ -964,17 +989,15 @@ impl LlmClient {
 
         let mut bytes = resp.bytes_stream();
         let stream = async_stream::try_stream! {
-            let mut buf = Vec::new();
+            let mut buf = SseBuffer::default();
             let mut ended = false;
             let mut got = 0;
             while let Some(part) = bytes.next().await {
                 let part = part?;
                 // 网络片段可能断在 UTF-8 字符中间，等完整 SSE 帧到齐再解码。
-                buf.extend_from_slice(&part);
+                buf.push(&part);
                 // SSE 帧以空行分隔；逐帧取出已完整到达的部分
-                while let Some(pos) = buf.windows(2).position(|w| w == b"\n\n") {
-                    let frame = String::from_utf8_lossy(&buf[..pos]).into_owned();
-                    buf.drain(..pos + 2);
+                while let Some(frame) = buf.next_frame() {
                     for line in frame.lines() {
                         let Some(data) = line.strip_prefix("data:").map(str::trim) else {
                             continue;
@@ -1165,7 +1188,7 @@ fn says_out_of_credit(body: &serde_json::Value) -> bool {
 /// 「This model's maximum context length is 1048576 tokens. However, you requested …」
 /// （2026-09-27 实测）。code 在 `err_detail` 只留 message 之前读，不然就丢了
 fn says_context_too_long(body: &serde_json::Value, detail: &str) -> bool {
-    [
+    let says = [
         body.pointer("/error/code"),
         body.pointer("/error/type"),
         body.get("code"),
@@ -1174,7 +1197,39 @@ fn says_context_too_long(body: &serde_json::Value, detail: &str) -> bool {
     .flatten()
     .filter_map(|v| v.as_str())
     .any(|code| code == "context_length_exceeded")
-        || context_wording(detail)
+        || context_wording(detail);
+    // 账目说 messages 装得下、超的是我们自己要的 completion：那不是对话太长，是上限要按
+    // 窗口剩下的来（`stated_completion_ceiling`），重试就能过（#973 评审的后续）
+    says && completion_overflows(detail).is_none()
+}
+
+/// 拒绝里的账目：窗口 W，我们发的 messages 占了 N、completion 要了 M。OpenAI、DeepSeek 和
+/// vLLM 一家的写法："maximum context length is W tokens. However, you requested T tokens
+/// (N in the messages, M in the completion)"。读不全就是 None——别的写法分不出哪部分超了
+fn overflow_ledger(detail: &str) -> Option<(u32, u32, u32)> {
+    let lower = detail.to_ascii_lowercase();
+    let number_before = |marker: &str| -> Option<u32> {
+        let (before, _) = lower.split_once(marker)?;
+        let word = before
+            .trim_end()
+            .rsplit(|c: char| c.is_whitespace() || c == '(')
+            .next()?;
+        number_with_separators(word)
+    };
+    Some((
+        stated_context_window(detail)?,
+        number_before(" in the messages")?,
+        number_before(" in the completion")?,
+    ))
+}
+
+/// 超的是 completion 时，窗口给回答留下的余地；messages 本身就装不下（余地不到
+/// `MIN_CONTEXT_WINDOW_TOKENS`，一段像样的回答都放不进）就是 None，那才是对话太长。
+/// 从前这种拒绝把窗口本身当上限重试，N + W 照样超，重试必然再挨一次
+fn completion_overflows(detail: &str) -> Option<u32> {
+    let (window, messages, completion) = overflow_ledger(detail)?;
+    let room = window.checked_sub(messages)?;
+    (room >= MIN_CONTEXT_WINDOW_TOKENS && room < completion).then_some(room)
 }
 
 /// 各家说「超长」的话。只收实测过或文档写明的：OpenAI 与 DeepSeek 的 "maximum context
@@ -1246,7 +1301,13 @@ fn stated_context_window(detail: &str) -> Option<u32> {
 /// because no completion limit is that small and a stray small number would turn a
 /// refusal into a silently cut reply. A context-window refusal belongs to history
 /// recovery; treating its window as an output ceiling repeats the oversized prompt.
+/// The one exception is a refusal whose own ledger says the messages fit and the
+/// completion did not: the ceiling is then what the window leaves for the answer
+/// (`completion_overflows`), and the retry at that number goes through.
 fn stated_completion_ceiling(detail: &str, sent: u32) -> Option<u32> {
+    if let Some(room) = completion_overflows(detail) {
+        return (room < sent).then_some(room);
+    }
     if context_wording(detail)
         || (!detail.contains("max_tokens") && !detail.contains("max_completion_tokens"))
     {
@@ -1289,6 +1350,77 @@ fn number_with_separators(word: &str) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
+    /// 账目说 messages 装得下、超的是 completion：不是对话太长，按窗口剩下的余地重试；
+    /// messages 本身装不下（或余地不到 1,024）才是上下文拒绝
+    #[test]
+    fn a_completion_overflow_is_a_ceiling_to_lower_and_not_a_context_refusal() {
+        let fits = "This model's maximum context length is 8192 tokens. However, you requested 69536 tokens (4000 in the messages, 65536 in the completion). Please reduce the length of the messages or completion.";
+        for body in [
+            json!({"error":{"message":fits,"type":"invalid_request_error","code":"invalid_request_error"}}),
+            json!({"error":{"message":fits,"code":"context_length_exceeded"}}),
+        ] {
+            let err = failure("LLM", reqwest::StatusCode::BAD_REQUEST, None, &body, "");
+            assert!(context_too_long(&err).is_none(), "{err:#}");
+            assert!(rejected(&err).is_some(), "{err:#}");
+        }
+        assert_eq!(
+            stated_completion_ceiling(fits, MAX_COMPLETION_TOKENS),
+            Some(4_192)
+        );
+        assert_eq!(
+            stated_completion_ceiling(fits, 4_000),
+            None,
+            "a ceiling is only ever lowered"
+        );
+        for raw in [
+            "This model's maximum context length is 8192 tokens. However, you requested 74536 tokens (9000 in the messages, 65536 in the completion).",
+            "This model's maximum context length is 8192 tokens. However, you requested 73036 tokens (7500 in the messages, 65536 in the completion).",
+        ] {
+            let err = failure("LLM", reqwest::StatusCode::BAD_REQUEST, None, &json!({}), raw);
+            let refusal = context_too_long(&err).expect("the messages do not fit");
+            assert_eq!(refusal.window, Some(8192));
+            assert_eq!(stated_completion_ceiling(raw, MAX_COMPLETION_TOKENS), None);
+        }
+    }
+
+    /// 整条路：小窗口模型拒了我们 65,536 的 max_tokens，重试按窗口剩下的余地要，过了
+    #[tokio::test]
+    async fn a_completion_overflow_is_retried_at_what_the_window_leaves() {
+        let refusal = r#"{"error":{"message":"This model's maximum context length is 8192 tokens. However, you requested 65736 tokens (200 in the messages, 65536 in the completion). Please reduce the length of the messages or completion.","type":"invalid_request_error","param":null,"code":"invalid_request_error"}}"#;
+        let answer = [
+            r#"data: {"choices":[{"delta":{"content":"{\"e\":[]}"}}]}"#,
+            r#"data: {"choices":[{"delta":{},"finish_reason":"stop"}]}"#,
+            "data: [DONE]",
+            "",
+        ]
+        .join("\n\n");
+        let (addr, server, requests) = two_http_responses(
+            ("400 Bad Request", "application/json", refusal),
+            ("200 OK", "text/event-stream", &answer),
+        )
+        .await;
+        let reply = client_at(addr)
+            .chat_at_streaming(
+                &[ChatMessage {
+                    role: "user".into(),
+                    content: "hi".into(),
+                }],
+                Some(0.0),
+            )
+            .await
+            .unwrap();
+        server.await.unwrap();
+        let sent = requests.await.unwrap();
+        assert_eq!(sent.len(), 2, "the refusal is retried, not surfaced");
+        assert_eq!(sent_max_tokens(&sent[0]), json!(MAX_COMPLETION_TOKENS));
+        assert_eq!(
+            sent_max_tokens(&sent[1]),
+            json!(7_992),
+            "8192 minus the 200 the messages take"
+        );
+        assert_eq!(reply.text, r#"{"e":[]}"#);
+    }
+
     #[test]
     fn context_refusals_keep_the_code_and_only_learn_a_stated_window() {
         // DeepSeek 的原话（2026-09-27 实测，deepseek-chat）：code 只是 invalid_request_error
@@ -1553,52 +1685,186 @@ mod tests {
 
     fn unicode_sse() -> String {
         format!(
-            "data: {}\n\ndata: [DONE]\n\n",
+            ": keep-alive\ndata: {}\n\ndata: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
             json!({
                 "choices": [{"delta": {"content": "你好🦀", "tool_calls": [{
                     "index": 0, "id": "call_1", "function": {
                         "name": "search", "arguments": "{\"city\":\"杭州\"}"
                     }
                 }]}}]
-            })
+            }),
+            json!({"choices": [{"delta": {}, "finish_reason": "tool_calls"}]}),
+            json!({"choices": [], "usage": {"prompt_tokens": 7, "completion_tokens": 3}}),
         )
     }
 
-    #[tokio::test]
-    async fn bytewise_utf8_survives_collected_streaming() {
-        let (addr, server) = bytewise_sse(&unicode_sse()).await;
-        // 这一刀之后整段回复带着 finish_reason 一起回来，正文在 `text` 上
-        let answer = client_at(addr).chat_at_streaming(&[], None).await.unwrap();
-        server.await.unwrap();
-        assert_eq!(answer.text, "你好🦀");
+    fn sse_with_line_endings(body: &str, endings: &[&str]) -> String {
+        body.split_inclusive('\n')
+            .enumerate()
+            .map(|(i, line)| match line.strip_suffix('\n') {
+                Some(line) => format!("{line}{}", endings[i % endings.len()]),
+                None => line.to_string(),
+            })
+            .collect()
+    }
+
+    const SSE_LINE_ENDINGS: &[&[&str]] = &[&["\n"], &["\r\n"], &["\r"], &["\r\n", "\n", "\r"]];
+
+    #[test]
+    fn sse_line_endings_preserve_frames_at_every_chunk_boundary() {
+        for endings in SSE_LINE_ENDINGS {
+            let body = sse_with_line_endings(": 心跳\ndata: first\n\ndata: second\n\n", endings);
+            for split in 0..=body.len() {
+                let mut buffer = SseBuffer::default();
+                let mut frames = Vec::new();
+                for chunk in [&body.as_bytes()[..split], &body.as_bytes()[split..]] {
+                    buffer.push(chunk);
+                    while let Some(frame) = buffer.next_frame() {
+                        frames.push(frame);
+                    }
+                }
+                assert_eq!(
+                    frames,
+                    [": 心跳\ndata: first", "data: second"],
+                    "line endings {endings:?}, split at byte {split}"
+                );
+            }
+        }
     }
 
     #[tokio::test]
-    async fn bytewise_utf8_survives_raw_streaming() {
-        use futures_util::TryStreamExt;
-        let (addr, server) = bytewise_sse(&unicode_sse()).await;
-        let stream = client_at(addr).chat_stream_raw(&[]).await.unwrap();
-        let answer: Vec<String> = stream.try_collect().await.unwrap();
-        server.await.unwrap();
-        assert_eq!(answer.concat(), "你好🦀");
+    async fn bytewise_utf8_and_sse_line_endings_survive_collected_streaming() {
+        for endings in SSE_LINE_ENDINGS {
+            let (addr, server) =
+                bytewise_sse(&sse_with_line_endings(&unicode_sse(), endings)).await;
+            let answer = client_at(addr)
+                .chat_at_streaming(&[], None)
+                .await
+                .unwrap_or_else(|error| panic!("line endings {endings:?}: {error}"));
+            server.await.unwrap();
+            assert_eq!(answer.text, "你好🦀", "{endings:?}");
+            assert_eq!(answer.finish_reason.as_deref(), Some("tool_calls"));
+            assert_eq!(
+                answer.usage,
+                Some(Usage {
+                    prompt_tokens: 7,
+                    completion_tokens: 3
+                })
+            );
+        }
     }
 
     #[tokio::test]
-    async fn bytewise_utf8_survives_tool_streaming() {
+    async fn bytewise_utf8_and_sse_line_endings_survive_raw_streaming() {
         use futures_util::TryStreamExt;
-        let (addr, server) = bytewise_sse(&unicode_sse()).await;
-        let stream = client_at(addr)
-            .chat_tools_stream_with(&[], None, None)
-            .await
-            .unwrap();
-        let items: Vec<ToolStreamItem> = stream.try_collect().await.unwrap();
-        server.await.unwrap();
-        let [ToolStreamItem::Delta(delta), ToolStreamItem::Turn(turn)] = items.as_slice() else {
-            panic!("expected a delta and completed turn: {items:?}");
-        };
-        assert_eq!(delta, "你好🦀");
-        assert_eq!(turn.content.as_deref(), Some("你好🦀"));
-        assert_eq!(turn.tool_calls.len(), 1);
+        for endings in SSE_LINE_ENDINGS {
+            let (addr, server) =
+                bytewise_sse(&sse_with_line_endings(&unicode_sse(), endings)).await;
+            let stream = client_at(addr).chat_stream_raw(&[]).await.unwrap();
+            let answer: Vec<String> = stream
+                .try_collect()
+                .await
+                .unwrap_or_else(|error| panic!("line endings {endings:?}: {error}"));
+            server.await.unwrap();
+            assert_eq!(answer.concat(), "你好🦀", "{endings:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn bytewise_utf8_and_sse_line_endings_survive_tool_streaming() {
+        use futures_util::TryStreamExt;
+        for endings in SSE_LINE_ENDINGS {
+            let (addr, server) =
+                bytewise_sse(&sse_with_line_endings(&unicode_sse(), endings)).await;
+            let stream = client_at(addr)
+                .chat_tools_stream_with(&[], None, None)
+                .await
+                .unwrap();
+            let items: Vec<ToolStreamItem> = stream
+                .try_collect()
+                .await
+                .unwrap_or_else(|error| panic!("line endings {endings:?}: {error}"));
+            server.await.unwrap();
+            let [ToolStreamItem::Delta(delta), ToolStreamItem::Turn(turn)] = items.as_slice()
+            else {
+                panic!("expected a delta and completed turn: {items:?}");
+            };
+            assert_eq!(delta, "你好🦀", "{endings:?}");
+            assert_eq!(turn.content.as_deref(), Some("你好🦀"));
+            assert_eq!(turn.finish_reason.as_deref(), Some("tool_calls"));
+            let [call] = turn.tool_calls.as_slice() else {
+                panic!("expected one tool call: {:?}", turn.tool_calls);
+            };
+            assert_eq!(call.id, "call_1");
+            assert_eq!(call.name, "search");
+            assert_eq!(call.arguments, r#"{"city":"杭州"}"#);
+        }
+    }
+
+    #[tokio::test]
+    async fn raw_and_tool_streams_deliver_deltas_before_eof_with_cr_line_endings() {
+        use futures_util::TryStreamExt;
+        for ending in ["\r\n", "\r"] {
+            for reader in ["raw", "tools"] {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let addr = listener.local_addr().unwrap();
+                let (release, wait) = tokio::sync::oneshot::channel();
+                let server = tokio::spawn(async move {
+                    let (mut socket, _) = listener.accept().await.unwrap();
+                    read_request(&mut socket).await;
+                    let delta = format!(
+                        "data: {}{ending}{ending}",
+                        json!({"choices": [{"delta": {"content": "hello"}}]})
+                    );
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n{delta}\r\n",
+                        delta.len()
+                    );
+                    socket.write_all(response.as_bytes()).await.unwrap();
+                    // The peer cannot close until the client observes the delta.
+                    let _ = wait.await;
+                    let done = format!("data: [DONE]{ending}{ending}");
+                    let tail = format!("{:x}\r\n{done}\r\n0\r\n\r\n", done.len());
+                    socket.write_all(tail.as_bytes()).await.unwrap();
+                    socket.shutdown().await.unwrap();
+                });
+                let client = client_at(addr);
+                match reader {
+                    "raw" => {
+                        let stream = client.chat_stream_raw(&[]).await.unwrap();
+                        futures_util::pin_mut!(stream);
+                        let first = tokio::time::timeout(Duration::from_secs(2), stream.try_next())
+                            .await
+                            .expect("raw delta must arrive before EOF")
+                            .unwrap();
+                        assert_eq!(first.as_deref(), Some("hello"));
+                        release.send(()).unwrap();
+                        assert!(stream.try_next().await.unwrap().is_none());
+                    }
+                    _ => {
+                        let stream = client
+                            .chat_tools_stream_with(&[], None, None)
+                            .await
+                            .unwrap();
+                        futures_util::pin_mut!(stream);
+                        let first = tokio::time::timeout(Duration::from_secs(2), stream.try_next())
+                            .await
+                            .expect("tool delta must arrive before EOF")
+                            .unwrap();
+                        assert!(
+                            matches!(first, Some(ToolStreamItem::Delta(text)) if text == "hello")
+                        );
+                        release.send(()).unwrap();
+                        assert!(matches!(
+                            stream.try_next().await.unwrap(),
+                            Some(ToolStreamItem::Turn(_))
+                        ));
+                        assert!(stream.try_next().await.unwrap().is_none());
+                    }
+                }
+                server.await.unwrap();
+            }
+        }
     }
 
     async fn an_http_error(body: &str) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
@@ -1643,32 +1909,35 @@ mod tests {
             "data: {}\n\n",
             json!({ "choices": [{"delta": {"content": "你好🦀"}}] })
         );
-        for reader in ["collected", "raw", "tools"] {
-            let (addr, server) = an_http_response("200 OK", "text/event-stream", &sse).await;
-            let client = client_at(addr);
-            let error = match reader {
-                "collected" => client.chat_at_streaming(&[], None).await.unwrap_err(),
-                "raw" => client
-                    .chat_stream_raw(&[])
-                    .await
-                    .unwrap()
-                    .try_collect::<Vec<_>>()
-                    .await
-                    .unwrap_err(),
-                _ => client
-                    .chat_tools_stream_with(&[], None, None)
-                    .await
-                    .unwrap()
-                    .try_collect::<Vec<_>>()
-                    .await
-                    .unwrap_err(),
-            };
-            server.await.unwrap();
-            assert_eq!(
-                error.downcast_ref::<Interrupted>().unwrap().got,
-                3,
-                "{reader}"
-            );
+        for endings in SSE_LINE_ENDINGS {
+            let sse = sse_with_line_endings(&sse, endings);
+            for reader in ["collected", "raw", "tools"] {
+                let (addr, server) = an_http_response("200 OK", "text/event-stream", &sse).await;
+                let client = client_at(addr);
+                let error = match reader {
+                    "collected" => client.chat_at_streaming(&[], None).await.unwrap_err(),
+                    "raw" => client
+                        .chat_stream_raw(&[])
+                        .await
+                        .unwrap()
+                        .try_collect::<Vec<_>>()
+                        .await
+                        .unwrap_err(),
+                    _ => client
+                        .chat_tools_stream_with(&[], None, None)
+                        .await
+                        .unwrap()
+                        .try_collect::<Vec<_>>()
+                        .await
+                        .unwrap_err(),
+                };
+                server.await.unwrap();
+                assert_eq!(
+                    error.downcast_ref::<Interrupted>().unwrap().got,
+                    3,
+                    "{reader}, line endings {endings:?}"
+                );
+            }
         }
     }
 
@@ -1992,8 +2261,21 @@ data: {\"choices\":[{\"delta\":{\"content\":\"tail\"},\"finish_reason\":\"stop\"
         );
         assert_eq!(
             stated_completion_ceiling("This model's maximum context length is 32768 tokens. However, you requested 65636 tokens (100 in the messages, 65536 in the completion). Please reduce the length of the messages or max_tokens.", sent),
+            Some(32_668),
+            "the messages fit, so the ceiling is what the window leaves for the completion"
+        );
+        assert_eq!(
+            stated_completion_ceiling("This model's maximum context length is 32768 tokens. However, you requested 98304 tokens (32768 in the messages, 65536 in the completion).", sent),
             None,
-            "a context window is not a completion ceiling"
+            "the messages alone fill the window: nothing to lower to"
+        );
+        assert_eq!(
+            stated_completion_ceiling(
+                "maximum context length is 4096 tokens; request has 12000 tokens",
+                sent
+            ),
+            None,
+            "no ledger, so a context window is not a completion ceiling"
         );
         assert_eq!(
             stated_completion_ceiling("max_completion_tokens must be at most 8 tokens", sent),

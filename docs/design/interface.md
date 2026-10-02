@@ -27,8 +27,9 @@ green first: four defects in the theme cut passed every check and were found by 
 
 **Alerts.** One row per failure, never updated; the read side folds adjacent rows of one `(kb, kind)`
 into an episode; read state is per person; visibility by role; a row names one subject and carries
-no display text, titles assembled by kind on the client; one global SSE stream tells clients to
-refetch; classification is a pure function on error types after retries are exhausted; a bell with
+no display text, titles assembled by kind on the client; an SSE event with no data tells clients to
+refetch, on the open base's stream or, with no base open, on a global one, so that a page holds
+one notification connection and gives it up after 30 seconds hidden (#1028); classification is a pure function on error types after retries are exhausted; a bell with
 a red dot and a popover; a group can carry the action that closes its loop ("Run those again"); rows
 purge after 30 days [0005]. Kinds: `source.sync_failed`, `llm.unreachable`, `llm.rate_limited`,
 `llm.out_of_credit`, `data_source.schema_sync_failed`, `document.needs_reader`,

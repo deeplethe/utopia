@@ -50,17 +50,18 @@ export function Shell() {
     queryKey: ["health"],
     queryFn: api.health,
   });
-  const { kb, kbs, setKb } = useKb();
+  const { kb, kbs, setKb, settled } = useKb();
   // 标题跟随当前 tab：`Graph · Utopia`；文档查看页归入 Library
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const tabLabel =
     TABS.find((t) => pathname.startsWith(t.to))?.label ??
     (pathname.startsWith("/doc/") ? S.nav.library : undefined);
   usePageTitle(S.app.name, tabLabel);
-  // 全局唯一的 KB 事件流连接：文档/审核状态实时刷新（替轮询）
+  // 全局唯一的 KB 事件流连接：文档/审核状态实时刷新（替轮询）。告警也从它来
   useKbEvents(kb?.id);
-  // 告警流是全局的：角标跨库，而系统级告警根本没有库
-  useAlertEvents();
+  // 没有打开着的库时才单开告警流：一页只占一条通知用的连接（#1028）。
+  // 等列表取回来再判断，否则每次加载都先连上、库一到又断开
+  useAlertEvents(settled && !kb);
 
   // 未登录就去登录页。**副作用要在 effect 里**，理由见下面 401 那一支
   const unauthorized =

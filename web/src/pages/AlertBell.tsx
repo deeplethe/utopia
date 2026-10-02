@@ -30,9 +30,28 @@ import {
 
 const PAGE = 8;
 
-/** 明细里给人看的那一行：对象名 — 报错原文 */
+/** 明细里给人看的那一行：对象名 — 报错原文或截断范围 */
 function line(d: AlertGroup["lines"][number]): string | null {
-  const parts = [d.name ?? d.job, d.error].filter(Boolean);
+  const partial = d.warnings?.flatMap((warning) => {
+    const anchor = warning.detail;
+    if (
+      warning.kind === "spreadsheet.rows_truncated" &&
+      typeof anchor?.sheet === "string" &&
+      typeof anchor.rows_read === "number" &&
+      typeof anchor.rows_total === "number"
+    ) {
+      return [S.alerts.partialRows(anchor.sheet, anchor.rows_read, anchor.rows_total)];
+    }
+    if (
+      warning.kind === "csv.records_truncated" &&
+      typeof anchor?.records_read === "number" &&
+      typeof anchor.records_total === "number"
+    ) {
+      return [S.alerts.partialRecords(anchor.records_read, anchor.records_total)];
+    }
+    return [];
+  });
+  const parts = [d.name ?? d.job, d.error, ...(partial ?? [])].filter(Boolean);
   return parts.length ? parts.join(" — ") : null;
 }
 

@@ -12,9 +12,10 @@
 //   （`Login` 成功时）与登出（`UserMenu`）清空整个缓存——会话过期后同一标签页登另一个账号
 //   是唯一会露馅的路，所以登录那一清不能省。deployment 由设置页的 mutation 自己失效。
 // - **事件流覆盖的**：documents、graph、review、pending、sources、mappings。当前库即时；
-//   可流只订**当前**库，切库回来、EventSource 断线重连期间都没人失效，所以不是 Infinity：
-//   30 秒内自愈，且 `setKb` 切库时按 `STREAM_KEYS` 主动失效目标库。
-// - **其余**：15 秒的全局默认。来回导航不重拉；别的会话或后台任务改了，15 秒内看见。
+//   可流只订**当前**库，所以不是 Infinity：超过 30 秒后再次挂载会重取，
+//   `setKb` 切库时按 `STREAM_KEYS` 主动失效目标库，断线后的 open 也补刷当前库。
+//   staleTime 只决定新鲜度，不会自动轮询或触发重取。
+// - **其余**：15 秒的全局默认。新鲜时来回导航不重拉；过期后再次挂载会重取。
 //   要更短的键（readiness 10 秒）在自己那处写，只有比这里短的才值得单独写。
 //
 // `setQueryDefaults` 按键前缀匹配：`["graph"]` 管到 `["graph", kbId, …]`。
@@ -22,7 +23,7 @@ import type { QueryClient } from "@tanstack/react-query";
 
 /** 其余键的默认新鲜期 */
 export const DEFAULT_STALE_MS = 15_000;
-/** 事件流覆盖的键：切库与断线的漏洞在这个窗口内自愈 */
+/** 事件流覆盖的键：超过这个窗口后再次挂载会重取，切库与重连另有主动失效 */
 export const STREAM_STALE_MS = 30_000;
 
 /** 事件流会失效的键头（见 `useKbEvents`）；切库时也按这张表失效目标库 */

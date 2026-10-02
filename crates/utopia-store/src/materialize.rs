@@ -419,7 +419,8 @@ async fn materialize_in_tx(
     // 3b. 见证跟着来源陈述走（0064 决定 3、5）：类型化的行自己没有出处。物化与算隐含行
     //     用的写入口在陈述没有见证时填的是此刻（那是给人写的事实用的缺省），这里改回陈述的。
     //     排在 3a 之后：规则算出的行也是这样写下的
-    sync_typed_attestation(&mut **tx, kb_id).await?;
+    //     见证动了的已有行和新写下的行一起，提交后对账：见证是时间线排序用的时刻
+    written.extend(sync_typed_attestation(&mut **tx, kb_id).await?);
     Ok((
         Outcome {
             retired,
@@ -440,11 +441,15 @@ async fn materialize_in_tx(
 ///
 /// 动的行：有陈述物化进来的，和规则算出来的（`implied`）。人写的行只被规则的结论并进来时
 /// 不动——它的见证是人写下它的那一刻，并进来时 `attest_earlier` 已经往早挪过
+///
+/// 回见证动了的那些行。见证是唯一性时间线给没起点的行排序用的时刻（`temporal::DATED_AT`），
+/// 所以调用方提交之后要拿这些行去对账（`temporal::reconcile_moved_facts`）——只对这些行
+/// 所在的时间线，不是整个库
 pub async fn sync_typed_attestation<'e>(
     ex: impl sqlx::Executor<'e, Database = sqlx::Postgres>,
     kb_id: Uuid,
-) -> AppResult<u64> {
-    let moved = sqlx::query(
+) -> AppResult<Vec<Uuid>> {
+    let moved = sqlx::query_scalar(
         "UPDATE facts t
             SET attested_from = src.at, attested_by = src.by
            FROM (SELECT u.fact_id,
@@ -465,12 +470,13 @@ pub async fn sync_typed_attestation<'e>(
             AND (t.implied
                  OR EXISTS (SELECT 1 FROM typed_fact_sources ts WHERE ts.fact_id = t.id))
             AND (t.attested_from IS DISTINCT FROM src.at
-                 OR t.attested_by IS DISTINCT FROM src.by)",
+                 OR t.attested_by IS DISTINCT FROM src.by)
+          RETURNING t.id",
     )
     .bind(kb_id)
-    .execute(ex)
+    .fetch_all(ex)
     .await?;
-    Ok(moved.rows_affected())
+    Ok(moved)
 }
 
 #[derive(sqlx::FromRow)]

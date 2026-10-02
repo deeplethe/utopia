@@ -5,7 +5,7 @@
 //! - 闭合走"作废 + 改写"而非原地改：旧断言 invalidated_at 记下"何时被修正"，
 //!   修正行闭合区间并以 supersedes 链回旧行——"以当时的认知回放当时"得以成立
 //! - 闭合点只用世界时间：后任的 valid_from；后任没有起点时，前任写成「结束了，不知哪天」，
-//!   锚在后任最早那份自带日期的证据上（0022 的形状，#681 §1）。文档日期从不写进日期列
+//!   锚在后任的事实见证上（0022 的形状，0064 的章节日期）。见证日期从不写进日期列
 //! - 拿不准（缺时间/同时开始/低置信）绝不硬闭合，进 fact_conflicts 由人裁决
 //!
 //! **一条时间线是一个整体。** 同一 (库, 持有者, 谓词, 唯一性方向) 的所有现存行按时间排成
@@ -29,20 +29,9 @@ use utopia_core::models::ConflictView;
 use utopia_core::AppResult;
 use uuid::Uuid;
 
-/// 证据文件**自带**的最早日期，按 `facts` 的别名 `f` 投影。只认正文（`content`）与来源
-/// （`source`）给的日期：上传时刻、文件修改时间不是文档自己的日期——拿它们排序，
-/// 每条没起点的旧行都会被读成「此刻还在」。删掉的文档不再作证。
-///
-/// 日期取证据**所在那一版**的（`document_versions.doc_time`，#900）：同一身份再推一份
-/// 新内容会把文档的 `doc_time` 换成新的，证据停在旧版上的行若还按文档当前的日期算，
-/// 就和新行「同时」开始，时间线关不上前一段。老版本没记日期的退回文档的日期
-const DATED_AT: &str = "(SELECT min(COALESCE(v.doc_time, d.doc_time)) FROM fact_evidence fe
-                         JOIN documents d ON d.id = fe.document_id
-                    LEFT JOIN document_versions v ON v.document_id = fe.document_id
-                                                 AND v.version = fe.doc_version
-                         WHERE fe.fact_id = f.id AND COALESCE(v.doc_time, d.doc_time) IS NOT NULL
-                           AND d.deleted_at IS NULL
-                           AND d.doc_time_source IN ('content', 'source'))";
+/// 事实自己的见证，与世界轴的下界同源（0064）。同一版文档的不同章节可以有不同日期；
+/// NULL 明确表示没有时间，不能退回文档日期。类型化行由来源陈述同步这份见证。
+const DATED_AT: &str = "f.attested_from";
 
 /// 这一行的出处里有看图描述出来的文字吗，按 `facts` 的别名 `f` 投影（0040 决定 4）。
 /// 类型化的行自己没有出处，它的出处是物化它的那些陈述的（0044 第 2 刀）
@@ -163,12 +152,12 @@ impl End {
 impl Row {
     /// 这一行的起点锚不到吗：有时间词、代码没能把它放到世界轴上（等级 C）。**没有等级
     /// 的行不算**——它的日期是直接给的（人写的、规则算的、这一列之前的每一行），不是
-    /// 从别处猜的。锚不到的行仍进得了时间线（它按文档的日期排），只是不许它改写历史
+    /// 从别处猜的。锚不到的行仍进得了时间线（它按见证日期排），只是不许它改写历史
     fn start_unanchored(&self) -> bool {
         self.valid_from_grade.as_deref() == Some("C")
     }
 
-    /// 排序用的时刻：起点。没有起点时，最早那份自带日期的证据——但只对还开着、或者由引擎
+    /// 排序用的时刻：起点。没有起点时，事实的见证——但只对还开着、或者由引擎
     /// 关上的行成立：它们的证据说那天还成立。原文说已经结束的行，证据的日期只说明「那天
     /// 之前结束了」，拿它排序会让一个早就结束的值去关上当下的值（#679 第三轮评审）
     fn key(&self) -> Option<DateTime<Utc>> {
@@ -202,7 +191,7 @@ impl Row {
         }
     }
     /// 前一段止于这一行开始时，终点写成什么：有起点就是那一刻；没有起点，是「结束了，
-    /// 不知哪天」，锚在这一行自带日期的证据上
+    /// 不知哪天」，锚在这一行的见证上
     fn end_before(&self) -> End {
         match self.valid_from {
             Some(start) => {
@@ -447,7 +436,7 @@ pub async fn reconcile_new_fact(
 /// 一条事实来到它的时间线上，记下重算裁不了的，交给人（调用方已持锁）：
 ///
 /// - 与别的值同一时刻开始、两边那一刻都还成立：谁接替谁说不清
-/// - 两边都还开着，有一边说不出时间（没起点、也没有自带日期的证据）：谁先谁后无从谈起。
+/// - 两边都还开着，有一边说不出时间（没起点、也没有见证）：谁先谁后无从谈起。
 ///   不论哪一边先到都是这一对冲突，不替人关上任何一边
 ///
 /// `settled`：同一批里已经来过的事实，不再与它们重复成对
@@ -494,9 +483,9 @@ struct Plan {
 
 /// 一条时间线上每一行该有的终点（纯函数，不碰库）：只含终点由引擎定的行。
 ///
-/// 能排进时间线的行（有起点，或有自带日期的证据）按时刻排好；终点是写明的行不动。其余
+/// 能排进时间线的行（有起点，或有见证）按时刻排好；终点是写明的行不动。其余
 /// 每一行——开着的、引擎关上的——止于它之后最近的、值不同的那一行开始时；后面没有这样
-/// 的行就开着。后任的起点锚不到（等级 C）时跳过它：它在轴上的位置是文档日期给的，不是
+/// 的行就开着。后任的起点锚不到（等级 C）时跳过它：它在轴上的位置是见证给的，不是
 /// 那句话给的（0045 第 3 刀）。后任是看图描述出来的时也跳过，那一对交给人（0040 决定 4）。
 ///
 /// 每一行的终点只取决于各行的时刻、值和起点的来历，改写终点不改这三样，所以一次算完
@@ -505,7 +494,12 @@ fn desired_ends(side: Uniqueness, rows: &[Row]) -> (HashMap<Uuid, End>, Vec<(Uui
     let mut keyed: Vec<&Row> = rows.iter().filter(|r| r.key().is_some()).collect();
     // 同一刻开始的几行，写着起点的排前面：后任取它，前任就止于一个日期而不是一个锚点
     keyed.sort_by_key(|r| (r.key(), r.valid_from.is_none(), r.id));
-    let mut ends = HashMap::new();
+    // 无时间的行不能保留旧引擎仅凭文档日期推出来的终点；人工写明的终点仍不重算。
+    let mut ends: HashMap<Uuid, End> = rows
+        .iter()
+        .filter(|row| row.recomputable() && row.key().is_none())
+        .map(|row| (row.id, End::Open))
+        .collect();
     let mut held = Vec::new();
     for (i, row) in keyed.iter().enumerate() {
         if !row.recomputable() {
@@ -992,13 +986,14 @@ async fn rewrite_end_tx(
     let corrected = Uuid::now_v7();
     sqlx::query(
         "INSERT INTO facts (id, kb_id, subject_id, predicate_id, object_id, object_value,
-                            valid_from, valid_from_precision,
+                            valid_from, valid_from_precision, valid_from_grade,
                             valid_to, valid_to_precision, confidence, supersedes,
-                            attested_from, attested_to, end_derived,
+                            attested_from, attested_by, attested_to, end_derived,
                             from_statement_id, implied, corrected_ends)
          SELECT $1, kb_id, subject_id, predicate_id, object_id, object_value,
-                valid_from, valid_from_precision, $3, $4, confidence, id,
-                attested_from, CASE WHEN $4::text = 'unknown' THEN COALESCE($5, now()) END, $6,
+                valid_from, valid_from_precision, valid_from_grade, $3, $4, confidence, id,
+                attested_from, attested_by,
+                CASE WHEN $4::text = 'unknown' THEN COALESCE($5, now()) END, $6,
                 from_statement_id, implied,
                 -- 终点在这里被重新写下（文档说了终点，或时间线推了一个），人改过的终点就不在了；
                 -- 起点那一半照旧

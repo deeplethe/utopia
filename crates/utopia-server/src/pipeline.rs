@@ -124,8 +124,9 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
         source_kind(state, doc.source_id).await?.as_deref() == Some("statements");
 
     // 2. 分块 + 入库
-    let (text, pieces) = match parsed {
+    let (text, pieces, warnings) = match parsed {
         Ok(parsed) => {
+            let warnings = parsed.warnings;
             // 解析出来的正文可能夹着 NUL（PDF 文本层常见），入库之前剥掉（#611）——与记忆
             // 那条路共用 `utopia_core::without_nul`（#665）。剥必须在算长度、分块之前：之后的
             // text_len、分块偏移、全文索引、嵌入读的都是这一份，彼此才对得上
@@ -144,7 +145,7 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
             } else {
                 utopia_ingest::chunk_with_budget(&text, state.chunk_tokens)
             };
-            (text, pieces)
+            (text, pieces, warnings)
         }
         // 没有文本层的扫描件、图片：工作区配了版面识别服务就交给它读（0040 第二刀），
         // 按页分段切块，每块记着页码和框。录音交给会标说话人的转写模型（第三刀），
@@ -175,7 +176,7 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
                 .into());
             }
             let pieces = reading.chunk(state.chunk_tokens);
-            (reading.text, pieces)
+            (reading.text, pieces, Vec::new())
         }
     };
     let text_len = text.chars().count() as i32;
@@ -194,6 +195,17 @@ async fn run(state: &AppState, document_id: Uuid) -> anyhow::Result<()> {
         return Ok(());
     };
     let chunk_count = chunk_pairs.len() as i32;
+    // Only the current version gets an alert: if this read was superseded, the warning is stale.
+    if !warnings.is_empty() {
+        crate::alerting::observe_document_truncated(
+            state,
+            doc.kb_id,
+            document_id,
+            &doc.filename,
+            &warnings,
+        )
+        .await;
+    }
 
     // 3. 全文索引（Tantivy）
     utopia_store::documents::set_status(&state.pool, document_id, "indexing").await?;

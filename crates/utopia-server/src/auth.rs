@@ -61,16 +61,27 @@ pub fn dummy_password_hash() -> &'static str {
 }
 
 pub fn issue_token(state: &AppState, user_id: Uuid) -> Result<String, AppError> {
+    issue_session(state, user_id).map(|(token, _)| token)
+}
+
+/// 签发会话并给出它的过期时刻：要把过期时间告诉调用方的地方用这个，
+/// 免得在别处再按 TTL 算一遍、和 JWT 里的 `exp` 对不上
+pub fn issue_session(
+    state: &AppState,
+    user_id: Uuid,
+) -> Result<(String, chrono::DateTime<Utc>), AppError> {
+    let expires_at = Utc::now() + chrono::Duration::days(TOKEN_TTL_DAYS);
     let claims = Claims {
         sub: user_id,
-        exp: (Utc::now() + chrono::Duration::days(TOKEN_TTL_DAYS)).timestamp(),
+        exp: expires_at.timestamp(),
     };
-    encode(
+    let token = encode(
         &Header::default(),
         &claims,
         &EncodingKey::from_secret(state.jwt_secret.as_bytes()),
     )
-    .map_err(|e| AppError::Other(anyhow::anyhow!("Token issuance failed: {e}")))
+    .map_err(|e| AppError::Other(anyhow::anyhow!("Token issuance failed: {e}")))?;
+    Ok((token, expires_at))
 }
 
 /// 外层是否在跑 TLS。反代都会带 `X-Forwarded-Proto`；没有这个头（本地直连、

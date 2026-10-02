@@ -40,7 +40,7 @@ pub struct RemoteFile {
 /// `PROPFIND` 回来的一条。
 #[derive(Debug, PartialEq)]
 struct Entry {
-    /// 服务端给的 href，已解码
+    /// XML references are decoded, but URL percent escapes remain intact.
     href: String,
     is_dir: bool,
     len: u64,
@@ -130,7 +130,7 @@ fn parse_multistatus(xml: &str) -> anyhow::Result<Vec<Entry>> {
                 if name == field && !text.trim().is_empty() {
                     if let Some(c) = cur.as_mut() {
                         match field.as_str() {
-                            "href" => c.href = percent_decode(text.trim()),
+                            "href" => c.href = text.trim().to_string(),
                             "getcontentlength" => c.len = text.trim().parse().unwrap_or(0),
                             "getlastmodified" => {
                                 // RFC 1123，`Wed, 02 Sep 2026 15:04:05 GMT`
@@ -170,7 +170,7 @@ fn local_name(raw: &str) -> String {
 /// href 里的百分号转义。
 ///
 /// 自己解而不是引 `percent-encoding`：这里只需要解码，而解码是十来行。
-/// 非法序列原样留下——href 是拿来拼 URL 的，猜错了不如不动。
+/// 非法序列原样留下，不猜；解码只用于既有文档身份与文件名。
 fn percent_decode(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
@@ -209,15 +209,16 @@ pub async fn fetch(
 
     let mut out = Vec::new();
     let mut truncated = false;
-    let mut queue = vec![(normalize(root), 0usize)];
+    let root = normalize(root);
+    let mut queue = vec![(root.clone(), root, 0usize)];
     let mut unreadable = 0usize;
 
-    while let Some((dir, depth)) = queue.pop() {
+    while let Some((dir, request_dir, depth)) = queue.pop() {
         if depth > MAX_DEPTH {
             tracing::warn!(%dir, "目录太深，不再往下");
             continue;
         }
-        let url = format!("{base}{dir}");
+        let url = format!("{base}{request_dir}");
         let mut req = http
             .request(reqwest::Method::from_bytes(b"PROPFIND").unwrap(), &url)
             .header("Depth", "1")
@@ -235,13 +236,16 @@ pub async fn fetch(
         let xml = resp.text().await.context("读取 PROPFIND 响应")?;
 
         for e in parse_multistatus(&xml)? {
-            let path = normalize(&strip_base(&e.href, &base));
+            // Send the original escaped path: decoding %23/%3F turns filename
+            // bytes into URL syntax, and %2523 would fetch a file named with '#'.
+            let path = document_path(&e.href, &base);
+            let request_path = normalize(&strip_base(&e.href, &base));
             // 服务端会把被查询的目录自己也列进来，跳过它否则会无限打转
             if path == dir {
                 continue;
             }
             if e.is_dir {
-                queue.push((path, depth + 1));
+                queue.push((path, request_path, depth + 1));
                 continue;
             }
             if e.len == 0 || e.len > MAX_FILE_BYTES {
@@ -253,7 +257,7 @@ pub async fn fetch(
             }
 
             // 一个文件取不回来不该带走整次同步——与对象存储那边同一个判断
-            let mut g = http.get(format!("{base}{path}"));
+            let mut g = http.get(format!("{base}{request_path}"));
             if let Some((u, p)) = auth {
                 g = g.basic_auth(u, Some(p));
             }
@@ -302,6 +306,27 @@ fn normalize(p: &str) -> String {
     } else {
         format!("/{t}")
     }
+}
+
+fn document_path(href: &str, base: &str) -> String {
+    let decoded = percent_decode(href);
+    if !decoded.starts_with(base) && (href.starts_with("http://") || href.starts_with("https://")) {
+        if let Ok(mut url) = reqwest::Url::parse(href) {
+            // Proxy-rewritten absolute hrefs historically produce URL-serialized
+            // keys. Keep that shape, but decode after parsing and re-encode each
+            // segment so '#'/'?' cannot truncate keys and literal '%' stays distinct.
+            if let Some(segments) = url
+                .path_segments()
+                .map(|parts| parts.map(percent_decode).collect::<Vec<_>>())
+            {
+                if let Ok(mut path) = url.path_segments_mut() {
+                    path.clear().extend(segments);
+                }
+                return normalize(url.path());
+            }
+        }
+    }
+    normalize(&strip_base(&decoded, base))
 }
 
 /// href 可能是绝对 URL 也可能只是路径——两种都合法，服务端各写各的。
@@ -420,6 +445,145 @@ mod tests {
         assert_eq!(files[0].filename, "A&B.txt");
         assert_eq!(files[0].bytes, b"hello");
         assert!(files[0].external_key.ends_with("/docs/A&B.txt"));
+    }
+
+    #[tokio::test]
+    async fn percent_encoded_filenames_use_the_original_request_path() {
+        use axum::{
+            http::{Method, StatusCode, Uri},
+            Router,
+        };
+
+        const FILES: &[(&str, &str, &str)] = &[
+            ("/docs/ordinary.txt", "ordinary.txt", "ordinary.txt"),
+            ("/docs/%61lpha.txt", "alpha.txt", "alpha.txt"),
+            ("/docs/plan%23a.txt", "plan#a.txt", "plan%23a.txt"),
+            ("/docs/plan%23b.txt", "plan#b.txt", "plan%23b.txt"),
+            ("/docs/what%3Fa.txt", "what?a.txt", "what%3Fa.txt"),
+            ("/docs/what%3Fb.txt", "what?b.txt", "what%3Fb.txt"),
+            ("/docs/literal%23.txt", "literal#.txt", "literal%23.txt"),
+            (
+                "/docs/literal%2523.txt",
+                "literal%23.txt",
+                "literal%2523.txt",
+            ),
+            (
+                "/docs/%E4%B8%AD%E6%96%87%20notes.txt",
+                "中文 notes.txt",
+                "%E4%B8%AD%E6%96%87%20notes.txt",
+            ),
+        ];
+        for href_kind in ["relative", "absolute", "proxy"] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let prefix = match href_kind {
+                "absolute" => base.as_str(),
+                "proxy" => "https://reverse-proxy.example",
+                _ => "",
+            };
+            let entries = FILES.iter().map(|(path, _, _)| format!(
+                "<response><href>{prefix}{path}</href><propstat><prop><getcontentlength>5</getcontentlength></prop></propstat></response>"
+            )).collect::<String>();
+            let xml = format!("<multistatus xmlns=\"DAV:\">{entries}</multistatus>");
+            let app = Router::new().fallback(move |method: Method, uri: Uri| {
+                let xml = xml.clone();
+                async move {
+                    let target = uri.path_and_query().unwrap().as_str();
+                    if method.as_str() == "PROPFIND" && target == "/docs" {
+                        (StatusCode::MULTI_STATUS, xml)
+                    } else if method == Method::GET
+                        && FILES.iter().any(|(path, _, _)| *path == target)
+                    {
+                        (StatusCode::OK, target.to_string())
+                    } else {
+                        (StatusCode::NOT_FOUND, String::new())
+                    }
+                }
+            });
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let result = fetch(&reqwest::Client::new(), &base, "/docs", None).await;
+            server.abort();
+            let (files, truncated) = result.unwrap();
+            assert!(!truncated);
+            assert_eq!(files.len(), FILES.len(), "href kind: {href_kind}");
+            let keys = files
+                .iter()
+                .map(|file| file.external_key.as_str())
+                .collect::<std::collections::HashSet<_>>();
+            assert_eq!(
+                keys.len(),
+                FILES.len(),
+                "distinct files must keep distinct identities: {href_kind}"
+            );
+            for (file, (request_path, decoded_name, proxy_name)) in files.iter().zip(FILES) {
+                let filename = if href_kind == "proxy" {
+                    proxy_name
+                } else {
+                    decoded_name
+                };
+                assert_eq!(file.bytes, request_path.as_bytes());
+                assert_eq!(&file.filename, filename);
+                assert_eq!(
+                    file.external_key,
+                    format!("webdav://127.0.0.1/docs/{filename}")
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn percent_encoded_directories_keep_their_request_path_when_traversed() {
+        use axum::{
+            http::{Method, StatusCode, Uri},
+            Router,
+        };
+        use std::sync::{Arc, Mutex};
+
+        const DIR: &str = "/docs/folder%23%3F%2520";
+        const FILE: &str = "/docs/folder%23%3F%2520/note%23one.txt";
+        let collection = format!(
+            "<response><href>{DIR}/</href><propstat><prop><resourcetype><collection/></resourcetype></prop></propstat></response>"
+        );
+        let root = format!("<multistatus xmlns=\"DAV:\">{collection}</multistatus>");
+        let nested = format!(
+            "<multistatus xmlns=\"DAV:\">{collection}<response><href>{FILE}</href><propstat><prop><getcontentlength>5</getcontentlength></prop></propstat></response></multistatus>"
+        );
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let seen = requests.clone();
+        let app = Router::new().fallback(move |method: Method, uri: Uri| {
+            let (root, nested, seen) = (root.clone(), nested.clone(), seen.clone());
+            async move {
+                seen.lock().unwrap().push(format!("{method} {uri}"));
+                match (method.as_str(), uri.path_and_query().unwrap().as_str()) {
+                    ("PROPFIND", "/docs") => (StatusCode::MULTI_STATUS, root),
+                    ("PROPFIND", DIR) => (StatusCode::MULTI_STATUS, nested),
+                    ("GET", FILE) => (StatusCode::OK, "hello".to_string()),
+                    _ => (StatusCode::NOT_FOUND, String::new()),
+                }
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let result = fetch(&reqwest::Client::new(), &base, "/docs", None).await;
+        server.abort();
+        let (files, truncated) = result.unwrap();
+        assert!(!truncated);
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].bytes, b"hello");
+        assert_eq!(files[0].filename, "note#one.txt");
+        assert_eq!(
+            files[0].external_key,
+            "webdav://127.0.0.1/docs/folder#?%20/note#one.txt"
+        );
+        assert_eq!(
+            *requests.lock().unwrap(),
+            [
+                "PROPFIND /docs".to_string(),
+                format!("PROPFIND {DIR}"),
+                format!("GET {FILE}"),
+            ]
+        );
     }
 
     /// **命名空间前缀是任意的。** 同一份响应换个前缀必须解出同样的东西，

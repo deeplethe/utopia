@@ -81,6 +81,11 @@ async fn seed(pool: &PgPool) -> anyhow::Result<Fixture> {
     })
 }
 
+/// 这里的断言都从同一刻被见证。没给起点的事实从见证那一刻读起（0064），而见证缺省是
+/// 插入的时刻、按秒读：两条前提和后来的断言一旦跨了秒，断言的区间就比派生的晚开始、
+/// 盖不住它，「断言优先」那一步就会偶尔多出一条派生。
+const ATTESTED: &str = "2026-01-01T00:00:00Z";
+
 /// 落一条断言事实，可带区间与精度。
 async fn assert_fact(
     pool: &PgPool,
@@ -94,8 +99,8 @@ async fn assert_fact(
         Some((from, prec)) => {
             sqlx::query(
                 "INSERT INTO facts (id, kb_id, subject_id, predicate_id, object_id,
-                                    valid_from, valid_from_precision)
-                 VALUES ($1, $2, $3, $4, $5, $6::timestamptz, $7)",
+                                    valid_from, valid_from_precision, attested_from)
+                 VALUES ($1, $2, $3, $4, $5, $6::timestamptz, $7, $8::timestamptz)",
             )
             .bind(id)
             .bind(f.kb)
@@ -104,19 +109,21 @@ async fn assert_fact(
             .bind(o)
             .bind(from)
             .bind(prec)
+            .bind(ATTESTED)
             .execute(pool)
             .await?;
         }
         None => {
             sqlx::query(
-                "INSERT INTO facts (id, kb_id, subject_id, predicate_id, object_id)
-                 VALUES ($1, $2, $3, $4, $5)",
+                "INSERT INTO facts (id, kb_id, subject_id, predicate_id, object_id, attested_from)
+                 VALUES ($1, $2, $3, $4, $5, $6::timestamptz)",
             )
             .bind(id)
             .bind(f.kb)
             .bind(s)
             .bind(f.part_of)
             .bind(o)
+            .bind(ATTESTED)
             .execute(pool)
             .await?;
         }
