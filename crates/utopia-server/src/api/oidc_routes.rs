@@ -379,7 +379,6 @@ struct Claims {
     #[serde(default)]
     nonce: Option<String>,
     iat: i64,
-    exp: i64,
     #[serde(default)]
     azp: Option<String>,
     aud: Value,
@@ -499,11 +498,13 @@ pub async fn exchange(
     }
     let claims = verify_exchange_token(&c, &body.id_token, &keys)?;
 
-    // 一次性：令牌的哈希落一行，活到令牌本身不再被接受为止；插不进去就是换过了
+    // 一次性：令牌的哈希落一行，活过令牌还能被接受的每一刻；插不进去就是换过了。
+    // 只按 `iat` 算：十分钟的新鲜度没有宽限，而 `exp` 的校验有 60 秒宽限——按 `exp` 记的话，
+    // 过期后的那一分钟里行已经扫掉、令牌却还验得过，能再换一次。多留的一分钟给应用和库的钟差
     sqlx::query("DELETE FROM oidc_exchanges WHERE expires_at < now()")
         .execute(&s.pool)
         .await?;
-    let until = claims.exp.min(claims.iat + EXCHANGE_MAX_AGE_SECS);
+    let until = claims.iat + EXCHANGE_MAX_AGE_SECS + 60;
     let spent = sqlx::query(
         "INSERT INTO oidc_exchanges (token_hash, expires_at) VALUES ($1, to_timestamp($2))
          ON CONFLICT DO NOTHING",

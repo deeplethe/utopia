@@ -74,14 +74,15 @@ async fn exchange_maps_only_linked_active_people_and_spends_each_token_once() ->
         let mut header = Header::new(Algorithm::RS256);
         header.kid = Some("fixture".into());
         // `jti` 只为让每次签出来的令牌不同；Utopia 不读它
-        let sign = |sub: &str| {
+        let sign_at = |sub: &str, issued_ago: i64, expires_in: i64| {
             let now = chrono::Utc::now().timestamp();
             encode(
                 &header,
-                &json!({"iss": issuer, "aud": "sibling-app", "sub": sub, "iat": now, "exp": now + 300, "jti": Uuid::now_v7()}),
+                &json!({"iss": issuer, "aud": "sibling-app", "sub": sub, "iat": now - issued_ago, "exp": now + expires_in, "jti": Uuid::now_v7()}),
                 &key,
             )
         };
+        let sign = |sub: &str| sign_at(sub, 0, 300);
         let exchange = |id_token: String| {
             let state = state.clone();
             async move {
@@ -121,6 +122,14 @@ async fn exchange_maps_only_linked_active_people_and_spends_each_token_once() ->
 
         let (status, body) = exchange(token).await?;
         anyhow::ensure!(body["code"] == "oidc_replayed", "replay: {status} {body}");
+
+        // 刚过 `exp` 的令牌还在校验的宽限里、验得过：换过一次的记录不能先于它失效，
+        // 否则这一分钟里它能再换一次
+        let late = sign_at(&subject, 100, -30)?;
+        let (status, body) = exchange(late.clone()).await?;
+        anyhow::ensure!(status == StatusCode::OK, "within leeway: {status} {body}");
+        let (status, body) = exchange(late).await?;
+        anyhow::ensure!(body["code"] == "oidc_replayed", "replay within leeway: {status} {body}");
 
         let (status, body) = exchange(sign("nobody-linked-this")?).await?;
         anyhow::ensure!(body["code"] == "oidc_unlinked", "unlinked: {status} {body}");
