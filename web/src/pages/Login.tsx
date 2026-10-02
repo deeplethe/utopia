@@ -26,6 +26,7 @@ import {
 } from "../ui";
 import { LoginScene } from "./LoginScene";
 import { usePageTitle } from "../useTitle";
+import { clearSessionState } from "../authSession";
 
 export function Login() {
   usePageTitle(S.app.name, S.login.signIn);
@@ -47,8 +48,9 @@ export function Login() {
     },
     onSuccess: () => {
       // 换人先清缓存：`me`、`workspaces` 这些一次会话内不过期（queryDefaults.ts），
-      // 会话过期后同一标签页登另一个账号，不清就看见上一个人的名字和库
-      queryClient.clear();
+      // 会话过期后同一标签页登另一个账号，不清就看见上一个人的名字和库；
+      // 聊天放在缓存外的草稿、上次会话和回答也一样（authSession.ts）
+      clearSessionState(queryClient);
       // 谢幕：卡片上浮淡出、巨构放大穿越，再进入图谱首页
       setLeaving(true);
       window.setTimeout(() => navigate({ to: "/" }), 650);
@@ -157,6 +159,8 @@ export function Login() {
               <Button variant="secondary" size="md" className="w-full"
                 disabled={leaving}
                 onClick={() => {
+                  // 整页跳转只丢内存：sessionStorage 里的草稿和上次会话跳回来还在
+                  clearSessionState(queryClient);
                   window.location.href = "/api/v1/auth/oidc/start";
                 }}
               >

@@ -76,13 +76,10 @@ import {
 import { NodCard } from "./PendingFacts";
 import { stepDetail, stepLabel } from "../steps";
 import { NextStep, nextStep, useReadiness } from "./NextStep";
+import { DRAFT_KEY, lastKey } from "../authSession";
 
 /* `Turn` 定义在 liveAnswer 里：进行中的那一次也是一串 Turn，
    而它必须活得比这个组件长（见那个文件顶上的说明） */
-
-/** 同标签页记忆：上次会话（按库）与未发送草稿——切页回来还原，新标签页从头开始 */
-const lastKey = (kbId: string) => `chat:last:${kbId}`;
-const DRAFT_KEY = "chat:draft";
 
 /** 还没有来源的那一轮共用这一个空数组：新建一个会让 context 每次渲染都变，
  *  正文里每个角标跟着重画 */
