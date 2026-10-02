@@ -2,7 +2,7 @@
 
 Records: [0014] (tokens and MCP scope), [0020] (the export and the read contract), [0026] (why on
 every decision), [0025] d1 (only people write precedent), [0005] d3 and d4 (visibility), [0013]
-(credentials), [0034] d5 and d6 (roles for actions), [0016] E.
+(credentials), [0034] d5 and d6 (roles for actions), [0016] E, [0066] (exchanging an ID token).
 
 ## What it does today
 
@@ -17,6 +17,13 @@ default, `last_used_at`, `revoked_at` as a trace); effective permission is the p
 intersected with the token's scope; every MCP call re-runs authentication, scope and role in SQL and
 writes an audit row `mcp.tool_called`; the tokens page shows the plaintext once beside a client
 snippet [0014]. `ingest_token` on a source is a different kind: plaintext, push-only [0014].
+
+**Another app can trade its user's fresh ID token for a session.** `POST /auth/oidc/exchange`
+accepts an ID token from the configured issuer whose audience is in
+`UTOPIA_OIDC_EXCHANGE_AUDIENCES` and that was issued in the last ten minutes, maps it only to an
+identity the person linked themselves, spends it once (`oidc_exchanges`) and audits
+`auth.oidc_exchange`; with no trusted audience the endpoint is a 404. Forced JWKS refreshes are at
+most one a minute per URL [0066].
 
 **The audit ledger.** `audit_events` records what people did, with an actor and an `actor_label`
 snapshot, kept forever, never a notification: entity retypes and renames with before and after,
@@ -49,6 +56,8 @@ removed or renamed only with a record [0020 revised].
 - **Base-level machine tokens were refused** because attribution would become synthetic and a third
   authorisation model fails towards giving too much [0014].
 - **Every call checks scope** because list filtering guards only what is visible [0014].
+- **The calling app has its own client id** rather than Utopia's secret, and each ID token is spent
+  once because the exchange has no `state` of its own [0066].
 - **The ledger records what people did; alerts record what the system did**, with different
   retention and readers [0005].
 - **Reification and standard terms** so the export opens in what the reader already runs, and
@@ -70,5 +79,6 @@ removed or renamed only with a record [0020 revised].
 ## Open questions
 
 - What evidence an external agent's fact carries and how its SQL runs are audited [0014].
+- Whether an exchanged session should be narrower and shorter than a login's [0066].
 - Whether 0014's status line still holds: it says `can_write` is hard-coded false, while #735
   exercises `remember` over MCP with a write token; check the code before relying on either.
