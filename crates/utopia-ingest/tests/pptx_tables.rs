@@ -64,6 +64,85 @@ fn table(first_row: bool, rows: &[String]) -> String {
     .replace("<rows/>", &rows.concat())
 }
 
+fn single_column_text_table(first_row: bool) -> String {
+    let first_row = if first_row { r#" firstRow="1""# } else { "" };
+    let rows = ["Action", "Approve contract", "Renew license"]
+        .iter()
+        .map(|text| format!(r#"<a:tr h="370840">{}</a:tr>"#, cell(text)))
+        .collect::<String>();
+    format!(
+        r#"<p:graphicFrame>
+<p:nvGraphicFramePr><p:cNvPr id="3" name="Actions"/><p:cNvGraphicFramePr/><p:nvPr/></p:nvGraphicFramePr>
+<p:xfrm><a:off x="914400" y="914400"/><a:ext cx="3657600" cy="1112520"/></p:xfrm>
+<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/table">
+<a:tbl><a:tblPr{first_row}/><a:tblGrid><a:gridCol w="3657600"/></a:tblGrid>{rows}</a:tbl>
+</a:graphicData></a:graphic></p:graphicFrame>"#
+    )
+}
+
+#[test]
+fn a_single_column_text_table_keeps_every_cell_beside_a_slide_title() {
+    let title = r#"<p:sp>
+<p:nvSpPr><p:cNvPr id="2" name="Title"/><p:cNvSpPr/><p:nvPr><p:ph type="title"/></p:nvPr></p:nvSpPr>
+<p:spPr/><p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>Agenda</a:t></a:r></a:p></p:txBody>
+</p:sp>"#;
+    for first_row in [false, true] {
+        let body = format!("{title}{}", single_column_text_table(first_row));
+        let parsed = utopia_ingest::parse("deck.pptx", &deck(&body)).unwrap();
+        assert!(parsed.text.contains("Agenda"), "{}", parsed.text);
+        for cell in ["Action", "Approve contract", "Renew license"] {
+            assert!(
+                parsed.text.contains(cell),
+                "missing {cell:?} (firstRow={first_row}): text={:?}, warnings={:?}",
+                parsed.text,
+                parsed.warnings
+            );
+        }
+    }
+}
+
+#[test]
+fn a_slide_with_only_a_single_column_text_table_keeps_every_cell() {
+    for first_row in [false, true] {
+        let parsed = utopia_ingest::parse("deck.pptx", &deck(&single_column_text_table(first_row)))
+            .expect("a valid slide with text cells must be readable");
+        for cell in ["Action", "Approve contract", "Renew license"] {
+            assert!(
+                parsed.text.contains(cell),
+                "missing {cell:?}: {}",
+                parsed.text
+            );
+        }
+    }
+}
+
+/// Two columns where only one cell in each row has words, and a notice in one cell
+/// that spans the row: neither is a table with headers and data, and both keep their words.
+#[test]
+fn a_slide_table_that_is_not_a_grid_of_data_keeps_its_words() {
+    for first_row in [false, true] {
+        let text = parse_slide(&table(
+            first_row,
+            &[
+                row(&[cell("Action"), empty_cell("")]),
+                row(&[cell("Approve contract"), empty_cell("")]),
+                row(&[empty_cell(""), cell("Renew license")]),
+            ],
+        ));
+        for words in ["Action", "Approve contract", "Renew license"] {
+            assert!(text.contains(words), "missing {words:?}: {text}");
+        }
+        let text = parse_slide(&table(
+            first_row,
+            &[row(&[
+                cell_with_props("Notice for the board", r#"gridSpan="2""#),
+                empty_cell(r#"hMerge="1""#),
+            ])],
+        ));
+        assert!(text.contains("Notice for the board"), "{text}");
+    }
+}
+
 #[test]
 fn a_three_by_four_slide_table_keeps_its_header_and_rows() {
     let text = parse_slide(&table(

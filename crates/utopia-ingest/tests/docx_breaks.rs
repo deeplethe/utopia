@@ -142,3 +142,27 @@ fn a_non_breaking_hyphen_keeps_the_numbers_on_either_side_apart() {
     )));
     assert!(text.contains("| Sample | 2024-01-15 |"), "{text}");
 }
+
+/// A table with one column of words, or with words in only one cell of each row, is not a
+/// table with headers and data. Its words are still read, one row to a paragraph.
+#[test]
+fn a_word_table_that_is_not_a_grid_of_data_keeps_its_words() {
+    let cell = |text: &str| format!("<w:tc><w:p><w:r><w:t>{text}</w:t></w:r></w:p></w:tc>");
+    let one_column: String = ["Action", "Approve contract", "Renew license"]
+        .iter()
+        .map(|text| format!("<w:tr>{}</w:tr>", cell(text)))
+        .collect();
+    let text = read(&format!(
+        "<w:p><w:r><w:t>Before.</w:t></w:r></w:p><w:tbl>{one_column}</w:tbl><w:p><w:r><w:t>After.</w:t></w:r></w:p>"
+    ));
+    assert_eq!(
+        text.trim(),
+        "Before.\n\nAction\n\nApprove contract\n\nRenew license\n\nAfter."
+    );
+    let left_only: String = ["Action", "Approve contract"]
+        .iter()
+        .map(|text| format!("<w:tr>{}{}</w:tr>", cell(text), cell("")))
+        .collect();
+    let text = read(&format!("<w:tbl>{left_only}</w:tbl>"));
+    assert_eq!(text.trim(), "Action\n\nApprove contract");
+}

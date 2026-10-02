@@ -57,10 +57,12 @@ does what it already did: the caption and the header travel with every piece, an
 five short paragraphs before a table is its caption, so a statement's chunk names the report, the
 unit and the period. Nested tables and the tables of other parsers still take the converter's
 path with the first row promoted to header. Measured on the NVDA earnings release: 52 chunks
-became 32, none of them a table without its header. DOCX tables, spreadsheets and CSV files are laid on the same grid by their parsers (#750): a DOCX
-cell keeps its column span and the indent of its first paragraph, a sheet's or a CSV file's first
+became 32, none of them a table without its header. DOCX tables and spreadsheets are laid on the same grid by their parsers (#750): a DOCX
+cell keeps its column span and the indent of its first paragraph, a sheet's first
 row with two or more cells is its header even when the headings are years, and a table with no
-figure in it is read as a header row followed by records; a sheet's date cell is written as the
+figure in it is read as a header row followed by records; a CSV or TSV file is read as records
+instead: its first record is the header, every field keeps its own column, and an empty field is
+a missing value, not a section or a label (#1035); a sheet's date cell is written as the
 date it shows (ISO, with its time of day, or an elapsed time as hours:minutes:seconds), not as
 Excel's day count; the text layer of a PDF carries no table structure.
 
