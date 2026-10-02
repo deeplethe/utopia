@@ -2,33 +2,19 @@
 //
 // 服务端推的那条不带任何数据也不判权限（见 alerts_routes::stream）：收到就重取，
 // 谁能看见什么由列表查询说了算。所以这里也不需要知道当前是哪个库。
+//
+// 打开着一个库的页不用这条：库事件流顺带送告警（`useKbEvents`），一页只占一条连接
+// （#1028）。`active` 为假时什么都不订。
 import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { subscribeEvents } from "./eventStream";
 
-export function useAlertEvents() {
+export function useAlertEvents(active = true) {
   const queryClient = useQueryClient();
   useEffect(() => {
-    const es = new EventSource("/api/v1/alerts/events");
-    let disconnected = false;
-    let disposed = false;
-    const refresh = () => {
-      if (!disposed) queryClient.invalidateQueries({ queryKey: ["alerts"] });
-    };
-    const listeners: Record<string, () => void> = {
-      alert: refresh,
-      error: () => { if (!disposed) disconnected = true; },
-      open: () => {
-        if (disposed || !disconnected) return;
-        disconnected = false;
-        // 断线期间的告警不会回放：恢复时同时补刷角标与列表。
-        refresh();
-      },
-    };
-    for (const [type, listener] of Object.entries(listeners)) es.addEventListener(type, listener);
-    return () => {
-      disposed = true;
-      for (const [type, listener] of Object.entries(listeners)) es.removeEventListener(type, listener);
-      es.close();
-    };
-  }, [queryClient]);
+    if (!active) return;
+    // 断线期间的告警不会回放：恢复时同时补刷角标与列表。
+    const refresh = () => queryClient.invalidateQueries({ queryKey: ["alerts"] });
+    return subscribeEvents("/api/v1/alerts/events", { alert: refresh }, refresh);
+  }, [active, queryClient]);
 }

@@ -1,5 +1,6 @@
 // KB 事件流订阅：收到事件只做 react-query 失效重取（事件不带业务数据，天然幂等）。
 // EventSource 断线自动重连，重连成功后补刷漏掉的变化；替代 Library/Review 的轮询。
+// 告警也从这条流来：一页只占一条通知用的连接（见 `eventStream`）。
 //
 // **失效是合并着做的。** 一篇文档抽取时每落一条事实就发一个 graph 事件，
 // 从前每个事件各失效一次，图谱页在那几秒里把 overview 重取了十几遍——
@@ -11,6 +12,7 @@
 // 这一层把当前库的变化即时推到页面上。
 import { useEffect } from "react";
 import { partialMatchKey, useQueryClient, type QueryKey } from "@tanstack/react-query";
+import { subscribeEvents } from "./eventStream";
 import { STREAM_KEYS } from "./queryDefaults";
 
 /** 一阵事件之间的静默期。抽取落事实的间隔远小于它，人眼看不出这点延迟 */
@@ -58,35 +60,28 @@ export function useKbEvents(kbId: string | undefined) {
       SETTLE_MS,
     );
 
-    const es = new EventSource(`/api/v1/kbs/${kbId}/events`);
-    let disconnected = false;
-    let disposed = false;
-    const pushIfActive = (...keys: QueryKey[]) => {
-      if (!disposed) push(...keys);
-    };
-    const listeners: Record<string, () => void> = {
-      error: () => { if (!disposed) disconnected = true; },
-      open: () => {
-        if (disposed || !disconnected) return;
-        disconnected = false;
+    const unsubscribe = subscribeEvents(
+      `/api/v1/kbs/${kbId}/events`,
+      {
+        document: () => push(["documents", kbId], ["graph"]),
+        graph: () => push(["graph"]),
+        // 映射探索跑完发的也是 review：Pending 那一栏得跟着刷新
+        review: () => push(["review", kbId], ["mappings", kbId]),
+        // 一句记忆抽出了等人点头的事实（0015）：对话里那张确认卡跟着长出来
+        pending: () => push(["pending", kbId], ["review", kbId]),
+        source: () => push(["sources", kbId], ["documents", kbId]),
+        // 告警搭这条流过来（#1028）：打开着一个库的页不再另开告警流
+        alert: () => push(["alerts"]),
+      },
+      () => {
         // 事件没有回放，staleTime 到期也不会自己发请求。断线后恢复必须补刷；
         // 首次正常连接交给页面已有的读取，首次连接失败再恢复则同样可能漏事件。
-        push(...STREAM_KEYS.map((head) => [head, kbId]));
+        push(...STREAM_KEYS.map((head) => [head, kbId]), ["alerts"]);
         flush();
       },
-      document: () => pushIfActive(["documents", kbId], ["graph"]),
-      graph: () => pushIfActive(["graph"]),
-      // 映射探索跑完发的也是 review：Pending 那一栏得跟着刷新
-      review: () => pushIfActive(["review", kbId], ["mappings", kbId]),
-      // 一句记忆抽出了等人点头的事实（0015）：对话里那张确认卡跟着长出来
-      pending: () => pushIfActive(["pending", kbId], ["review", kbId]),
-      source: () => pushIfActive(["sources", kbId], ["documents", kbId]),
-    };
-    for (const [type, listener] of Object.entries(listeners)) es.addEventListener(type, listener);
+    );
     return () => {
-      disposed = true;
-      for (const [type, listener] of Object.entries(listeners)) es.removeEventListener(type, listener);
-      es.close();
+      unsubscribe();
       // 卸载时把攒着的刷掉而不是丢掉：换页回来看到的必须是新数据
       flush();
     };

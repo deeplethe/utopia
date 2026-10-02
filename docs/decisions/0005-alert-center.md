@@ -61,6 +61,14 @@ channel: something in this document did not land. None of it goes to Review.
    broadcast (kind `alert`) and only tells clients to refetch; the list query decides
    visibility once. Someone without permission is woken for nothing, and the push path
    holds no permission logic.
+
+   > **Revised 2026-10-03 (#1028).** The per-KB stream now carries the `alert` event too,
+   > under the same rule: no data, no permission check. A page with a base open subscribes
+   > only to that stream, and `/alerts/events` is for a page with no base. A browser gives
+   > one origin six HTTP/1.1 connections, and a stream holds one for as long as it is open:
+   > with two notification streams and a generating answer per page, two tabs used all six
+   > and a Stop request could not be sent. A page hidden for 30 seconds also gives its
+   > notification stream up and refreshes when it is shown again.
 7. **Classification is a pure function on error types.** `alert_for` decides the kind from
    the error's type, never its text, and has unit tests; job failures reach it through
    `observe_job_failure` only once retries are exhausted. `llm.unreachable` means "no

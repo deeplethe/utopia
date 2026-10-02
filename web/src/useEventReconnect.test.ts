@@ -3,6 +3,7 @@ import { QueryClient, QueryObserver, type QueryKey } from "@tanstack/react-query
 import { DEFAULT_STALE_MS, STREAM_KEYS, STREAM_STALE_MS, applyQueryDefaults } from "./queryDefaults";
 import { SETTLE_MS, useKbEvents } from "./useKbEvents";
 import { useAlertEvents } from "./useAlertEvents";
+import { HIDDEN_RELEASE_MS } from "./eventStream";
 
 // 在 Node 环境执行 hook 的 effect，浏览器边界用可控事件源；查询与观察者仍用真实实现。
 const hooks = vi.hoisted(() => ({
@@ -44,6 +45,26 @@ class FakeEventSource {
   close() {
     this.closed = true;
   }
+}
+
+/** 只有可见性的假页面：node 环境里没有 `document` */
+function fakePage(visible = true) {
+  const page = {
+    visibilityState: visible ? "visible" : "hidden",
+    listeners: new Set<() => void>(),
+    addEventListener(_type: string, listener: () => void) {
+      page.listeners.add(listener);
+    },
+    removeEventListener(_type: string, listener: () => void) {
+      page.listeners.delete(listener);
+    },
+    show(shown: boolean) {
+      page.visibilityState = shown ? "visible" : "hidden";
+      for (const listener of [...page.listeners]) listener();
+    },
+  };
+  vi.stubGlobal("document", page);
+  return page;
 }
 
 const cleanups: Array<() => void> = [];
@@ -267,3 +288,78 @@ describe("alert stream reconnect", () => {
     expect(query.fetch).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("one notification stream per page (#1028)", () => {
+  it("carries alerts on the KB stream, and refreshes them when it recovers", async () => {
+    const client = createClient();
+    const badge = await watch(client, ["alerts", "unread"]);
+    const { source } = mount(() => useKbEvents("kb-a"));
+    source.emit("open");
+    source.emit("alert");
+    await vi.advanceTimersByTimeAsync(SETTLE_MS);
+    expect(badge.fetch).toHaveBeenCalledTimes(2);
+    source.emit("error");
+    source.emit("open");
+    expect(badge.fetch).toHaveBeenCalledTimes(3);
+  });
+
+  it("opens no alert stream while a KB stream is open", () => {
+    createClient();
+    mount(() => useKbEvents("kb-a"));
+    mount(() => useAlertEvents(false));
+    expect(FakeEventSource.instances.map((source) => source.url)).toEqual(["/api/v1/kbs/kb-a/events"]);
+  });
+
+  it("gives up the connection after the page has been hidden a while, and catches up on return", async () => {
+    const page = fakePage();
+    const client = createClient();
+    const documents = await watch(client, ["documents", "kb-a"]);
+    const { source } = mount(() => useKbEvents("kb-a"));
+    source.emit("open");
+
+    page.show(false);
+    await vi.advanceTimersByTimeAsync(HIDDEN_RELEASE_MS - 1);
+    expect(source.closed).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(source.closed).toBe(true);
+    expect([...source.listeners.values()].every((listeners) => listeners.size === 0)).toBe(true);
+
+    documents.changeServer();
+    page.show(true);
+    const reopened = FakeEventSource.instances.at(-1)!;
+    expect(reopened).not.toBe(source);
+    expect(documents.fetch).toHaveBeenCalledTimes(1);
+    reopened.emit("open");
+    expect(documents.fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the connection through a short absence, and removes its page listener on cleanup", async () => {
+    const page = fakePage();
+    const client = createClient();
+    const documents = await watch(client, ["documents", "kb-a"]);
+    const { source, unmount } = mount(() => useKbEvents("kb-a"));
+    source.emit("open");
+    page.show(false);
+    await vi.advanceTimersByTimeAsync(HIDDEN_RELEASE_MS - 1);
+    page.show(true);
+    await vi.advanceTimersByTimeAsync(HIDDEN_RELEASE_MS);
+    expect(source.closed).toBe(false);
+    expect(FakeEventSource.instances).toHaveLength(1);
+    expect(documents.fetch).toHaveBeenCalledTimes(1);
+
+    page.show(false);
+    unmount();
+    expect(page.listeners.size).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("waits for a page opened in the background to be shown before connecting", () => {
+    const page = fakePage(false);
+    createClient();
+    mount(() => useAlertEvents());
+    expect(FakeEventSource.instances).toHaveLength(0);
+    page.show(true);
+    expect(FakeEventSource.instances).toHaveLength(1);
+  });
+});
+
