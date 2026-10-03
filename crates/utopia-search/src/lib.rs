@@ -180,7 +180,12 @@ pub fn rrf_fuse(lists: &[Vec<String>], limit: usize) -> Vec<String> {
         }
     }
     let mut ranked: Vec<(String, f64)> = scores.into_iter().collect();
-    ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    // 同分按 id 定序，否则 HashMap 的随机顺序会改变上限内保留的证据和口径。
+    ranked.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.0.cmp(&b.0))
+    });
     ranked.into_iter().take(limit).map(|(id, _)| id).collect()
 }
 
@@ -219,5 +224,33 @@ mod rrf_tests {
     fn the_limit_cuts_after_fusion() {
         let lists = vec![ids(&["a", "b"]), ids(&["b", "c"])];
         assert_eq!(rrf_fuse(&lists, 1), ids(&["b"]));
+    }
+
+    #[test]
+    fn equal_scores_keep_the_same_candidates_at_every_limit() {
+        let mut lists = vec![ids(&["z", "b"]), ids(&["y", "a"])];
+        let expected = ids(&["y", "z", "a", "b"]);
+        // Each call builds a newly seeded HashMap. Both channel heads must
+        // precede their runners-up, and a cutoff through either tie is stable.
+        for _ in 0..32 {
+            for limit in 0..=expected.len() + 1 {
+                assert_eq!(
+                    rrf_fuse(&lists, limit),
+                    expected[..limit.min(expected.len())]
+                );
+            }
+            lists.reverse();
+        }
+    }
+
+    #[test]
+    fn equal_scores_from_opposite_ranks_are_ordered_by_id() {
+        let lists = vec![ids(&["c", "a", "b"]), ids(&["b", "a", "c"])];
+        // b and c each score 1/61 + 1/63, above a's 2/62. Equal totals
+        // must not acquire a preference for whichever channel came first.
+        for _ in 0..32 {
+            assert_eq!(rrf_fuse(&lists, 3), ids(&["b", "c", "a"]));
+            assert_eq!(rrf_fuse(&lists, 1), ids(&["b"]));
+        }
     }
 }

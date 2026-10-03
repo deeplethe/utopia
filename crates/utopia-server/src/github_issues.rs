@@ -9,25 +9,26 @@
 //! 与我们给维基百科历史快照做的是同一个判断：**别取现在，取变化**。区别是
 //! GitHub 直接把变化给了你，不用像维基那样从修订列表里采样。
 //!
-//! ## 评论走仓库级，事件走逐个——这不是不一致，是两个端点能力不同
+//! ## 工单列表增量筛选，评论与事件逐工单读取
 //!
 //! 第一版想让三样都走仓库级端点、一次分页取全，避免 200 张工单 401 次请求
 //! （未认证时 GitHub 每小时只给 60 次）。**拿真实数据一跑就发现事件那一路是错的**：
 //!
-//! - `issues/comments` 支持 `since`，增量窗口内的评论一次取全。**好用**。
+//! - `issues/comments` 支持 `since`，但只给改动过的评论。文档是整篇替换，
+//!   因而只改标题也会把所有旧评论从当前文档删掉；新增评论则只留下新增的部分。
 //! - `issues/events` **不支持 `since`**，只能从最新往回翻。而 GitHub 的模型里
 //!   PR 也产生 issue 事件——实测本仓库工单事件埋在第 5 页，换一个 PR 活跃的仓库
 //!   就会被推到翻页上限之外。**于是"状态变更史"悄悄变成空的，而它正是这个来源
 //!   存在的理由。**
 //!
-//! 所以事件改成逐工单取 `GET /repos/{repo}/issues/{n}/events`。N+1 的代价是真的，
-//! 但 N 只是**本轮要写入的工单数**：首次同步等于工单总数，之后有 `since` 兜着，
-//! 通常是个位数。用一次准确换一次省事，这里该换。
+//! 所以评论与事件都逐工单取，不带 `since`。只对筛选后本轮要写入的工单请求，
+//! 避免全仓库的无关评论消耗分页预算。请求数增加的代价是真的，但 N 只是
+//! **本轮要写入的工单数**：之后有工单列表的 `since` 兜着，通常是个位数。
 //!
 //! 三次拉取因此是：
 //!
 //! - `GET /repos/{repo}/issues?state=all&since=` —— 工单本体（分页）
-//! - `GET /repos/{repo}/issues/comments?since=`  —— 全仓库评论（分页），按号归拢
+//! - `GET /repos/{repo}/issues/{n}/comments`    —— 每张工单的评论（分页）
 //! - `GET /repos/{repo}/issues/{n}/events`       —— 每张工单一次
 //!
 //! ## 关于 PR
@@ -39,10 +40,9 @@
 use crate::time_text;
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
-use std::collections::HashMap;
 
 /// 一次同步最多取多少页（每页 100）。GitHub 的分页没有天然终点，
-/// 一个活跃仓库能翻很久；这里封顶，超出的等下一次 `since` 增量取。
+/// 一个活跃仓库能翻很久；这里沿用单端点的分页预算。
 const MAX_PAGES: u32 = 10;
 const PER_PAGE: u32 = 100;
 
@@ -192,28 +192,14 @@ pub fn render(issue: &Issue, comments: &[&Comment], events: &[&Event]) -> String
     out
 }
 
-/// 把全仓库的评论按工单号归拢，各自按时间升序。
-///
-/// 评论是**全仓库**取回来的，里面混着不在本次工单集合里的（增量窗口不同步）。
-/// 归不到工单上的直接丢——它们下次会跟着自己的工单一起回来。
-pub fn group_comments<'a>(
-    issues: &'a [Issue],
-    comments: &'a [Comment],
-) -> Vec<(&'a Issue, Vec<&'a Comment>)> {
-    let mut by_issue: HashMap<i64, Vec<&Comment>> = HashMap::new();
-    for c in comments {
-        if let Some(n) = issue_number_from_url(&c.issue_url) {
-            by_issue.entry(n).or_default().push(c);
-        }
-    }
-    issues
+/// 只保留这张工单的评论，按时间升序；响应里归不到它的评论不能混进正文。
+pub fn comments_for_issue<'a>(issue: &Issue, comments: &'a [Comment]) -> Vec<&'a Comment> {
+    let mut comments: Vec<_> = comments
         .iter()
-        .map(|issue| {
-            let mut cs = by_issue.remove(&issue.number).unwrap_or_default();
-            cs.sort_by_key(|c| c.created_at);
-            (issue, cs)
-        })
-        .collect()
+        .filter(|comment| issue_number_from_url(&comment.issue_url) == Some(issue.number))
+        .collect();
+    comments.sort_by_key(|comment| comment.created_at);
+    comments
 }
 
 /// 事件按时间升序。逐工单端点返回的**看起来**是升序，但顺序不是契约，
@@ -358,11 +344,11 @@ mod tests {
         assert_eq!(at, i.created_at);
     }
 
-    /// 评论是**全仓库**取的，归拢必须按工单号，且按时间升序。
+    /// 评论仍按工单号验证，且按时间升序。
     /// 归错了的后果很隐蔽：另一张工单的讨论出现在这张的正文里。
     #[test]
-    fn repo_wide_comments_land_on_the_right_issue() {
-        let issues = vec![
+    fn comments_belong_to_the_issue_and_are_chronological() {
+        let issues = [
             issue(serde_json::json!({
                 "number": 1, "title": "one", "state": "open", "body": null,
                 "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-02T00:00:00Z",
@@ -381,19 +367,16 @@ mod tests {
              "user": {"login": "y"}, "created_at": "2026-01-03T00:00:00Z", "body": "第一条"},
             // 不在本次工单集合里：该被丢掉，而不是挂到别人身上
             {"issue_url": "https://api.github.com/repos/a/b/issues/99",
-             "user": {"login": "z"}, "created_at": "2026-01-04T00:00:00Z", "body": "别人的"}
+             "user": {"login": "z"}, "created_at": "2026-01-04T00:00:00Z", "body": "别人的"},
+            {"issue_url": "nonsense",
+             "user": null, "created_at": "2026-01-02T00:00:00Z", "body": "无法归属"}
         ]))
         .unwrap();
-        let grouped = group_comments(&issues, &comments);
-        assert_eq!(grouped.len(), 2);
-
-        let (one, one_comments) = &grouped[0];
-        assert_eq!(one.number, 1);
+        let one_comments = comments_for_issue(&issues[0], &comments);
         assert!(one_comments.is_empty(), "1 号没有评论");
 
-        let (two, two_comments) = &grouped[1];
-        assert_eq!(two.number, 2);
-        assert_eq!(two_comments.len(), 2, "99 号那条不该混进来");
+        let two_comments = comments_for_issue(&issues[1], &comments);
+        assert_eq!(two_comments.len(), 2, "其他工单和无法归属的评论不该混进来");
         // 升序：先"第一条"（01-03）后"第二条"（01-05）
         assert_eq!(two_comments[0].body.as_deref(), Some("第一条"));
     }
@@ -459,11 +442,9 @@ mod tests {
             "夹具应当只含真工单"
         );
 
-        let grouped = group_comments(&f.issues, &f.comments);
-        assert_eq!(grouped.len(), f.issues.len());
-
         // 每张工单都排得出一篇非空文档，且抬头那句带真实日期
-        for (issue, cs) in &grouped {
+        for issue in &f.issues {
+            let cs = comments_for_issue(issue, &f.comments);
             let events = sort_events(
                 f.events_by_issue
                     .get(&issue.number.to_string())
@@ -471,7 +452,7 @@ mod tests {
                     .unwrap_or_default(),
             );
             let es: Vec<&Event> = events.iter().collect();
-            let doc = render(issue, cs, &es);
+            let doc = render(issue, &cs, &es);
             assert!(
                 doc.contains(&format!("# #{} ", issue.number)),
                 "#{} 的抬头不对：{doc}",
@@ -486,7 +467,8 @@ mod tests {
 
         // 这份夹具里每张工单都被关掉过，所以历史一节必须出现——
         // 它是这个来源存在的理由，空了就等于退回"抓一个网页"
-        let (first, cs) = &grouped[0];
+        let first = &f.issues[0];
+        let cs = comments_for_issue(first, &f.comments);
         let events = sort_events(
             f.events_by_issue
                 .get(&first.number.to_string())
@@ -495,7 +477,7 @@ mod tests {
         );
         assert!(!events.is_empty(), "夹具里 #{} 没有事件", first.number);
         let es: Vec<&Event> = events.iter().collect();
-        let doc = render(first, cs, &es);
+        let doc = render(first, &cs, &es);
         assert!(doc.contains("## History"), "历史一节缺失：{doc}");
         assert!(doc.contains("— closed by"), "关闭事件没写进历史：{doc}");
     }

@@ -1,0 +1,31 @@
+name: Feature request / 功能建议
+description: Something you need Utopia to do. 希望 Utopia 能做到的事。
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        English or 中文, either is fine.
+
+        Start from what you are trying to get done; the use case decides the design more than the feature does.
+        A change to the data model, the ontology contract or a public API is discussed here first and then written down as an [ADR](https://github.com/deeplethe/utopia/tree/main/docs/decisions) before any code.
+  - type: textarea
+    id: use-case
+    attributes:
+      label: What you are trying to do / 想做成什么事
+      description: >-
+        The situation, the documents or data involved, and where Utopia stops short today.
+        场景、涉及的文档或数据，以及现在卡在哪里。
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would help / 希望怎样
+      description: >-
+        If you have a shape in mind. For an ontology pack: its name, where it is published and its
+        license. 如果已有想法；本体包请写明名称、发布地址与许可。
+  - type: textarea
+    id: tried
+    attributes:
+      label: What you do today instead / 目前的替代做法

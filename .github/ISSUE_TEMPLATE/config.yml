@@ -1,0 +1,9 @@
+# Maintainers file issues without a form, so blank issues stay on.
+blank_issues_enabled: true
+contact_links:
+  - name: Question or help with usage / 使用上的疑问
+    url: https://github.com/deeplethe/utopia/discussions/categories/q-a
+    about: Ask in Discussions. If it turns out to be a bug, we will open the issue.
+  - name: Security problem / 安全问题
+    url: https://github.com/deeplethe/utopia/blob/main/SECURITY.md#reporting-a-vulnerability
+    about: Report it by email, not in a public issue.
