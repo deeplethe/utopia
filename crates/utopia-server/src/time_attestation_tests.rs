@@ -201,6 +201,68 @@ async fn section_dates_reconcile_values_materialized_before_attestation() -> any
     run
 }
 
+/// 每条证据记下它那一节的日期和名字，没说日期的那一节记成空；文档再解析时一条日期都没说，
+/// 上一遍记下的清掉。删文档之后按还在的证据重算见证（`documents::reattest_tx`）读的就是这两列
+#[tokio::test]
+async fn each_piece_of_evidence_records_the_date_its_section_speaks_from() -> anyhow::Result<()> {
+    let Some(fixture) = fixture().await? else {
+        return Ok(());
+    };
+    let pool = &fixture.state.pool;
+    let run = async {
+        let (earlier, _) = chapter(&fixture, 0, "Earlier", "desk", None).await?;
+        let (later, _) = chapter(&fixture, 1, "Later", "shelf", None).await?;
+        let (appendix, _) = chapter(&fixture, 2, "Appendix", "floor", None).await?;
+        let context: DocumentDating = serde_json::from_value(json!({"entries": [
+            {"kind":"now","name":"Report date","words":"2015-01-01",
+             "from":{"year":2015,"month":1,"day":1},"scope":["Earlier"]},
+            {"kind":"now","name":"","words":"2026-01-01",
+             "from":{"year":2026,"month":1,"day":1},"scope":["Later"]}
+        ]}))?;
+        let doc = utopia_store::documents::get(pool, fixture.doc).await?;
+        attest_statements(&fixture.state, &doc, &context).await?;
+        type Witness = (Option<DateTime<Utc>>, Option<String>);
+        let witness = |statement: Uuid| async move {
+            sqlx::query_as::<_, Witness>(
+                "SELECT attested_at, attested_by FROM fact_evidence WHERE fact_id=$1",
+            )
+            .bind(statement)
+            .fetch_one(pool)
+            .await
+        };
+        assert_eq!(
+            witness(earlier).await?,
+            (Some(day(2015)), Some("Report date 2015-01-01".into()))
+        );
+        assert_eq!(
+            witness(later).await?,
+            (Some(day(2026)), Some("2026-01-01".into()))
+        );
+        assert_eq!(
+            witness(appendix).await?,
+            (None, None),
+            "no date governs this section"
+        );
+
+        let silent: DocumentDating = serde_json::from_value(json!({"entries": []}))?;
+        attest_statements(&fixture.state, &doc, &silent).await?;
+        for statement in [earlier, later, appendix] {
+            assert_eq!(
+                witness(statement).await?,
+                (None, None),
+                "the document now states no date"
+            );
+        }
+        anyhow::Ok(())
+    }
+    .await;
+    sqlx::query("DELETE FROM organizations WHERE id=$1")
+        .bind(fixture.org)
+        .execute(pool)
+        .await?;
+    run
+}
+
 #[tokio::test]
 async fn current_context_does_not_reattest_superseded_chunks() -> anyhow::Result<()> {
     let Some(fixture) = fixture().await? else {

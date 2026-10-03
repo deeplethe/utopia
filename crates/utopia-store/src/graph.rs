@@ -973,6 +973,32 @@ pub async fn attest_statement(
     Ok(moved.rows_affected() > 0)
 }
 
+/// 一条证据记下它那段原文说话的那一刻，连同那条日期的名字；那一节没说日期的记成空。
+///
+/// [`attest_statement`] 只把事实的见证往早挪，哪份证据给的、别的证据各是哪天都不留。证据
+/// 所在的文档删了、删除撤销了，事实的见证要照还在的证据重算（`documents::reattest_tx`），
+/// 靠的就是这里记下的每一条
+pub async fn witness_evidence(
+    pool: &PgPool,
+    fact_id: Uuid,
+    chunk_id: Uuid,
+    witness: Option<(chrono::DateTime<chrono::Utc>, &str)>,
+) -> AppResult<()> {
+    let (at, by) = witness.unzip();
+    sqlx::query(
+        "UPDATE fact_evidence SET attested_at = $3, attested_by = $4
+          WHERE fact_id = $1 AND chunk_id = $2
+            AND (attested_at IS DISTINCT FROM $3 OR attested_by IS DISTINCT FROM $4)",
+    )
+    .bind(fact_id)
+    .bind(chunk_id)
+    .bind(at)
+    .bind(by)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 /// 字面值宾语的事实（object_value 通道，问数映射首个消费者）。
 /// 去重：同 (S,P) 且 object_value 完全相等的 live 事实只存一条。
 #[allow(clippy::too_many_arguments)]
