@@ -420,7 +420,7 @@ async fn materialize_in_tx(
     //     用的写入口在陈述没有见证时填的是此刻（那是给人写的事实用的缺省），这里改回陈述的。
     //     排在 3a 之后：规则算出的行也是这样写下的
     //     见证动了的已有行和新写下的行一起，提交后对账：见证是时间线排序用的时刻
-    written.extend(sync_typed_attestation(&mut **tx, kb_id).await?);
+    written.extend(sync_typed_attestation(&mut **tx, kb_id, None).await?);
     Ok((
         Outcome {
             retired,
@@ -445,9 +445,14 @@ async fn materialize_in_tx(
 /// 回见证动了的那些行。见证是唯一性时间线给没起点的行排序用的时刻（`temporal::DATED_AT`），
 /// 所以调用方提交之后要拿这些行去对账（`temporal::reconcile_moved_facts`）——只对这些行
 /// 所在的时间线，不是整个库
+///
+/// 作废了的来源陈述不作证：物化自己会先把它们从来源里清掉，删文档那条路
+/// （`documents::reattest_tx`）却是在物化之前跑的，陈述刚随文档作废、来源表还没动。
+/// `only`：只动这些行（删文档时只动引用了那篇文档的，它们的时间线已经锁上）；`None` 是整个库
 pub async fn sync_typed_attestation<'e>(
     ex: impl sqlx::Executor<'e, Database = sqlx::Postgres>,
     kb_id: Uuid,
+    only: Option<&[Uuid]>,
 ) -> AppResult<Vec<Uuid>> {
     let moved = sqlx::query_scalar(
         "UPDATE facts t
@@ -463,10 +468,11 @@ pub async fn sync_typed_attestation<'e>(
                          SELECT i.fact_id, i.statement_id
                            FROM implied_fact_sources i
                            JOIN implication_rules r ON r.id = i.rule_id AND r.kb_id = $1) u
-              LEFT JOIN facts s ON s.id = u.statement_id
+              LEFT JOIN facts s ON s.id = u.statement_id AND s.invalidated_at IS NULL
                   GROUP BY u.fact_id) src
           WHERE t.id = src.fact_id AND t.kb_id = $1 AND t.layer = 'typed'
             AND t.invalidated_at IS NULL
+            AND ($2::uuid[] IS NULL OR t.id = ANY($2))
             AND (t.implied
                  OR EXISTS (SELECT 1 FROM typed_fact_sources ts WHERE ts.fact_id = t.id))
             AND (t.attested_from IS DISTINCT FROM src.at
@@ -474,6 +480,7 @@ pub async fn sync_typed_attestation<'e>(
           RETURNING t.id",
     )
     .bind(kb_id)
+    .bind(only)
     .fetch_all(ex)
     .await?;
     Ok(moved)

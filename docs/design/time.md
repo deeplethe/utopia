@@ -26,7 +26,9 @@ bound is `valid_from` or else `attested_from`, the date the text of the row's ow
 from, and null when the document states none [0064].
 An ending with no date is not "still holds": `valid_to_precision = 'unknown'` with `attested_to`,
 the date of the document that said it was over. An open end still reads as holds until told
-otherwise [0022]. Anchors are copied by every superseding writer and moved only earlier.
+otherwise [0022]. Anchors are copied by every superseding writer and moved only earlier, except
+when a document is deleted or restored: each piece of evidence records the date its passage speaks
+from, and attestation is rebuilt from the evidence that remains [0022 revised 2026-10-03].
 
 **The temporal engine** (`temporal.rs`) works only on `state` relations declared functional or
 inverse-functional. A new value closes the open one before it; an undated or dated ending closes

@@ -140,7 +140,7 @@ async fn an_unattested_statement_holds_at_every_moment_and_an_attested_one_from_
                 .execute(&pool)
                 .await?;
         }
-        utopia_store::materialize::sync_typed_attestation(&pool, kb).await?;
+        utopia_store::materialize::sync_typed_attestation(&pool, kb, None).await?;
         assert_eq!(
             anchor(&pool, typed).await?,
             (Some(earlier_report), Some("提报日期 2026年8月28日".to_string()))
@@ -256,7 +256,7 @@ async fn a_row_a_rule_implies_follows_the_statement_it_read() -> anyhow::Result<
         // 陈述后来由它所在那一节的日期作证，时间解析那条路：先给陈述作证，再同步类型化的行。
         // 规则算出的行跟到那天，连同那条日期的名字；类别词那行没有陈述，照旧没有
         assert!(graph::attest_statement(&pool, signed, signed_day, "签约日 2026年9月4日").await?);
-        utopia_store::materialize::sync_typed_attestation(&pool, kb).await?;
+        utopia_store::materialize::sync_typed_attestation(&pool, kb, None).await?;
         let followed = (Some(signed_day), Some("签约日 2026年9月4日".to_string()));
         assert_eq!(anchor(&pool, by_rule).await?, followed);
         assert!(!holds_at(&pool, by_rule, long_ago).await?);

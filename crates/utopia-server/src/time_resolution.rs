@@ -652,12 +652,20 @@ async fn attest_statements(
     doc: &utopia_core::models::Document,
     context: &DocumentDating,
 ) -> anyhow::Result<()> {
+    let pool = &state.pool;
     if !context.entries.iter().any(|e| e.kind == "now") {
+        // 这一遍文档一条日期都没说：上一遍记在证据上的也不算数了
+        sqlx::query(
+            "UPDATE fact_evidence SET attested_at = NULL, attested_by = NULL
+              WHERE document_id = $1 AND attested_at IS NOT NULL",
+        )
+        .bind(doc.id)
+        .execute(pool)
+        .await?;
         return Ok(());
     }
-    let pool = &state.pool;
-    let rows: Vec<(Uuid, String, Option<i32>)> = sqlx::query_as(
-        "SELECT fe.fact_id, c.text, fe.quote_start
+    let rows: Vec<(Uuid, Uuid, String, Option<i32>)> = sqlx::query_as(
+        "SELECT fe.fact_id, fe.chunk_id, c.text, fe.quote_start
            FROM fact_evidence fe
            JOIN facts f ON f.id = fe.fact_id
            JOIN chunks c ON c.id = fe.chunk_id
@@ -668,25 +676,35 @@ async fn attest_statements(
     .fetch_all(pool)
     .await?;
     let mut moved = 0usize;
-    for (fact_id, text, start) in rows {
+    for (fact_id, chunk_id, text, start) in rows {
         let path = headings_at(&text, usize::try_from(start.unwrap_or(0)).unwrap_or(0));
-        let Some(now) = now_in_force(&context.entries, &path) else {
+        let witness = now_in_force(&context.entries, &path).and_then(|now| {
+            let (at, _) = parts_to_time(&now.from)?;
+            let by = if now.name.is_empty() {
+                now.words.clone()
+            } else {
+                format!("{} {}", now.name, now.words)
+            };
+            Some((at, by))
+        });
+        // 每条证据记下自己这一节的日期（没说的记成空）：事实上只留最早的那一个，证据所在
+        // 的文档删了之后要照还在的证据重算，得知道每一条各是哪天
+        utopia_store::graph::witness_evidence(
+            pool,
+            fact_id,
+            chunk_id,
+            witness.as_ref().map(|(at, by)| (*at, by.as_str())),
+        )
+        .await?;
+        let Some((at, by)) = witness else {
             continue;
-        };
-        let Some((at, _)) = parts_to_time(&now.from) else {
-            continue;
-        };
-        let by = if now.name.is_empty() {
-            now.words.clone()
-        } else {
-            format!("{} {}", now.name, now.words)
         };
         if utopia_store::graph::attest_statement(pool, fact_id, at, &by).await? {
             moved += 1;
         }
     }
     // 已经物化出来的、规则算出来的类型化行跟着它们的陈述走
-    let typed = utopia_store::materialize::sync_typed_attestation(pool, doc.kb_id).await?;
+    let typed = utopia_store::materialize::sync_typed_attestation(pool, doc.kb_id, None).await?;
     // 见证动了的行换了它在唯一性时间线上的位置：只把这些行所在的时间线重算一遍，不是整个库
     // ——每篇文档都把全库的时间线各开一个事务重算一遍，库一大就是每篇几千个事务。
     // 先提交同步，再拿时间线锁，不在持有 UPDATE 行锁时等咨询锁（与物化提交后对账的顺序一致）
