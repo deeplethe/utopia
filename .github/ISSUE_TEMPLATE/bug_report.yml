@@ -1,0 +1,64 @@
+name: Bug report / 报告问题
+description: Something Utopia does wrong, or does not do. 某件事做错了，或者没做。
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        English or 中文, either is fine.
+
+        Title: one sentence that says what happens, e.g. "A sheet's merged cells are read as one cell followed by blanks".
+        Not sure it is a bug? File it anyway, or ask in [Q&A](https://github.com/deeplethe/utopia/discussions/categories/q-a).
+        A security problem goes to the address in [SECURITY.md](https://github.com/deeplethe/utopia/blob/main/SECURITY.md), not here.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happens, and what you expected / 现象与预期
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to see it / 怎么复现
+      description: >-
+        The steps, and the smallest document or sentence that shows it. Most reports about
+        extraction can only be looked at with the text that was read. Remove anything private.
+        复现步骤，以及能复现的最小文档或句子；请去掉隐私内容。
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version / 版本
+      description: >-
+        The image tag (`docker compose images`), or the commit when built from source.
+        镜像标签，或从源码构建时的 commit。
+      placeholder: ghcr.io/deeplethe/utopia:0.1.0-rc7, or dev @ 2e7ba78
+    validations:
+      required: true
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: How it runs / 部署方式
+      options:
+        - Docker Compose, as in the README
+        - From source
+        - Other (say which below)
+    validations:
+      required: true
+  - type: input
+    id: models
+    attributes:
+      label: Models / 模型
+      description: >-
+        Chat and embedding model, and the provider or gateway they are reached through. What is
+        extracted depends on them. 对话模型与嵌入模型，以及经由哪个供应商或网关。
+      placeholder: deepseek-chat via DeepSeek; BAAI/bge-m3 via SiliconFlow
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / 日志
+      description: >-
+        Server output around the failure (`docker compose logs app`). Remove keys and tokens.
+        出错前后的服务端日志；请去掉密钥。
+      render: text

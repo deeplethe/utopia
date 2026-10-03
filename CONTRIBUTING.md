@@ -2,7 +2,7 @@
 
 [中文](CONTRIBUTING.zh-CN.md)
 
-Welcome. This file covers what is specific to this repository; general open-source etiquette is assumed.
+Welcome. This file covers what is specific to this repository; general open-source etiquette is assumed. How we treat each other is in the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Branches and how changes land
 
