@@ -35,9 +35,7 @@ struct Meta {
     row_type: Vec<RowType>,
     #[serde(rename = "numRows")]
     num_rows: Option<u64>,
-    /// 多分块时给的 chunk URL 列表；每条带 rowCount 和 url。按 docs 的语义 GET
-    /// 每个 url 拼回完整结果集。schema 读到这里的多分块表示 information_schema.columns
-    /// 一次返回装不下，需要跟 #703 Databricks 的解法同样的「跟 link 拉齐」路径
+    /// 每条只描述分区的行数和大小；分区号是数组下标，后续请求使用 statementHandle。
     #[serde(rename = "partitionInfo")]
     partition_info: Option<Vec<PartitionInfo>>,
 }
@@ -49,13 +47,11 @@ struct RowType {
     ty: String,
 }
 
-/// Snowflake 的 partition 信息：每个 chunk 一个 URL，按 url GET 拿剩下的 data。
-/// `row_count` 是这个 chunk 自己的行数，`url` 是相对路径
+/// 每个分区的行数，用于核对按数组下标获取的完整结果集。
 #[derive(Deserialize, Clone)]
 struct PartitionInfo {
     #[serde(rename = "rowCount")]
     row_count: u64,
-    url: Option<String>,
 }
 
 impl SnowflakeEngine {
@@ -149,19 +145,19 @@ impl SnowflakeEngine {
                     .collect()
             })
             .collect();
-        // Snowflake 的 schema 读需要拉齐所有 partition：一次返回装不下时按 partitionInfo
-        // 里每条 URL GET 拿剩下的 data。partitionInfo 的第一条对应的就是这次响应本身
-        // （按 docs「first partition is returned inline」），所以从第二条开始拉
-        // （#703：之前 partitionInfo 直接被丢，宽 catalog 上 schema 文档被截断）
+        // partitionInfo 没有 URL。首个分区已在响应中，后续按 statementHandle 和
+        // 从 1 开始的 partition 参数读取；后续响应不再带列元数据，沿用首块的类型。
         let mut seen_partition_rows: u64 = rows.len() as u64;
         if partitions.len() > 1 {
-            for chunk in partitions.iter().skip(1) {
-                let Some(url) = chunk.url.as_deref() else {
-                    // docs 说每个 partition 必须有 url；没有就当服务端偷偷少给了
-                    anyhow::bail!("Snowflake partition without a url; rows may be incomplete");
-                };
+            let handle = resp.handle.as_deref().ok_or_else(|| {
+                anyhow::anyhow!("Snowflake returned multiple partitions without a statementHandle")
+            })?;
+            for partition in 1..partitions.len() {
                 let chunk_resp: StatementResponse = self
-                    .request(client.get(url))
+                    .request(client.get(format!(
+                        "{}/api/v2/statements/{handle}?partition={partition}",
+                        self.conn.base
+                    )))
                     .send()
                     .await?
                     .error_for_status()?
@@ -239,7 +235,8 @@ mod tests {
     use super::super::QueryEngine;
     use super::SnowflakeEngine;
     use serde_json::json;
-    use wiremock::matchers::{header, method, path};
+    use std::io::Write;
+    use wiremock::matchers::{header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn conn(server: &MockServer) -> SnowflakeConn {
@@ -248,6 +245,20 @@ mod tests {
             server.uri().trim_start_matches("http://")
         ))
         .unwrap()
+    }
+
+    // The SQL API compresses later partitions and omits their metadata.
+    fn compressed_partition(data: serde_json::Value) -> ResponseTemplate {
+        let mut gzip = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gzip.write_all(
+            serde_json::to_string(&json!({ "data": data }))
+                .unwrap()
+                .as_bytes(),
+        )
+        .unwrap();
+        ResponseTemplate::new(200)
+            .insert_header("Content-Encoding", "gzip")
+            .set_body_bytes(gzip.finish().unwrap())
     }
 
     #[tokio::test]
@@ -281,7 +292,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_202_is_polled_until_the_answer_arrives() {
+    async fn a_202_is_polled_and_its_partitions_keep_the_first_rows_types() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/v2/statements"))
@@ -294,9 +305,26 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/api/v2/statements/h2"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "resultSetMetaData": { "rowType": [ { "name": "N", "type": "fixed" } ] },
+                "resultSetMetaData": {
+                    "numRows": 3,
+                    "rowType": [ { "name": "N", "type": "fixed" } ],
+                    "partitionInfo": [ { "rowCount": 1 }, { "rowCount": 2 } ]
+                },
                 "data": [ ["1"] ], "code": "090001", "statementHandle": "h2"
             })))
+            .up_to_n_times(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v2/statements/h2"))
+            .and(query_param("partition", "1"))
+            .and(header("authorization", "Bearer pat-test"))
+            .and(header(
+                "X-Snowflake-Authorization-Token-Type",
+                "PROGRAMMATIC_ACCESS_TOKEN",
+            ))
+            .respond_with(compressed_partition(json!([["2"], [null]])))
             .expect(1)
             .mount(&server)
             .await;
@@ -304,7 +332,8 @@ mod tests {
             .execute("SELECT 1 AS n")
             .await
             .unwrap();
-        assert_eq!(out.rows, vec![r#"{"N":1}"#]);
+        assert_eq!(out.rows, vec![r#"{"N":1}"#, r#"{"N":2}"#, r#"{"N":null}"#]);
+        assert!(!out.truncated);
     }
 
     #[tokio::test]
@@ -325,15 +354,11 @@ mod tests {
         assert!(err.contains("does not exist"), "{err}");
     }
 
-    /// schema 读按 partitionInfo 走多分块：第一条 partition 对应这次响应本身，
-    /// 从第二条开始按 url GET 拿剩下的 data。docs 说 num_rows 是整个结果集的总数，
-    /// 不是当前 chunk 的——可以拿来对账（这里不强校验，但证明分块走通）
-    /// （#703：之前 partitionInfo 直接被丢，宽 catalog 上 schema 文档被截断）
+    /// partitionInfo only describes row counts and sizes. Partition zero is
+    /// inline; subsequent partitions use the statement handle and their index.
     #[tokio::test]
     async fn a_schema_read_follows_partitions_until_exhausted() {
         let server = MockServer::start().await;
-        let chunk2_url = format!("{}/api/v2/statements/h3/chunk/2", server.uri());
-        let chunk3_url = format!("{}/api/v2/statements/h3/chunk/3", server.uri());
         Mock::given(method("POST"))
             .and(path("/api/v2/statements"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -347,9 +372,9 @@ mod tests {
                         { "name": "COMMENT", "type": "text" }
                     ],
                     "partitionInfo": [
-                        { "rowCount": 1, "url": format!("{}/api/v2/statements/h3/chunk/1", server.uri()) },
-                        { "rowCount": 1, "url": chunk2_url },
-                        { "rowCount": 1, "url": chunk3_url }
+                        { "rowCount": 1, "uncompressedSize": 120 },
+                        { "rowCount": 1, "uncompressedSize": 130, "compressedSize": 80 },
+                        { "rowCount": 1, "uncompressedSize": 140, "compressedSize": 90 }
                     ]
                 },
                 "data": [
@@ -363,20 +388,30 @@ mod tests {
             .mount(&server)
             .await;
         Mock::given(method("GET"))
-            .and(path("/api/v2/statements/h3/chunk/2"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "data": [ ["default", "wide_orders", "region", "STRING", null] ],
-                "code": "090001"
-            })))
+            .and(path("/api/v2/statements/h3"))
+            .and(query_param("partition", "1"))
+            .and(header("authorization", "Bearer pat-test"))
+            .respond_with(compressed_partition(json!([[
+                "default",
+                "wide_orders",
+                "region",
+                "STRING",
+                null
+            ]])))
             .expect(1)
             .mount(&server)
             .await;
         Mock::given(method("GET"))
-            .and(path("/api/v2/statements/h3/chunk/3"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "data": [ ["default", "wide_orders", "amount", "DECIMAL(12,2)", null] ],
-                "code": "090001"
-            })))
+            .and(path("/api/v2/statements/h3"))
+            .and(query_param("partition", "2"))
+            .and(header("authorization", "Bearer pat-test"))
+            .respond_with(compressed_partition(json!([[
+                "default",
+                "wide_orders",
+                "amount",
+                "DECIMAL(12,2)",
+                null
+            ]])))
             .expect(1)
             .mount(&server)
             .await;
@@ -393,5 +428,67 @@ mod tests {
         assert_eq!(cols[0].column, "id");
         assert_eq!(cols[1].column, "region");
         assert_eq!(cols[2].column, "amount");
+    }
+
+    #[tokio::test]
+    async fn multiple_partitions_require_a_statement_handle() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v2/statements"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "resultSetMetaData": {
+                    "rowType": [{ "name": "N", "type": "fixed" }],
+                    "partitionInfo": [{ "rowCount": 1 }, { "rowCount": 1 }]
+                },
+                "data": [["1"]]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let err = SnowflakeEngine::new(conn(&server))
+            .execute("SELECT n FROM numbers")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("multiple partitions without a statementHandle"),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_or_incomplete_partitions_do_not_return_partial_rows() {
+        for (response, expected_error) in [
+            (ResponseTemplate::new(503), "503"),
+            (compressed_partition(json!([])), "numRows reports 2"),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/api/v2/statements"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "resultSetMetaData": {
+                        "numRows": 2,
+                        "rowType": [{ "name": "N", "type": "fixed" }],
+                        "partitionInfo": [{ "rowCount": 1 }, { "rowCount": 1 }]
+                    },
+                    "data": [["1"]], "statementHandle": "h4"
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/api/v2/statements/h4"))
+                .and(query_param("partition", "1"))
+                .respond_with(response)
+                .expect(1)
+                .mount(&server)
+                .await;
+            let err = SnowflakeEngine::new(conn(&server))
+                .execute("SELECT n FROM numbers")
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains(expected_error), "{err}");
+        }
     }
 }

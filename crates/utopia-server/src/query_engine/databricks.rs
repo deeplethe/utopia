@@ -43,8 +43,6 @@ struct Manifest {
     /// schema 读不传 row_limit，理论上不会触发；留着做显式 fail-fast 而不是静默返回
     /// 不全的数据
     truncated: Option<bool>,
-    /// INLINE 第一个分块塞不下时给的下一页 GET 链接；按 docs 的语义反复 GET 直到没有
-    next_chunk_internal_link: Option<String>,
     /// 整个结果集的总行数（chunked INLINE 时也有）。schema 读完后用来校验
     /// `rows.len() == total_row_count`
     total_row_count: Option<u64>,
@@ -64,6 +62,9 @@ struct ColumnInfo {
 #[derive(Deserialize)]
 struct ResultData {
     data_array: Option<Vec<Vec<serde_json::Value>>>,
+    /// 首块在 StatementResponse.result 里，后续 GET 直接返回这个对象。
+    /// 链接由服务端给出，路径与查询串都要原样带到下一次请求。
+    next_chunk_internal_link: Option<String>,
 }
 
 impl DatabricksEngine {
@@ -113,9 +114,9 @@ impl DatabricksEngine {
     /// 提交一条语句，轮询到 SUCCEEDED，把结果拼成 (列名, 行值)。所有列值都按
     /// manifest 的 `type_text` 还原成数或布尔。
     ///
-    /// `row_limit`：传 `None` 表示不限行（schema 读用）。INLINE disposition 在
-    /// 服务端有 25 MiB 的 body 上限，所以单分块塞不下时通过 `next_chunk_internal_link`
-    /// 继续 GET，循环到 manifest 没有给出下一页为止。schema 读完后用
+    /// `row_limit`：传 `None` 表示不限行（schema 读用）。INLINE 的 JSON_ARRAY
+    /// 结果可能分成多块；首块之后通过 `next_chunk_internal_link`
+    /// 继续 GET，循环到 result 没有给出下一页为止。schema 读完后用
     /// `manifest.total_row_count` 做一次 `rows.len()` 校验——少了就当结果不全
     /// （docs 说 truncated=true 时另有标记，schema 读不该见到）
     ///
@@ -217,8 +218,8 @@ impl DatabricksEngine {
                     .collect()
             })
             .collect();
-        // INLINE 的分块跟在第一个 chunk 之后：next_chunk_internal_link 是相对路径，
-        // docs 说按 link 反复 GET，直到 manifest 不再给出下一页为止
+        // manifest 描述整个结果集，下一块的链接却在 result 里。后续 GET 返回的
+        // 是 ResultData 本身，没有 statement/status/manifest 外壳。
         let manifest = resp.manifest.as_ref();
         let truncated = manifest.and_then(|m| m.truncated).unwrap_or(false);
         if truncated {
@@ -226,24 +227,30 @@ impl DatabricksEngine {
                 "Databricks returned a truncated result; row_limit must be raised or the query rewritten"
             );
         }
-        let mut next_link = manifest.and_then(|m| m.next_chunk_internal_link.clone());
+        let mut next_link = resp
+            .result
+            .as_ref()
+            .and_then(|r| r.next_chunk_internal_link.clone());
+        let base = reqwest::Url::parse(&self.conn.base)?;
         while let Some(link) = next_link.take() {
-            let chunk: StatementResponse = client
-                .get(link)
+            // internal_link 是相对于 workspace 的路径，不是可直接发给 reqwest 的
+            // URL。解析后还要留在同一 workspace，才可带着它的 bearer token 请求。
+            let url = base.join(&link)?;
+            anyhow::ensure!(
+                url.origin() == base.origin(),
+                "Databricks chunk link points outside the workspace"
+            );
+            let chunk: ResultData = client
+                .get(url)
                 .bearer_auth(&self.conn.token)
                 .send()
                 .await?
                 .error_for_status()?
                 .json()
                 .await?;
-            // 中间 chunk 的 manifest 可能再次给 truncated/link；状态字段对每块都要读
-            let m = chunk.manifest.as_ref();
-            if m.and_then(|m| m.truncated).unwrap_or(false) {
-                anyhow::bail!(
-                    "Databricks chunk was truncated by the service; rows may be incomplete"
-                );
-            }
-            let chunk_rows = chunk.result.and_then(|r| r.data_array).unwrap_or_default();
+            let chunk_rows = chunk
+                .data_array
+                .ok_or_else(|| anyhow::anyhow!("Databricks result chunk returned no data_array"))?;
             rows.extend(chunk_rows.into_iter().map(|row| {
                 row.iter()
                     .enumerate()
@@ -256,7 +263,7 @@ impl DatabricksEngine {
                     })
                     .collect()
             }));
-            next_link = m.and_then(|m| m.next_chunk_internal_link.clone());
+            next_link = chunk.next_chunk_internal_link;
         }
         // schema 读按 docs 说不该见到 truncated=true；total_row_count 是每次都给的，
         // 校验要放在所有 chunk 都收齐之后：第一次响应给的 total 是整个结果集的总数，
@@ -348,9 +355,11 @@ impl QueryEngine for DatabricksEngine {
 mod tests {
     use super::super::conn::DatabricksConn;
     use super::super::QueryEngine;
-    use super::DatabricksEngine;
+    use super::{DatabricksEngine, ROW_CAP};
     use serde_json::json;
-    use wiremock::matchers::{body_string_contains, header, method, path};
+    use wiremock::matchers::{
+        body_partial_json, body_string_contains, header, method, path, query_param,
+    };
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn conn(server: &MockServer) -> DatabricksConn {
@@ -589,42 +598,40 @@ mod tests {
                         { "name": "comment", "type_text": "STRING", "position": 4 }
                     ] },
                     "total_row_count": 3,
-                    "next_chunk_internal_link": format!(
-                        "{}/api/2.0/sql/statements/s_chunk1/chunk/2",
-                        server.uri()
-                    )
+                    "total_chunk_count": 3,
+                    "truncated": false
                 },
-                "result": { "data_array": [
-                    ["default", "wide_orders", "id", "BIGINT", "主键"],
-                    ["default", "wide_orders", "region", "STRING", null]
-                ] }
+                "result": {
+                    "chunk_index": 0, "row_offset": 0, "row_count": 1,
+                    "next_chunk_index": 1,
+                    "next_chunk_internal_link": "/api/2.0/sql/statements/s_chunk1/result/chunks/1?row_offset=1&cursor=a%2Fb%2Bc",
+                    "data_array": [["default", "wide_orders", "id", "BIGINT", "主键"]]
+                }
             })))
             .expect(1)
             .mount(&server)
             .await;
         Mock::given(method("GET"))
-            .and(path("/api/2.0/sql/statements/s_chunk1/chunk/2"))
+            .and(path("/api/2.0/sql/statements/s_chunk1/result/chunks/1"))
+            .and(query_param("row_offset", "1"))
+            .and(query_param("cursor", "a/b+c"))
+            .and(header("authorization", "Bearer dapi-test"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "status": { "state": "SUCCEEDED" },
-                "manifest": {
-                    "total_row_count": 3,
-                    "next_chunk_internal_link": format!(
-                        "{}/api/2.0/sql/statements/s_chunk1/chunk/3",
-                        server.uri()
-                    )
-                },
-                "result": { "data_array": [
-                    ["default", "wide_orders", "amount", "DECIMAL(12,2)", null]
-                ] }
+                "chunk_index": 1, "row_offset": 1, "row_count": 1,
+                "next_chunk_index": 2,
+                "next_chunk_internal_link": "/api/2.0/sql/statements/s_chunk1/result/chunks/2?row_offset=2",
+                "data_array": [["default", "wide_orders", "region", "STRING", null]]
             })))
             .expect(1)
             .mount(&server)
             .await;
         Mock::given(method("GET"))
-            .and(path("/api/2.0/sql/statements/s_chunk1/chunk/3"))
+            .and(path("/api/2.0/sql/statements/s_chunk1/result/chunks/2"))
+            .and(query_param("row_offset", "2"))
+            .and(header("authorization", "Bearer dapi-test"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "status": { "state": "SUCCEEDED" },
-                "manifest": { "total_row_count": 3 }
+                "chunk_index": 2, "row_offset": 2, "row_count": 1,
+                "data_array": [["default", "wide_orders", "amount", "DECIMAL(12,2)", null]]
             })))
             .expect(1)
             .mount(&server)
@@ -638,6 +645,137 @@ mod tests {
         assert_eq!(cols[0].column, "id");
         assert_eq!(cols[1].column, "region");
         assert_eq!(cols[2].column, "amount");
+        let requests = server.received_requests().await.unwrap();
+        assert!(requests[0]
+            .body_json::<serde_json::Value>()
+            .unwrap()
+            .get("row_limit")
+            .is_none());
+        assert_eq!(
+            requests[1].url.query(),
+            Some("row_offset=1&cursor=a%2Fb%2Bc")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_chat_query_reads_later_chunks_before_applying_the_row_cap() {
+        for total in [1, 3, ROW_CAP + 1] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/api/2.0/sql/statements"))
+                .and(body_partial_json(json!({"row_limit": ROW_CAP + 1})))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "statement_id": "s_chat",
+                    "status": { "state": "SUCCEEDED" },
+                    "manifest": {
+                        "schema": { "columns": [{ "name": "n", "type_text": "BIGINT" }] },
+                        "total_row_count": total,
+                        "truncated": false
+                    },
+                    "result": {
+                        "data_array": [["0"]],
+                        "next_chunk_internal_link": "/api/2.0/sql/statements/s_chat/result/chunks/1?row_offset=1"
+                    }
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let remaining: Vec<_> = (1..total).map(|n| vec![n.to_string()]).collect();
+            Mock::given(method("GET"))
+                .and(path("/api/2.0/sql/statements/s_chat/result/chunks/1"))
+                .and(query_param("row_offset", "1"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "chunk_index": 1, "row_offset": 1, "row_count": total - 1,
+                    "data_array": remaining
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let out = DatabricksEngine::new(conn(&server))
+                .execute("SELECT n FROM numbers")
+                .await
+                .unwrap();
+            let expected: Vec<_> = (0..total.min(ROW_CAP))
+                .map(|n| format!(r#"{{"n":{n}}}"#))
+                .collect();
+            assert_eq!(out.rows, expected);
+            assert_eq!(out.truncated, total > ROW_CAP);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_later_chunk_failure_does_not_return_a_partial_query() {
+        for (response, expected) in [
+            (ResponseTemplate::new(503), "503"),
+            (
+                ResponseTemplate::new(200).set_body_json(json!({})),
+                "data_array",
+            ),
+            (
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "status": { "state": "SUCCEEDED" },
+                    "result": { "data_array": [["second"]] }
+                })),
+                "data_array",
+            ),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/api/2.0/sql/statements"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "status": { "state": "SUCCEEDED" },
+                    "result": {
+                        "data_array": [["first"]],
+                        "next_chunk_internal_link": "/api/2.0/sql/statements/s_failed/result/chunks/1"
+                    }
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/api/2.0/sql/statements/s_failed/result/chunks/1"))
+                .respond_with(response)
+                .expect(1)
+                .mount(&server)
+                .await;
+            let error = DatabricksEngine::new(conn(&server))
+                .execute("SELECT n FROM numbers")
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains(expected), "{error}");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_internal_chunk_link_cannot_send_the_token_to_another_origin() {
+        let foreign = MockServer::start().await;
+        for link in [
+            format!("{}/result/chunks/1", foreign.uri()),
+            format!("//{}/result/chunks/1", foreign.address()),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/api/2.0/sql/statements"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "status": { "state": "SUCCEEDED" },
+                    "result": {
+                        "data_array": [["first"]],
+                        "next_chunk_internal_link": link
+                    }
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+            let error = DatabricksEngine::new(conn(&server))
+                .execute("SELECT n FROM numbers")
+                .await
+                .unwrap_err();
+            assert!(
+                error.to_string().contains("outside the workspace"),
+                "{error}"
+            );
+        }
+        assert!(foreign.received_requests().await.unwrap().is_empty());
     }
 
     /// 跑 chat 查询时（带 row_limit），服务端真的把行砍了：manifest.truncated=true

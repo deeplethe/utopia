@@ -476,7 +476,8 @@ impl LlmClient {
     }
 
     /// 推理强度（`reasoning_effort`）。推理模型默认边想边答，抽取一次调用出的 token 九成是
-    /// 思考；minimal 把它归零而答案不变（bench README，2026-09-24）。空 = 不带字段
+    /// 思考；minimal 把它归零而答案不变（bench README，2026-09-24）。有的端点 minimal 关不掉，
+    /// 要 none（DeepSeek）。空 = 不带字段
     pub fn with_reasoning_effort(mut self, effort: Option<String>) -> Self {
         self.reasoning_effort = effort.filter(|e| !e.trim().is_empty());
         self

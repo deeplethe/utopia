@@ -737,9 +737,9 @@ async fn sync_rss(state: &AppState, source: &Source) -> anyhow::Result<SyncStats
 
 /// GitHub 工单：一张工单一篇文档，正文里带它的状态变更史。
 ///
-/// 工单与评论走**仓库级 + `since`**（一次分页取全），事件走**逐工单**——
-/// 不是不一致，是 `issues/events` 不支持 `since` 且会被 PR 事件淹没，
-/// 拿真实仓库一跑就发现状态变更史悄悄空了。详见 [`crate::github_issues`]。
+/// 工单列表按 `since` 增量筛选，评论与事件逐工单读取，不带增量窗口。
+/// 文档每次整篇替换：评论也按 `since` 过滤会把未改动的旧讨论删掉。
+/// 详见 [`crate::github_issues`]。
 ///
 /// `doc_time` 取 `updated_at` 而不是 `created_at`：每次同步捕获的是"此刻这张
 /// 工单是什么样"，认知时间该说这个状态是何时成立的。新增一条评论会改
@@ -748,6 +748,24 @@ async fn sync_github_issues(
     state: &AppState,
     source: &Source,
     since: Option<DateTime<Utc>>,
+) -> anyhow::Result<SyncStats> {
+    // api.github.com 是固定的公网主机，所以按内容级的严格度收（`Reach::Content`）
+    let http = crate::http_fetch::client_for(
+        &reqwest::Url::parse("https://api.github.com/")?,
+        crate::http_fetch::Reach::Content,
+        crate::http_fetch::Limits::default(),
+    )
+    .await?;
+    sync_github_issues_with_client(state, source, since, &http, "https://api.github.com").await
+}
+
+// HTTP 接缝让回归测试走同一条同步与落库路径，生产仍固定访问 GitHub 公网 API。
+async fn sync_github_issues_with_client(
+    state: &AppState,
+    source: &Source,
+    since: Option<DateTime<Utc>>,
+    http: &reqwest::Client,
+    api_base: &str,
 ) -> anyhow::Result<SyncStats> {
     let repo = source.config["repo"]
         .as_str()
@@ -769,43 +787,37 @@ async fn sync_github_issues(
         .as_bool()
         .unwrap_or(false);
 
-    // api.github.com 是固定的公网主机，所以按内容级的严格度收（`Reach::Content`）
-    let http = crate::http_fetch::client_for(
-        &reqwest::Url::parse("https://api.github.com/")?,
-        crate::http_fetch::Reach::Content,
-        crate::http_fetch::Limits::default(),
-    )
-    .await?;
-    let base = format!("https://api.github.com/repos/{repo}");
+    let base = format!("{api_base}/repos/{repo}");
 
     // 增量：GitHub 的 since 是"这之后更新过的"
     let mut issue_q: Vec<(&str, String)> = vec![("state", "all".into())];
-    let mut comment_q: Vec<(&str, String)> = Vec::new();
     if let Some(t) = since {
         issue_q.push(("since", t.to_rfc3339()));
-        comment_q.push(("since", t.to_rfc3339()));
     }
 
     let issues: Vec<crate::github_issues::Issue> =
-        crate::github_issues::fetch_all(&http, &format!("{base}/issues"), &issue_q, auth).await?;
-    let comments: Vec<crate::github_issues::Comment> = crate::github_issues::fetch_all(
-        &http,
-        &format!("{base}/issues/comments"),
-        &comment_q,
-        auth,
-    )
-    .await?;
+        crate::github_issues::fetch_all(http, &format!("{base}/issues"), &issue_q, auth).await?;
     let mut stats = SyncStats::default();
-    for (issue, cs) in crate::github_issues::group_comments(&issues, &comments)
-        .into_iter()
-        .filter(|(i, _)| include_prs || i.pull_request.is_none())
+    for issue in issues
+        .iter()
+        .filter(|i| include_prs || i.pull_request.is_none())
         .take(MAX_NEW_PER_SYNC)
     {
+        // 只重建本轮选中的工单，但每张要读完整评论历史。仓库级评论即使
+        // 去掉 since，也可能被无关工单和 PR 的评论挤出分页上限。
+        let comments = crate::github_issues::fetch_all::<crate::github_issues::Comment>(
+            http,
+            &format!("{base}/issues/{}/comments", issue.number),
+            &[],
+            auth,
+        )
+        .await?;
+        let cs = crate::github_issues::comments_for_issue(issue, &comments);
         // 逐工单取事件。N 只是本轮要写入的工单数——首次同步等于总数，
         // 之后有 since 兜着通常是个位数
         let events = crate::github_issues::sort_events(
             crate::github_issues::fetch_all(
-                &http,
+                http,
                 &format!("{base}/issues/{}/events", issue.number),
                 &[],
                 auth,
@@ -1239,3 +1251,7 @@ mod tests {
 #[cfg(test)]
 #[path = "source_filename_tests.rs"]
 mod source_filename_tests;
+
+#[cfg(test)]
+#[path = "github_sync_tests.rs"]
+mod github_sync_tests;

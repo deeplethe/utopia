@@ -1003,7 +1003,7 @@ pub async fn delete(
     .await?;
     let chunk_ids: Vec<Uuid> = chunks.into_iter().map(|(c,)| c).collect();
     let fact_ids: Vec<Uuid> = facts.into_iter().map(|(f,)| f).collect();
-    reattest_tx(&mut tx, &cited).await?;
+    reattest_tx(&mut tx, kb_id, &cited).await?;
     crate::temporal::tidy_timelines_tx(&mut tx, kb_id, &timelines).await?;
     let deletion_id = Uuid::now_v7();
     sqlx::query(
@@ -1029,16 +1029,52 @@ pub async fn delete(
     })
 }
 
-/// 证据文档变了（删了一篇、撤销了删除），把这些事实的「最早证据日期」按还在的文档重算。
+/// 证据文档变了（删了一篇、撤销了删除），把这些事实的见证按还在的证据重算。
 ///
-/// 读路径拿它当没起点的事实从哪天起成立（`facts_holds_from`），引擎排时间线用的是同一个
-/// 日期（`temporal::DATED_AT`）。删掉最早那份文档之后引擎的锚点挪到了第二份，这里不跟着
-/// 挪的话，前任读到新锚点为止、它却还从旧日期读起，两段叠了一年（#679 第四轮评审）。
-/// 一份带日期的文档都不剩的，保留原值——那是别的来源（人写的）给的日期
-async fn reattest_tx(tx: &mut Transaction<'_, Postgres>, fact_ids: &[Uuid]) -> AppResult<()> {
+/// 读路径拿见证当没起点的事实从哪天起成立（`facts_holds_from`），引擎排时间线用的是同一个
+/// 日期（`temporal::DATED_AT`）。删掉最早那份文档之后，见证不跟着挪到还在的证据上的话，
+/// 前任读到新锚点为止、它却还从旧日期读起，两段叠了一年（#679 第四轮评审）。
+///
+/// 三种行，三个来处（0064 决定 3、5；0022 修订 2026-10-03）：
+///
+/// - **开放陈述**：还在的证据里最早的那一条，连同那条日期的名字。每条证据记着它那段原文
+///   说话的那一刻（`fact_evidence.attested_at`，时间解析写下的章节日期）；没记的（这一列
+///   之前写下的、那篇文档还没再解析过的）按文档自己的日期读，口径同从前的 `DATED_AT`。
+///   还在的证据一条带日期的都没有，见证就是空——删掉的那篇文档的日期不再给它作证；
+/// - **跟着陈述走的类型化行**（物化出来的、规则算出来的）：来源陈述里最早的那个见证，
+///   和物化时同一句（`materialize::sync_typed_attestation`）。它们抄了陈述的证据，所以也在
+///   这批里，时间线已经由调用方锁上；
+/// - **其余**（人写的、这套分层之前写下的）：还在的文档里最早的文档日期；一份带日期的
+///   文档都不剩的保留原值——那是别的来源（人写的）给的日期
+async fn reattest_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    kb_id: Uuid,
+    fact_ids: &[Uuid],
+) -> AppResult<()> {
     if fact_ids.is_empty() {
         return Ok(());
     }
+    sqlx::query(
+        "UPDATE facts f SET attested_from = w.at, attested_by = w.by
+           FROM (SELECT DISTINCT ON (fe.fact_id) fe.fact_id,
+                        COALESCE(fe.attested_at, own.at) AS at,
+                        CASE WHEN fe.attested_at IS NOT NULL THEN fe.attested_by END AS by
+                   FROM fact_evidence fe
+                   JOIN documents d ON d.id = fe.document_id
+              LEFT JOIN document_versions v ON v.document_id = fe.document_id
+                                           AND v.version = fe.doc_version
+                  CROSS JOIN LATERAL (
+                        SELECT CASE WHEN d.doc_time_source IN ('content', 'source')
+                                    THEN COALESCE(v.doc_time, d.doc_time) END AS at) own
+                  WHERE fe.fact_id = ANY($1) AND d.deleted_at IS NULL
+                  ORDER BY fe.fact_id, COALESCE(fe.attested_at, own.at) NULLS LAST, fe.chunk_id) w
+          WHERE f.id = w.fact_id AND f.layer = 'open' AND f.invalidated_at IS NULL
+            AND (f.attested_from IS DISTINCT FROM w.at OR f.attested_by IS DISTINCT FROM w.by)",
+    )
+    .bind(fact_ids)
+    .execute(&mut **tx)
+    .await?;
+    crate::materialize::sync_typed_attestation(&mut **tx, kb_id, Some(fact_ids)).await?;
     sqlx::query(
         "UPDATE facts f SET attested_from = e.first
            FROM (SELECT fe.fact_id, min(d.doc_time) AS first
@@ -1047,7 +1083,9 @@ async fn reattest_tx(tx: &mut Transaction<'_, Postgres>, fact_ids: &[Uuid]) -> A
                    JOIN documents d ON d.id = c.document_id
                   WHERE fe.fact_id = ANY($1) AND d.deleted_at IS NULL AND d.doc_time IS NOT NULL
                   GROUP BY fe.fact_id) e
-          WHERE f.id = e.fact_id AND f.invalidated_at IS NULL
+          WHERE f.id = e.fact_id AND f.invalidated_at IS NULL AND f.layer <> 'open'
+            AND NOT (f.implied
+                     OR EXISTS (SELECT 1 FROM typed_fact_sources ts WHERE ts.fact_id = f.id))
             AND f.attested_from IS DISTINCT FROM e.first",
     )
     .bind(fact_ids)
@@ -1194,7 +1232,7 @@ async fn restore_tx(
     .execute(&mut **tx)
     .await?;
     let touched: Vec<Uuid> = cited.iter().chain(&restored).copied().collect();
-    reattest_tx(tx, &touched).await?;
+    reattest_tx(tx, kb_id, &touched).await?;
     crate::temporal::tidy_timelines_tx(tx, kb_id, &timelines).await?;
     sqlx::query("UPDATE document_deletions SET reverted_at = now() WHERE id = $1")
         .bind(deletion_id)

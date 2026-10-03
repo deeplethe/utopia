@@ -1306,7 +1306,7 @@ export const en = {
     reasoningEffort: "Reasoning effort",
     reasoningDefault: "endpoint default",
     reasoningHint:
-      "Reasoning models think before they answer; for extraction nine tenths of the output was thinking. minimal turns it off without changing the answer.",
+      "Reasoning models think before they answer, and most of what they output is that thinking. Every call uses this one setting. Which value turns thinking off depends on the endpoint: minimal on some, none on others (DeepSeek).",
     embedModel: "Embedding model (optional, enables semantic search)",
     baseUrl: "Base URL",
     model: "Model",

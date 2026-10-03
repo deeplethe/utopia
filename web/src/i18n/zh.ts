@@ -1156,7 +1156,7 @@ export const zh: Strings = {
     chatModel: "对话模型",
     reasoningEffort: "推理强度",
     reasoningDefault: "端点默认",
-    reasoningHint: "推理模型先想再答，抽取一次调用九成的输出是思考；minimal 关掉它，答案不变。",
+    reasoningHint: "推理模型先想再答，输出的大半是思考。每一种调用都用这一个值；哪个值关得掉思考看端点：有的认 minimal，有的（DeepSeek）只认 none。",
     embedModel: "向量模型（可选，启用语义检索）",
     baseUrl: "接口地址",
     model: "模型",

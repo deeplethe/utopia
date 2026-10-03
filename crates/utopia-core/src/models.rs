@@ -472,8 +472,9 @@ pub struct LlmSettings {
     #[serde(skip_serializing)]
     pub transcribe_api_key: Option<String>,
     pub transcribe_model: Option<String>,
-    /// 对话模型的推理强度（OpenAI 兼容口的 `reasoning_effort`）：minimal | low | medium | high；
-    /// 空 = 不带字段。照原文写 JSON 的任务用 minimal，思考 token 归零、答案不变
+    /// 对话模型的推理强度（OpenAI 兼容口的 `reasoning_effort`）：none | minimal | low | medium |
+    /// high；空 = 不带字段。**每一种调用都用它**：抽取、对齐、提规则、本体代理、勘误——没有哪一步
+    /// 另外定一个。哪个值把思考关掉看端点：有的认 minimal，有的（DeepSeek）只认 none
     pub chat_reasoning_effort: Option<String>,
 }
 
