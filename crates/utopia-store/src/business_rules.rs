@@ -1039,6 +1039,264 @@ fn validate_join_shape(kind: &str, join_predicate_id: Option<Uuid>) -> AppResult
     }
 }
 
+// ---------------------------------------------------------------------------
+// 来自语料的判据（#507 cut 3 / 0064 cut 2）
+//
+// 列在 `attribute_rules` 上：source_kind / source_chunk_id /
+// source_document_id / proposed_at / proposed_by / state（0098）。提案 =
+// `source_kind = 'text'` 且 `state = 'proposed'`；nod 之后 `state =
+// 'nodded'`（`enabled` 一字不动——人是写规则的人，那是另一件事）；decline
+// 之后 `state = 'declined'` 与 reason（0053 同款：拒绝留痕，提取下一轮
+// 不再为同一句话提同一处）。
+//
+// 这一档只动状态；不动 enabled、不打开/关闭 reasoning、不动审计以外的
+// 副作用——切 5 处理来源变更时的撤回/重审路径（0064 cut 5）。
+// ---------------------------------------------------------------------------
+
+/// 提案的一行：规则本体 + 出处 + 句子与文档足够画一张审阅卡片。
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct ProposedRuleRow {
+    pub id: Uuid,
+    pub name: String,
+    pub description: String,
+    pub subject_type_id: Uuid,
+    pub subject_label: Option<String>,
+    pub conclusion: String,
+    pub conclude_type_id: Option<Uuid>,
+    pub conclude_type_label: Option<String>,
+    pub conclude_predicate_id: Option<Uuid>,
+    pub conclude_predicate_label: Option<String>,
+    pub conclude_value: Option<serde_json::Value>,
+    pub conclude_expr: Option<serde_json::Value>,
+    pub join_predicate_id: Option<Uuid>,
+    pub join_predicate_label: Option<String>,
+    pub source_kind: String,
+    pub source_chunk_id: Uuid,
+    pub source_document_id: Uuid,
+    pub source_filename: Option<String>,
+    pub source_chunk_text: String,
+    pub proposed_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub proposed_by: Option<Uuid>,
+    pub proposed_by_email: Option<String>,
+}
+
+/// 一库所有待审提案——审阅队列的列表数据源。
+///
+/// `state = 'proposed'` 与 `source_kind = 'text'` 是 0098 的 CHECK
+/// 复合决定的（`text ⇒ state ∈ {proposed, nodded, declined}`），所以这里
+/// 不重复滤；带 `state` 出来是给 UI 在同一接口里区分 nod/decline 之后
+/// 仍要看的行。
+///
+/// `enabled = false` 不会被这条查询自动过滤——「人关掉的」与「没人看过
+/// 的」是两件事（0064 d1）：审阅卡片要把它显示出来让一个 Editor 看清是
+/// 哪一档；不被 reasoning 跑到的另一档是 derived_facts 路径的责任，不是
+/// 这里。
+pub async fn list_proposals(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<serde_json::Value>> {
+    let rows: Vec<ProposedRuleRow> = sqlx::query_as(
+        "SELECT r.id, r.name, r.description,
+                r.subject_type_id, st.label AS subject_label,
+                r.conclusion, r.conclude_type_id, ct.label AS conclude_type_label,
+                r.conclude_predicate_id, cp.label AS conclude_predicate_label,
+                r.conclude_value, r.conclude_expr,
+                r.join_predicate_id, jp.label AS join_predicate_label,
+                r.source_kind, r.source_chunk_id, r.source_document_id,
+                d.filename AS source_filename,
+                c.text AS source_chunk_text,
+                r.proposed_at, r.proposed_by, u.email AS proposed_by_email
+           FROM attribute_rules r
+           JOIN entity_types st ON st.id = r.subject_type_id
+           LEFT JOIN entity_types ct ON ct.id = r.conclude_type_id
+           LEFT JOIN relation_types cp ON cp.id = r.conclude_predicate_id
+           LEFT JOIN relation_types jp ON jp.id = r.join_predicate_id
+           JOIN chunks c ON c.id = r.source_chunk_id
+           JOIN documents d ON d.id = r.source_document_id
+           LEFT JOIN users u ON u.id = r.proposed_by
+          WHERE r.kb_id = $1
+            AND r.source_kind = 'text'
+            AND r.state IN ('proposed', 'nodded', 'declined')
+          ORDER BY r.proposed_at NULLS LAST, r.created_at",
+    )
+    .bind(kb_id)
+    .fetch_all(pool)
+    .await?;
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+    let ids: Vec<Uuid> = rows.iter().map(|r| r.id).collect();
+    let conds: Vec<ConditionRow> = sqlx::query_as(
+        "SELECT c.rule_id, c.group_seq, c.predicate_id, p.label, c.op, c.operand,
+                c.subject_side
+           FROM attribute_rule_conditions c
+           JOIN relation_types p ON p.id = c.predicate_id
+          WHERE c.rule_id = ANY($1)
+          ORDER BY c.rule_id, c.group_seq, c.seq",
+    )
+    .bind(&ids)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| {
+            let conditions: Vec<serde_json::Value> = conds
+                .iter()
+                .filter(|c| c.0 == r.id)
+                .map(|(_, group, pid, plabel, op, operand, side)| {
+                    json!({
+                        "group": group,
+                        "side": side,
+                        "predicate_id": pid,
+                        "predicate_label": plabel,
+                        "op": op,
+                        "operand": operand,
+                    })
+                })
+                .collect();
+            json!({
+                "id": r.id,
+                "name": r.name,
+                "description": r.description,
+                "subject_type_id": r.subject_type_id,
+                "subject_label": r.subject_label,
+                "conclusion": r.conclusion,
+                "conclude_type_id": r.conclude_type_id,
+                "conclude_type_label": r.conclude_type_label,
+                "conclude_predicate_id": r.conclude_predicate_id,
+                "conclude_predicate_label": r.conclude_predicate_label,
+                "conclude_value": r.conclude_value,
+                "conclude_expr": r.conclude_expr,
+                "join_predicate_id": r.join_predicate_id,
+                "join_predicate_label": r.join_predicate_label,
+                "source_kind": r.source_kind,
+                "source_chunk_id": r.source_chunk_id,
+                "source_document_id": r.source_document_id,
+                "source_filename": r.source_filename,
+                "source_chunk_text": r.source_chunk_text,
+                "proposed_at": r.proposed_at,
+                "proposed_by": r.proposed_by,
+                "proposed_by_email": r.proposed_by_email,
+                "conditions": conditions,
+            })
+        })
+        .collect())
+}
+
+/// 一库「待审提案」的条数——Review 总览徽章的数据源。
+///
+/// `state = 'proposed'` 才入徽章：nod 与 decline 之后仍可在「提案历史」
+/// 看到，但不算待办。
+pub async fn count_proposals(pool: &PgPool, kb_id: Uuid) -> AppResult<i64> {
+    let (n,): (i64,) = sqlx::query_as(
+        "SELECT count(*)::bigint
+           FROM attribute_rules
+          WHERE kb_id = $1
+            AND source_kind = 'text'
+            AND state = 'proposed'",
+    )
+    .bind(kb_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(n)
+}
+
+/// 对一条提案表态：approve → `state = 'nodded'`，reject → `state = 'declined'`。
+///
+/// **不**动 `enabled`（0064 d1：人写规则的人的「关掉」与「没人看」是两
+/// 件事，nod 之后这条规则还在原状态——把 enabled 拨到 true 是另一档决定）。
+///
+/// `state = 'proposed'` 是 nod / decline 的入口；CHECK（0098 §2）挡下
+/// 任何「已是 nodded/declined 的提案再被 nod/decline」——返回
+/// `invalid_input` 让前端给一个可读的错。
+///
+/// reason 是 decline 时的可写理由（0053 同款）。存在 `audit_events.detail`
+/// 里——不上 `attribute_rules` 的列，列已经在 0098 收口了；`reason` 跟
+/// 着操作者留在台账里，足够审计回看。
+pub async fn decide_proposal(
+    pool: &PgPool,
+    kb_id: Uuid,
+    rule_id: Uuid,
+    actor_id: Uuid,
+    approve: bool,
+    reason: Option<&str>,
+) -> AppResult<DecideProposalOutcome> {
+    let target_state = if approve { "nodded" } else { "declined" };
+    let mut tx = pool.begin().await?;
+    let row: Option<(String, String)> = sqlx::query_as(
+        "SELECT source_kind, state
+           FROM attribute_rules
+          WHERE kb_id = $1 AND id = $2
+          FOR UPDATE",
+    )
+    .bind(kb_id)
+    .bind(rule_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some((source_kind, current_state)) = row else {
+        tx.rollback().await?;
+        return Ok(DecideProposalOutcome::NotFound);
+    };
+    if source_kind != "text" {
+        tx.rollback().await?;
+        return Err(AppError::invalid(
+            "not_a_sourced_rule",
+            "Only sourced rules (source_kind = 'text') can be nodded or declined.",
+        ));
+    }
+    if current_state != "proposed" {
+        tx.rollback().await?;
+        return Err(AppError::invalid(
+            "not_a_proposal",
+            "A proposal must be in state 'proposed' to be nodded or declined; \
+             this one is already decided.",
+        ));
+    }
+    sqlx::query(
+        "UPDATE attribute_rules
+            SET state = $3
+          WHERE kb_id = $1 AND id = $2",
+    )
+    .bind(kb_id)
+    .bind(rule_id)
+    .bind(target_state)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    // 审计：与 0015 / 0043 同款，把 reason 留在 detail 里——不放在事务
+    // 里（记录失败不影响业务操作，audit 模块自身的约束）。
+    let action = if approve {
+        "rule.proposal_nodded"
+    } else {
+        "rule.proposal_declined"
+    };
+    let detail = json!({
+        "approve": approve,
+        "reason": reason,
+    });
+    let _ = crate::audit::record_opt(
+        pool,
+        Some(kb_id),
+        Some(actor_id),
+        action,
+        "attribute_rule",
+        Some(rule_id),
+        detail,
+    )
+    .await;
+    Ok(if approve {
+        DecideProposalOutcome::Nodded
+    } else {
+        DecideProposalOutcome::Declined
+    })
+}
+
+/// `decide_proposal` 的返回形状——「没有这一条」与「已是决定过的」是两条
+/// 不同档的客户端错误（NotFound vs invalid），UI 要分开处理。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecideProposalOutcome {
+    Nodded,
+    Declined,
+    NotFound,
+}
+
 async fn exists(
     pool: &PgPool,
     kb_id: Uuid,

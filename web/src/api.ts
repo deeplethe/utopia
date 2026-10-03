@@ -437,6 +437,25 @@ export interface BusinessRule extends Omit<RuleInput, "conclusion" | "join_predi
   version?: number;
 }
 
+/** 来自语料的提案（#507 cut 3 / 0064 cut 2）。shape 与 BusinessRule
+ * 几乎相同，外加来源五件套与 state 轴。
+ *
+ * `state = 'proposed' | 'nodded' | 'declined'`——`nodded`/`declined`
+ * 仍出现在列表里（提案历史），按 state 自分。 */
+export interface ProposedRule extends BusinessRule {
+  source_kind: "hand" | "text";
+  source_chunk_id: string;
+  source_document_id: string;
+  /** 来自 JOIN documents——这一档需要文件名给卡片显示 */
+  source_filename: string | null;
+  /** 来自 JOIN chunks——原句是给卡片显示的证据 */
+  source_chunk_text: string;
+  proposed_at: string | null;
+  proposed_by: string | null;
+  proposed_by_email: string | null;
+  state: "proposed" | "nodded" | "declined";
+}
+
 /** 规则定义史的一版：说了什么、从什么时候到什么时候、此刻凭它成立几条 */
 export interface RuleVersion {
   id: string;
@@ -2618,6 +2637,32 @@ export const api = {
     request<{ ok: boolean; job_id: number; status: "accepted" }>(
       `/api/v1/kbs/${kbId}/review/alignment/rules/${ruleId}`,
       { method: "POST", body: JSON.stringify({ approve }) },
+    ),
+  /** 来自语料的提案列表（#507 cut 3）：卡片的数据源。state 包括
+   * proposed/nodded/declined，按 state 自分（待办 vs 历史） */
+  listProposedRules: (kbId: string) =>
+    request<{ proposals: ProposedRule[] }>(
+      `/api/v1/kbs/${kbId}/review/proposed-rules`,
+    ),
+  /** 待审提案条数——Review 总览徽章 */
+  countProposedRules: (kbId: string) =>
+    request<{ count: number }>(
+      `/api/v1/kbs/${kbId}/review/proposed-rules/count`,
+    ),
+  /** 对一条提案表态：approve=true → nodded，false → declined。reason 仅
+   * decline 时可写，0064 同款——留 audit_events.detail，不上规则行 */
+  decideSourcedRule: (
+    kbId: string,
+    ruleId: string,
+    approve: boolean,
+    reason?: string,
+  ) =>
+    request<{ ok: boolean; state?: "nodded" | "declined"; error?: string }>(
+      `/api/v1/kbs/${kbId}/review/proposed-rules/${ruleId}`,
+      {
+        method: "POST",
+        body: JSON.stringify({ approve, ...(reason ? { reason } : {}) }),
+      },
     ),
   /** 人答勘误 agent 留下的一笔（0044 决定 7）：批了就执行，否了只记 */
   decideErrata: (kbId: string, actionId: string, approve: boolean) =>
