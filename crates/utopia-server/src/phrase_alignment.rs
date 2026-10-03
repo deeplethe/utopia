@@ -439,7 +439,7 @@ pub async fn align_phrases_reasking(
         .await?
         .ok_or_else(|| anyhow::anyhow!("Chat model not configured; cannot align phrases"))?;
     // 对齐是判断题：让模型按端点默认的强度想，不用工作区给抽取设的 minimal
-    let client = llm_util::chat_client_thinking(&settings)
+    let client = llm_util::chat_client(&settings)
         .ok_or_else(|| anyhow::anyhow!("Chat model not configured; cannot align phrases"))?;
     // 类别词对齐还排着或跑着：两端的类还没定，现在判的签名指纹马上就变，判了也是重判。
     // 等它收尾再来——排一份半分钟后的，排着的至多一份。别的入口（本体页、审核页、每篇文档

@@ -73,7 +73,7 @@ pub async fn propose_with(
         .await?
         .ok_or_else(|| anyhow::anyhow!("Chat model not configured; cannot propose ontology"))?;
     // 提本体是判断题：按端点默认的强度想
-    let client = llm_util::chat_client_thinking(&settings)
+    let client = llm_util::chat_client(&settings)
         .ok_or_else(|| anyhow::anyhow!("Chat model not configured; cannot propose ontology"))?;
     let mut guard = pool.acquire().await?;
     let locked: bool = sqlx::query_scalar(
@@ -1102,7 +1102,7 @@ pub async fn propose_questions(state: &AppState, kb_id: Uuid) -> anyhow::Result<
     let settings = utopia_store::settings::get(pool, kb.workspace_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("Chat model not configured; cannot propose questions"))?;
-    let client = llm_util::chat_client_thinking(&settings)
+    let client = llm_util::chat_client(&settings)
         .ok_or_else(|| anyhow::anyhow!("Chat model not configured; cannot propose questions"))?;
     propose_questions_with(state, kb_id, &settings, &client).await
 }

@@ -84,10 +84,10 @@ pub async fn put(
     if let Some(effort) = &req.chat_reasoning_effort {
         let effort = nonempty(&Some(effort.clone()));
         if let Some(e) = effort.as_deref() {
-            if !matches!(e, "minimal" | "low" | "medium" | "high") {
+            if !matches!(e, "none" | "minimal" | "low" | "medium" | "high") {
                 return Err(utopia_core::AppError::invalid(
                     "bad_reasoning_effort",
-                    "reasoning effort is one of minimal, low, medium, high, or empty",
+                    "reasoning effort is one of none, minimal, low, medium, high, or empty",
                 )
                 .into());
             }

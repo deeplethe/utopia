@@ -1214,7 +1214,8 @@ export function Settings() {
                   </div>
                   <div>
                     <label className={label}>{S.settings.reasoningEffort}</label>
-                    {/* 推理模型默认边想边答，抽取一次调用九成的输出是思考；照原文写 JSON 的活用 minimal。
+                    {/* 推理模型默认边想边答，抽取一次调用九成的输出是思考。每一种调用都用这一个值；
+                        哪个值关得掉思考看端点（有的认 minimal，有的只认 none）。
                         小而有界的枚举：Dropdown（web/DESIGN.md 规矩 5，页面上没有原生 select） */}
                     <Dropdown
                       className="w-full"
@@ -1225,6 +1226,7 @@ export function Settings() {
                       }}
                       options={[
                         { value: "", label: S.settings.reasoningDefault },
+                        { value: "none", label: "none" },
                         { value: "minimal", label: "minimal" },
                         { value: "low", label: "low" },
                         { value: "medium", label: "medium" },

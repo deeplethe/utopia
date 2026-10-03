@@ -115,7 +115,7 @@ pub async fn align_types_reasking(state: &AppState, kb_id: Uuid, reask: u32) -> 
     let settings = utopia_store::settings::get(pool, kb.workspace_id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("Chat model not configured; cannot align kind words"))?;
-    let client = llm_util::chat_client_thinking(&settings)
+    let client = llm_util::chat_client(&settings)
         .ok_or_else(|| anyhow::anyhow!("Chat model not configured; cannot align kind words"))?;
     // 本体向量还在补：编辑器建了类先排 `embed_ontology` 再排这个任务，候选类按向量检索
     // （`candidates_for`），没向量的类检索不到，现在判了它也不在候选里。等它收尾再来——
