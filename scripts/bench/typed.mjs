@@ -410,14 +410,26 @@ function judgeEndpoint(KB) {
   log("裁判与抽取是同一个模型，数字要打折看（judge_open.mjs 同一条提醒）");
   return { base, key, model };
 }
+// 限流（429）和端点出错（5xx）退避后重试：裁判四篇并行，网关按分钟限速时一轮里能丢掉一半样本
+//（2026-09-30 的一组 200 条只判了 58 条），而丢掉的样本不是随机的——判不了的那篇文档整篇没判
 async function chat(ep, messages) {
-  const r = await fetch(`${ep.base.replace(/\/$/, "")}/chat/completions`, {
-    method: "POST", headers: { "content-type": "application/json", ...(ep.key ? { authorization: `Bearer ${ep.key}` } : {}) },
-    body: JSON.stringify({ model: ep.model, temperature: 0, messages }),
-  });
-  if (!r.ok) throw new Error(`judge -> ${r.status} ${(await r.text()).slice(0, 200)}`);
-  const j = await r.json();
-  return j.choices?.[0]?.message?.content ?? "";
+  for (let attempt = 1; ; attempt++) {
+    const r = await fetch(`${ep.base.replace(/\/$/, "")}/chat/completions`, {
+      method: "POST", headers: { "content-type": "application/json", ...(ep.key ? { authorization: `Bearer ${ep.key}` } : {}) },
+      body: JSON.stringify({ model: ep.model, temperature: 0, messages }),
+    });
+    if (r.ok) {
+      const j = await r.json();
+      return j.choices?.[0]?.message?.content ?? "";
+    }
+    const body = (await r.text()).slice(0, 200);
+    if ((r.status === 429 || r.status >= 500) && attempt < 6) {
+      const wait = Number(r.headers.get("retry-after")) * 1000 || 15000 * attempt;
+      await sleep(wait);
+      continue;
+    }
+    throw new Error(`judge -> ${r.status} ${body}`);
+  }
 }
 const JUDGE = `You check facts extracted from a document. Each numbered fact says that a subject stands in a named relation to an object (a thing or a value). Judge only from the document text given.
 - "stated": the document states this, or a careful reader takes it directly from the document, and the relation is the right one;
