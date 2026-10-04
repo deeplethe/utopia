@@ -2497,6 +2497,27 @@ pub struct AgentProposalReport {
     pub rejected: i64,
 }
 
+/// 文档说了、本体还放不下的：没绑到类的类别词，和没绑到属性的短语形状（判成 none 的
+/// 与两票不一致的）。本体代理读的就是这两样（0061 决定 2）；工作台拿这两个数说「还缺什么」，
+/// 不再拿 0003 的 `ontology_misses`——开放图谱的抽取不往那张表里写
+#[derive(Debug, Clone, Copy, PartialEq, Eq, sqlx::FromRow, serde::Serialize)]
+pub struct Uncovered {
+    pub kind_words: i64,
+    pub phrases: i64,
+}
+
+pub async fn uncovered(pool: &PgPool, kb_id: Uuid) -> AppResult<Uncovered> {
+    Ok(sqlx::query_as(
+        "SELECT (SELECT count(*) FROM type_bindings
+                  WHERE kb_id = $1 AND status <> 'bound') AS kind_words,
+                (SELECT count(*) FROM phrase_bindings
+                  WHERE kb_id = $1 AND status <> 'bound') AS phrases",
+    )
+    .bind(kb_id)
+    .fetch_one(pool)
+    .await?)
+}
+
 pub async fn agent_proposal_report(pool: &PgPool, kb_id: Uuid) -> AppResult<AgentProposalReport> {
     Ok(sqlx::query_as(
         "SELECT count(*) FILTER (WHERE status = 'open') AS open,

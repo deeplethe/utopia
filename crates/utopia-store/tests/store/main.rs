@@ -105,6 +105,7 @@ mod an_amount_outlives_adoption;
 mod an_automatic_merge_is_gated_by_what_it_can_undo;
 mod an_axiom_that_moved_closes_its_findings;
 mod an_earlier_mention_keeps_the_stated_end;
+mod an_empty_ontology_does_not_cover_the_corpus;
 mod an_end_date_closes_the_open_span;
 mod an_event_holds_at_the_moment_it_names;
 mod an_exploration_says_what_it_covered;

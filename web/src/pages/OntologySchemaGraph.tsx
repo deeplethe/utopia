@@ -78,6 +78,7 @@ import { Maximize2, ZoomIn, ZoomOut } from "lucide-react";
 import type { BusinessRule, EntityTypeView, RelationTypeView } from "../api";
 import { S } from "../i18n";
 import {
+  Button,
   CanvasLoading,
   cn,
   Pill,
@@ -582,7 +583,10 @@ export function OntologySchemaGraph({
   selected,
   onSelect,
   loading = false,
+  onEmptyAction,
 }: {
+  /** 一个类都没有时那句话下面的按钮：带人去看文档说了什么、本体还缺什么 */
+  onEmptyAction?: () => void;
   entityTypes: EntityTypeView[];
   /** 业务规则：画成主类 → 结论类的一条紫弧，点它打开规则那一页 */
   rules?: BusinessRule[];
@@ -1138,8 +1142,15 @@ export function OntologySchemaGraph({
         <CanvasLoading />
       ) : empty ? (
         <div className="absolute inset-0 grid place-items-center pointer-events-none">
-          <div className="text-center text-body text-ink-2 max-w-xs">
+          <div className="text-center text-body text-ink-2 max-w-sm">
             {S.ontology.schemaEmpty}
+            {onEmptyAction && (
+              <div className="mt-3 pointer-events-auto">
+                <Button size="sm" variant="secondary" onClick={onEmptyAction}>
+                  {S.ontology.schemaEmptyAction}
+                </Button>
+              </div>
+            )}
           </div>
         </div>
       ) : null}

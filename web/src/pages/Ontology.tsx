@@ -225,8 +225,11 @@ export function Ontology() {
     enabled: !!kb,
   });
 
-  const refresh = () =>
+  const refresh = () => {
     queryClient.invalidateQueries({ queryKey: ["ontology", kb?.id] });
+    // 采纳、拒绝之后「本体还缺什么」的那两个数也变了
+    queryClient.invalidateQueries({ queryKey: ["questionReport", kb?.id] });
+  };
   // 错误统一走全局 toast，不再用页面内嵌错误行
   const onError = (e: unknown) => toast.error((e as Error).message);
 
@@ -576,6 +579,7 @@ export function Ontology() {
           ) : (
             <OntologySchemaGraph
             loading={loading}
+            onEmptyAction={() => setSel({ kind: "misses" })}
             entityTypes={entity_types}
             relationTypes={relation_types}
             rules={rules.data?.rules ?? []}
@@ -2126,6 +2130,11 @@ function MissesPanel({
   onChanged: () => void;
   onError: (e: unknown) => void;
 }) {
+  // 文档说了、本体还放不下的有多少（代理读的那两样）：空着的本体不等于「覆盖了语料」
+  const uncovered = useQuery({
+    queryKey: ["questionReport", kbId],
+    queryFn: () => api.questionReport(kbId),
+  }).data?.uncovered;
   // 默认收起：已忽略的是**背景信息**，不该跟待处理的挤在一起抢注意力
   const [showDismissed, setShowDismissed] = useState(false);
   const [proposals, setProposals] = useState<OntologyProposals | null>(null);
@@ -2574,7 +2583,14 @@ function MissesPanel({
       />
 
       {misses.length === 0 ? (
-        <p className="text-body text-ink-2">{S.ontology.noMisses}</p>
+        // 两个数还没取回来时不说话：先说一句「没有在等的」再改口，比空着更糟
+        uncovered && (
+          <p className="text-body text-ink-2">
+            {uncovered.kind_words + uncovered.phrases > 0
+              ? S.ontology.uncovered(uncovered.kind_words, uncovered.phrases)
+              : S.ontology.noMisses}
+          </p>
+        )
       ) : (
         <div className="flex flex-wrap gap-2">
           {misses.map((m) => (

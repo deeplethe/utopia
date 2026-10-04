@@ -1692,8 +1692,8 @@ export const en = {
     importBy: (who: string, when: string) => `${who} · ${when}`,
     importSize: (bytes: number) =>
       bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(0)} KB`,
-    misses: "Unmatched from extraction",
-    missesHint: "Types and predicates the extractor produced outside the ontology, to judge what the ontology still lacks.",
+    misses: "Not in the ontology yet",
+    missesHint: "What the documents say that the ontology has no place for, and what the agent proposes for it.",
     /* ---- 一端挂着两个以上开放值的谓词（#341） ----
        文案克制：状态一句话，后果一句话，动作在按钮上。这一档的读者要判断的是
        「这条关系一次只能有一个值吗」，不是读一篇关于双时态的说明 */
@@ -1729,7 +1729,16 @@ export const en = {
     restore: "Restore",
     suggest: "Suggest with AI",
     suggesting: "Analyzing…",
-    noMisses: "No unmatched types — the ontology covers your corpus.",
+    noMisses: "Nothing the documents say is waiting for a place in the ontology.",
+    uncovered: (kindWords: number, phrases: number) => {
+      const what = [
+        kindWords > 0 ? `${kindWords} ${kindWords === 1 ? "kind of thing" : "kinds of thing"}` : "",
+        phrases > 0 ? `${phrases} relation ${phrases === 1 ? "phrase" : "phrases"}` : "",
+      ]
+        .filter(Boolean)
+        .join(" and ");
+      return `The documents use ${what} the ontology has no place for. Ask the agent to propose classes and properties for them; nothing is added until you accept it.`;
+    },
     approve: "Add",
     /* 映射那一档的按钮。刻意不叫 Add——它不加东西，本体里已经有了。
        两个按钮都写 Add 的话，"已经有了"这件事在界面上就消失了 */
@@ -1828,7 +1837,9 @@ export const en = {
     /* 从前这句把「先加个类或导入 OWL 文件」说成了开始的前提，而本体本来就
        从语料里长（0003，默认开）——那句话正是 #313 说的劝退点。现在只说状态，
        动作留给左栏本来就有的 New class 与 Import */
-    schemaEmpty: "No classes yet. Extraction adds them as documents arrive.",
+    schemaEmpty:
+      "No classes yet. Documents are read without them; classes and properties are what turn what was read into typed facts. Have the agent propose them from your documents, import an ontology, or add a class yourself.",
+    schemaEmptyAction: "See what the documents need",
     schemaFitView: "Fit view",
     schemaZoomIn: "Zoom in",
     schemaZoomOut: "Zoom out",

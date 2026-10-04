@@ -188,7 +188,8 @@ pub async fn record_result(
     Ok(Json(json!({ "ok": true })))
 }
 
-/// 两个数（决定 5）：问题答对了几条；代理的提案人改过或拒掉的占几成
+/// 两个数（决定 5）：问题答对了几条；代理的提案人改过或拒掉的占几成。另带文档说了、
+/// 本体还放不下的类别词与短语形状各有多少，工作台靠它说本体还缺什么
 pub async fn report(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
@@ -197,10 +198,12 @@ pub async fn report(
     utopia_store::access::require_kb(&state.pool, &user, kb_id, Role::Viewer).await?;
     let q = questions::report(&state.pool, kb_id).await?;
     let p = utopia_store::ontology::agent_proposal_report(&state.pool, kb_id).await?;
+    let uncovered = utopia_store::ontology::uncovered(&state.pool, kb_id).await?;
     let decided = p.adopted + p.rejected;
     let changed = p.adopted_edited + p.rejected;
     Ok(Json(json!({
         "questions": q,
+        "uncovered": uncovered,
         "proposals": {
             "open": p.open,
             "adopted": p.adopted,

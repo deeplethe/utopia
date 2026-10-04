@@ -1489,8 +1489,8 @@ export const zh: Strings = {
     importBy: (who: string, when: string) => `${who} · ${when}`,
     importSize: (bytes: number) =>
       bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(0)} KB`,
-    misses: "抽取中未匹配的",
-    missesHint: "抽取时落在本体之外的类型和谓词，用来判断本体还缺什么。",
+    misses: "本体里还没有的",
+    missesHint: "文档说到了、本体还放不下的东西，以及代理为它们提的建议。",
     /* 一端挂着两个以上开放值的谓词（#341）：状态一句话，后果一句话，动作在按钮上 */
     uniqueness: "并存的取值",
     uniquenessHint: "标明哪些关系同时只能有一个值，之后新值会自动结束旧值。",
@@ -1513,7 +1513,16 @@ export const zh: Strings = {
     restore: "撤回忽略",
     suggest: "用 AI 建议",
     suggesting: "分析中…",
-    noMisses: "没有未匹配的类型——本体覆盖了你的语料。",
+    noMisses: "文档说到的东西里，没有在等本体给位置的。",
+    uncovered: (kindWords: number, phrases: number) => {
+      const what = [
+        kindWords > 0 ? `${kindWords} 种东西` : "",
+        phrases > 0 ? `${phrases} 种关系说法` : "",
+      ]
+        .filter(Boolean)
+        .join("、");
+      return `文档里有 ${what}，本体里还没有位置。可以让代理为它们提出类和属性；你采纳之前什么都不会加进本体。`;
+    },
     approve: "加入",
     mapOver: "用已有的",
     willRemap: (n: number) => `将重新归类 ${n} 条事实`,
@@ -1585,7 +1594,9 @@ export const zh: Strings = {
     proposalsChangedHint: "代理的提案里人表过态的，有几条被拒或改过再采纳。",
     /* ---- 模式图 ---- */
     schemaDiagram: "模式图",
-    schemaEmpty: "还没有类。文档进来时会自动补上。",
+    schemaEmpty:
+      "还没有类。没有类文档也照常读；类和属性是把读到的内容变成类型化事实的那一步。可以让代理按你的文档提出来、导入一份本体，或者自己加一个类。",
+    schemaEmptyAction: "看看文档需要什么",
     schemaFitView: "归位",
     schemaZoomIn: "放大",
     schemaZoomOut: "缩小",

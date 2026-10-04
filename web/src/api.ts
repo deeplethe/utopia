@@ -1289,6 +1289,8 @@ export interface QuestionReport {
     changed: number;
     changed_share: number | null;
   };
+  /** 文档说了、本体还放不下的：没有类的类别词、没绑到属性的短语形状（代理读的就是这两样） */
+  uncovered: { kind_words: number; phrases: number };
 }
 
 export interface OntologyMiss {
