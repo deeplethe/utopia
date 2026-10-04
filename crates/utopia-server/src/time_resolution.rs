@@ -642,6 +642,17 @@ pub async fn resolve_document(state: &AppState, document_id: Uuid) -> anyhow::Re
     Ok(())
 }
 
+/// 见证的名字：日期的名字加它的字（「提报日期 2026年9月4日」）。没有名字的光是字；封面上
+/// 一个光秃秃的日期，模型常把日期自己又填成名字，那就只写一遍
+fn witness_name(name: &str, words: &str) -> String {
+    let (name, words) = (name.trim(), words.trim());
+    if name.is_empty() || name == words {
+        words.to_string()
+    } else {
+        format!("{name} {words}")
+    }
+}
+
 /// 这篇文档的陈述各由它所在那一节里文本说话的那一刻作证（0064 决定 3）。
 ///
 /// 一条陈述在哪一节，看它的引文在它那一块里的位置、那一块正文里的标题；管着它的是范围
@@ -680,12 +691,7 @@ async fn attest_statements(
         let path = headings_at(&text, usize::try_from(start.unwrap_or(0)).unwrap_or(0));
         let witness = now_in_force(&context.entries, &path).and_then(|now| {
             let (at, _) = parts_to_time(&now.from)?;
-            let by = if now.name.is_empty() {
-                now.words.clone()
-            } else {
-                format!("{} {}", now.name, now.words)
-            };
-            Some((at, by))
+            Some((at, witness_name(&now.name, &now.words)))
         });
         // 每条证据记下自己这一节的日期（没说的记成空）：事实上只留最早的那一个，证据所在
         // 的文档删了之后要照还在的证据重算，得知道每一条各是哪天
@@ -730,6 +736,19 @@ mod attestation_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_bare_date_is_named_once() {
+        assert_eq!(
+            witness_name("提报日期", "2026年9月4日"),
+            "提报日期 2026年9月4日"
+        );
+        assert_eq!(witness_name("", "2024年10月10日"), "2024年10月10日");
+        assert_eq!(
+            witness_name("2024年10月10日", " 2024年10月10日"),
+            "2024年10月10日"
+        );
+    }
     use utopia_extract::time::NamedPeriod;
 
     fn parts(y: i32, m: Option<u32>, d: Option<u32>) -> DateParts {
