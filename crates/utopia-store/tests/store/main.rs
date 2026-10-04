@@ -133,6 +133,7 @@ mod graph_changes;
 mod history_shows_the_merge_itself;
 mod human_type_decisions;
 mod materialization_is_serial;
+mod merge_direction_counts_live_facts_in_each_base;
 mod migration_0070_runs_under_any_search_path;
 mod miss_dismissal;
 mod negative_binding_definition_edit;

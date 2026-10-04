@@ -1784,14 +1784,20 @@ pub async fn survivor(pool: &PgPool, kb_id: Uuid, mut id: Uuid) -> AppResult<Uui
 
 /// 合并方向：返回 (target 存活, source 被并)。
 pub async fn merge_direction(pool: &PgPool, a: Uuid, b: Uuid) -> AppResult<(Uuid, Uuid)> {
+    // 事实索引以 kb_id 开头；先用标量子查询取库，让 OR 两侧都能按复合索引定位。
+    // PG16 上直接 JOIN 可能只按 kb_id 扫描整个库，再过滤 subject/object。
     let (deg_a,): (i64,) = sqlx::query_as(
-        "SELECT count(*) FROM facts WHERE (subject_id = $1 OR object_id = $1) AND invalidated_at IS NULL",
+        "SELECT count(*) FROM facts
+         WHERE kb_id = (SELECT kb_id FROM entities WHERE id = $1)
+           AND (subject_id = $1 OR object_id = $1) AND invalidated_at IS NULL",
     )
     .bind(a)
     .fetch_one(pool)
     .await?;
     let (deg_b,): (i64,) = sqlx::query_as(
-        "SELECT count(*) FROM facts WHERE (subject_id = $1 OR object_id = $1) AND invalidated_at IS NULL",
+        "SELECT count(*) FROM facts
+         WHERE kb_id = (SELECT kb_id FROM entities WHERE id = $1)
+           AND (subject_id = $1 OR object_id = $1) AND invalidated_at IS NULL",
     )
     .bind(b)
     .fetch_one(pool)
