@@ -39,8 +39,9 @@ pub async fn entity_instances(
     let rows: Vec<EntityInstance> = sqlx::query_as(
         "SELECT e.id, e.canonical_name AS name,
                 (SELECT count(*) FROM facts f
-                 WHERE (f.subject_id = e.id OR f.object_id = e.id)
-                   AND f.invalidated_at IS NULL) AS fact_count
+                  WHERE f.kb_id = e.kb_id
+                    AND (f.subject_id = e.id OR f.object_id = e.id)
+                    AND f.invalidated_at IS NULL) AS fact_count
          FROM entities e
          WHERE e.kb_id = $1 AND e.type_id = $2 AND e.merged_into IS NULL
          ORDER BY lower(e.canonical_name), e.id

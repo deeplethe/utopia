@@ -843,7 +843,7 @@ pub async fn namesakes(
     let rows: Vec<Namesake> = sqlx::query_as(
         "SELECT e.canonical_name AS name, t.label AS type_label,
                 (SELECT count(*) FROM facts f
-                  WHERE f.invalidated_at IS NULL
+                  WHERE f.kb_id = e.kb_id AND f.invalidated_at IS NULL
                     AND (f.subject_id = e.id OR f.object_id = e.id)) AS facts,
                 (e.merged_into IS NOT NULL) AS merged
          FROM entities e

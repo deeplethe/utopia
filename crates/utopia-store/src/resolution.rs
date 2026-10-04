@@ -337,7 +337,7 @@ async fn resolve_by_name(
     let candidates: Vec<Candidate> = sqlx::query_as(&format!(
         "SELECT e.id, e.canonical_name, e.profile_embedding, e.profile_n,
                 (SELECT count(*) FROM facts f
-                 WHERE (f.subject_id = e.id OR f.object_id = e.id)
+                 WHERE f.kb_id = e.kb_id AND (f.subject_id = e.id OR f.object_id = e.id)
                    AND f.invalidated_at IS NULL AND {not_name}) AS degree
          FROM entities e
          -- IS NOT DISTINCT FROM 而不是 =（0009 的那个陷阱）：开放图谱里的实体都没有类
@@ -1254,7 +1254,7 @@ pub async fn existing_by_name(
             AND e.description IS NULL
             AND (lower(e.canonical_name) = ANY($2) OR {named})
           ORDER BY (SELECT count(*) FROM facts f
-                     WHERE (f.subject_id = e.id OR f.object_id = e.id) AND {not_name}) DESC,
+                     WHERE f.kb_id = e.kb_id AND (f.subject_id = e.id OR f.object_id = e.id) AND f.invalidated_at IS NULL AND {not_name}) DESC,
                    e.created_at
           LIMIT 1",
         named = crate::names::has_name_in("e", 1, 2),
@@ -1398,7 +1398,7 @@ async fn review_side(pool: &PgPool, kb_id: Uuid, entity_id: Uuid) -> AppResult<R
         "SELECT e.id, e.canonical_name AS name, t.label AS type_label,
                 coalesce(t.color, '#94a3b8') AS color, e.disambiguator,
                 (SELECT count(*) FROM facts f
-                 WHERE (f.subject_id = e.id OR f.object_id = e.id)
+                 WHERE f.kb_id = e.kb_id AND (f.subject_id = e.id OR f.object_id = e.id)
                    AND f.invalidated_at IS NULL AND {not_name}) AS degree
          -- LEFT JOIN：没判出类型的实体照样要能进审核（0009）。
          -- 内连接会让它整条审核项取不出来，而漂移审核恰恰最常发生在它们身上

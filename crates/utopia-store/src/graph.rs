@@ -1274,7 +1274,7 @@ fn node_sql(as_of: Option<usize>, owner: Option<usize>) -> String {
         coalesce(t.shape, 'circle') AS shape,
         e.disambiguator,
         (SELECT count(*) FROM facts f
-         WHERE ({subject} = e.id OR {object} = e.id) AND {held} AND {not_name}) AS degree
+         WHERE f.kb_id = e.kb_id AND ({subject} = e.id OR {object} = e.id) AND {held} AND {not_name}) AS degree
      FROM entities e LEFT JOIN entity_types t ON t.id = e.type_id"
     )
 }
