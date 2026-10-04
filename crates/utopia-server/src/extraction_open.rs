@@ -696,17 +696,45 @@ pub(crate) fn dated_at(doc: &Document) -> Option<chrono::DateTime<chrono::Utc>> 
 }
 
 /// 一段字在块里的**字符**偏移（起、止）。字符不是字节：界面和 SQL 的 `substr` 都按字符数，
-/// 中文一个字三个字节，按字节存的偏移到界面上就错位。找不到原样的就 `None`——
-/// 偏移只能由服务端从原文算出来，模型报的数字不算数
+/// 中文一个字三个字节，按字节存的偏移到界面上就错位。找不到的就 `None`——
+/// 偏移只能由服务端从原文算出来，模型报的数字不算数。
+///
+/// **一段空白对一段空白**，别的逐字比。PDF 的文字层在行尾换行，「December⏎31, 2024」
+/// 模型抄回来是「December 31, 2024」；逐字比的话这句引文和它的日期都对不上，陈述落了、
+/// 时间却丢了（一份英文董事会纪要四个日期全没了）。换行还是空格不是原文说了什么，
+/// 偏移照原文里的位置算
 fn locate(hay: &str, needle: &str) -> Option<(i32, i32)> {
-    let needle = needle.trim();
+    let (needle, _) = squashed(needle.trim());
     if needle.is_empty() {
         return None;
     }
-    let byte = hay.find(needle)?;
-    let start = hay[..byte].chars().count();
-    let end = start + needle.chars().count();
+    let (hay, at) = squashed(hay);
+    let found = hay
+        .windows(needle.len())
+        .position(|w| w == needle.as_slice())?;
+    let start = at[found];
+    let end = at[found + needle.len() - 1] + 1;
     Some((start as i32, end as i32))
+}
+
+/// 连着的空白压成一个空格。第二项是压过之后每个字符在原文里的字符位置
+fn squashed(text: &str) -> (Vec<char>, Vec<usize>) {
+    let (mut out, mut at) = (Vec::new(), Vec::new());
+    let mut in_space = false;
+    for (i, c) in text.chars().enumerate() {
+        if c.is_whitespace() {
+            if !in_space {
+                out.push(' ');
+                at.push(i);
+            }
+            in_space = true;
+        } else {
+            out.push(c);
+            at.push(i);
+            in_space = false;
+        }
+    }
+    (out, at)
 }
 
 /// 时间词在块里的字符起点。**必须在这条陈述自己的那句引文里**：模型会把一个时间词挂到
@@ -730,7 +758,16 @@ fn locate_time(chunk: &str, quote: Option<(&str, Option<(i32, i32)>)>, words: &s
     let (q, span) = quote?;
     if let Some((inner, _)) = locate(q, words) {
         return match span {
-            Some((start, _)) => Some(start + inner),
+            // 在原文的这一句里找：引文和原文的空白未必一样长（换行加缩进对一个空格），
+            // 按引文里的位置加上去会偏
+            Some((start, end)) => {
+                let sentence: String = chunk
+                    .chars()
+                    .skip(start.max(0) as usize)
+                    .take((end - start).max(0) as usize)
+                    .collect();
+                Some(start + locate(&sentence, words).map_or(inner, |(i, _)| i))
+            }
             None => locate(chunk, words).map(|(s, _)| s),
         };
     }
@@ -1190,6 +1227,38 @@ mod tests {
         assert_eq!(locate(text, "  去年冬天 "), Some((8, 12)));
         assert_eq!(locate(text, "前年冬天"), None);
         assert_eq!(locate(text, ""), None);
+    }
+
+    /// PDF 的文字层在行尾换行，模型抄回来是空格：一段空白对一段空白，偏移照原文算
+    #[test]
+    fn a_line_break_in_the_passage_matches_a_space_in_the_copy() {
+        let text = "1. Succession. Zhang Wei will step down as Chief Technology Officer on December\n   31, 2024. Li Na follows.";
+        let quote = "Zhang Wei will step down as Chief Technology Officer on December 31, 2024.";
+        let span = locate(text, quote).expect("the sentence is in the passage");
+        let found: String = text
+            .chars()
+            .skip(span.0 as usize)
+            .take((span.1 - span.0) as usize)
+            .collect();
+        assert_eq!(
+            found,
+            "Zhang Wei will step down as Chief Technology Officer on December\n   31, 2024."
+        );
+        // 时间词在原文那一句里的位置，不是在引文里的位置：换行加缩进比一个空格长
+        let start = locate_time(text, Some((quote, Some(span))), "December 31, 2024").unwrap();
+        assert_eq!(
+            text.chars()
+                .skip(start as usize)
+                .take(8)
+                .collect::<String>(),
+            "December"
+        );
+        // 反过来也一样：原文是一个空格，抄回来多了空白
+        assert_eq!(locate("a b", "a  \t b"), Some((0, 3)));
+        // 空白之外逐字比：断在词中间的、换了字的都不算
+        assert_eq!(locate("Septem\nber 1, 2024", "September 1, 2024"), None);
+        assert_eq!(locate(text, "December 30, 2024"), None);
+        assert_eq!(locate("   ", " "), None);
     }
 
     #[test]

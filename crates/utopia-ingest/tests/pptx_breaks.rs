@@ -56,5 +56,5 @@ fn runs_without_a_break_still_join() {
     let text = read(
         r#"<a:p><a:r><a:t>Hel</a:t></a:r><a:r><a:t>lo</a:t></a:r></a:p><a:p><a:r><a:t>world</a:t></a:r></a:p>"#,
     );
-    assert!(text.contains("## Slide 1\nHello\nworld\n"), "{text}");
+    assert!(text.starts_with("Hello\nworld\n"), "{text}");
 }

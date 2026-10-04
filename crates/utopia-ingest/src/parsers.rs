@@ -485,6 +485,10 @@ pub(crate) fn docx_xml_to_text(
 
 /// PPTX: extract a:t text in the presentation's logical slide order. Tables under a:tbl
 /// become Markdown grids through the same renderer as DOCX and spreadsheet tables.
+///
+/// 第一页是这份演示的开头，写在任何标题之前；第二页起每页一节（`## Slide N`）。封面上的
+/// 日期说的是整份演示，而一个日期管到哪看它所在的标题（0064）：封面也是一节的话，它的
+/// 日期只管封面，后面每一页的陈述都没有见证。Word 的标题块本来就在第一个标题之前，这里一样
 pub fn pptx(bytes: &[u8]) -> anyhow::Result<String> {
     let mut archive =
         zip::ZipArchive::new(Cursor::new(bytes.to_vec())).context("Failed to unzip pptx")?;
@@ -515,7 +519,12 @@ pub fn pptx(bytes: &[u8]) -> anyhow::Result<String> {
     for (num, name) in slides {
         let xml = pptx_part(&mut archive, &name)?;
         let text = pptx_xml_to_text(&xml)?;
-        if !text.trim().is_empty() {
+        if text.trim().is_empty() {
+            continue;
+        }
+        if num == 1 {
+            out.push_str(&format!("{text}\n"));
+        } else {
             out.push_str(&format!("\n## Slide {num}\n{text}\n"));
         }
     }

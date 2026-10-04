@@ -46,10 +46,12 @@ fn parsed(parts: &Parts) -> String {
 fn logical_order_and_page_numbers_do_not_depend_on_zip_or_part_order() {
     let mut parts = deck();
     let expected = parsed(&parts);
+    // 第一页是开头，没有标题；第二页起每页一节
     assert!(
-        expected.contains("## Slide 1\nSECOND-CREATED & 中 <raw>"),
+        expected.starts_with("SECOND-CREATED & 中 <raw>"),
         "{expected}"
     );
+    assert!(!expected.contains("## Slide 1"), "{expected}");
     assert!(expected.contains("## Slide 2\nFIRST-CREATED"), "{expected}");
     assert!(!expected.contains("UNLISTED"));
     assert!(!expected.contains("NOTES"));
@@ -66,7 +68,7 @@ fn logical_order_and_page_numbers_do_not_depend_on_zip_or_part_order() {
         .replace("rIdA", "rIdB")
         .replace("temp", "rIdA");
     let normal = parsed(&parts);
-    assert!(normal.contains("## Slide 1\nFIRST-CREATED"));
+    assert!(normal.starts_with("FIRST-CREATED"), "{normal}");
     assert!(normal.contains("## Slide 2\nSECOND-CREATED"));
 }
 
@@ -215,4 +217,14 @@ fn empty_presentations_and_manifest_free_legacy_packages_keep_their_behavior() {
     let mut no_root = deck();
     no_root.retain(|(n, _)| n != "_rels/.rels");
     assert_eq!(parsed(&no_root), parsed(&deck()));
+}
+
+/// 封面写在任何标题之前：它说的日期管整份演示，不只管它自己那一页（0064 的范围看标题）。
+/// 第一页没有字的演示没有开头，其余各页照旧各是一节
+#[test]
+fn the_first_slide_opens_the_deck_and_later_slides_are_sections() {
+    let text = parsed(&deck());
+    let first_heading = text.find("## ").expect("later slides are sections");
+    assert!(text[..first_heading].contains("SECOND-CREATED"), "{text}");
+    assert!(text[first_heading..].starts_with("## Slide 2\n"), "{text}");
 }
