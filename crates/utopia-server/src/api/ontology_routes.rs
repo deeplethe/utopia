@@ -30,13 +30,12 @@ pub async fn get(
     Path(kb_id): Path<Uuid>,
 ) -> ApiResult<Json<serde_json::Value>> {
     require_kb(&state, &user, kb_id, Role::Viewer).await?;
-    let entity_types = utopia_store::ontology::entity_type_views(&state.pool, kb_id).await?;
-    let relation_types = utopia_store::ontology::relation_type_views(&state.pool, kb_id).await?;
-    let misses = utopia_store::ontology::list_misses(&state.pool, kb_id).await?;
-    // 已忽略的单列一路：抑制照旧（提案与自动扩本体只看上面那份），
-    // 但让人看得见抑制掉了什么、现在涨到多少
-    let dismissed_misses =
-        utopia_store::ontology::list_dismissed_misses(&state.pool, kb_id).await?;
+    let (entity_types, relation_types, misses, dismissed_misses) = tokio::try_join!(
+        utopia_store::ontology::entity_type_views(&state.pool, kb_id),
+        utopia_store::ontology::relation_type_views(&state.pool, kb_id),
+        utopia_store::ontology::list_misses(&state.pool, kb_id),
+        utopia_store::ontology::list_dismissed_misses(&state.pool, kb_id),
+    )?;
     Ok(Json(json!({
         "entity_types": entity_types,
         "relation_types": relation_types,

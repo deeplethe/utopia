@@ -19,9 +19,15 @@ pub async fn entity_type_views(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<Enti
                   WHERE p.child_id = t.id AND p.is_primary) AS primary_parent,
                 ARRAY(SELECT d.b_id FROM entity_type_disjoint d
                       WHERE d.kb_id = t.kb_id AND d.a_id = t.id) AS disjoint,
-                (SELECT count(*) FROM entities e
-                 WHERE e.type_id = t.id AND e.merged_into IS NULL) AS usage
-         FROM entity_types t WHERE t.kb_id = $1 ORDER BY lower(t.label)",
+                COALESCE(u.usage, 0) AS usage
+         FROM entity_types t
+         LEFT JOIN (
+             SELECT type_id, count(*)::bigint AS usage
+             FROM entities
+             WHERE kb_id = $1 AND merged_into IS NULL AND type_id IS NOT NULL
+             GROUP BY type_id
+         ) u ON u.type_id = t.id
+         WHERE t.kb_id = $1 ORDER BY lower(t.label)",
     )
     .bind(kb_id)
     .fetch_all(pool)
@@ -86,9 +92,15 @@ pub async fn relation_type_views(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<Re
                       WHERE g.relation_type_id = r.id) AS ranges,
                 ARRAY(SELECT q.qualifier_type_id FROM relation_type_qualifiers q
                       WHERE q.relation_type_id = r.id) AS qualifiers,
-                (SELECT count(*) FROM facts f
-                 WHERE f.predicate_id = r.id AND f.invalidated_at IS NULL) AS usage
-         FROM relation_types r WHERE r.kb_id = $1 ORDER BY lower(r.label)",
+                COALESCE(u.usage, 0) AS usage
+         FROM relation_types r
+         LEFT JOIN (
+             SELECT predicate_id, count(*)::bigint AS usage
+             FROM facts
+             WHERE kb_id = $1 AND invalidated_at IS NULL AND predicate_id IS NOT NULL
+             GROUP BY predicate_id
+         ) u ON u.predicate_id = r.id
+         WHERE r.kb_id = $1 ORDER BY lower(r.label)",
     )
     .bind(kb_id)
     .fetch_all(pool)
