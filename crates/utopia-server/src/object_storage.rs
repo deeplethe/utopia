@@ -381,15 +381,21 @@ mod tests {
         Ok(())
     }
 
-    /// GCS 真连一次。**没有可用的模拟器，所以这条在 CI 上永远跳过。**
+    /// GCS against a real bucket. Run on 2026-10-05 in us-central1: flat
+    /// namespace, uniform access, a service account with only
+    /// `Storage Object Viewer` on the bucket. It passed.
     ///
-    /// 试过 `fsouza/fake-gcs-server`，不行：它只实现 JSON API
-    /// （`/storage/v1/b/...`），而 `object_store` 的 GCS 后端列对象走的是
-    /// **XML API**（`/bucket?list-type=2`），那个路径上它回 404。
-    /// 换句话说，最常见的那个 GCS 模拟器测不了我们实际用的那条协议路径。
+    /// **CI still skips it: there is no usable emulator.** `fsouza/fake-gcs-server`
+    /// implements the JSON API (`/storage/v1/b/...`), while `object_store` lists
+    /// over the XML API (`/bucket?list-type=2`), where it answers 404.
     ///
-    /// 所以 GCS 这条路径**只有构造测试覆盖**，跟 S3 与 Azure 不是一个成色。
-    /// 有真桶的人跑一次就能补上：
+    /// The bucket needs two things under `docs/`:
+    /// - `a.txt` containing `hello`
+    /// - one folder made in the Cloud Console. The console writes a zero-byte
+    ///   placeholder (`docs/x/`) and `object_store` hands it back as `docs/x`,
+    ///   the same shape that took S3 sync down. Without one the test cannot
+    ///   reach that path, so it fails instead of passing hollow.
+    ///
     /// ```text
     /// UTOPIA_GCS_TEST_ENDPOINT=https://storage.googleapis.com \\
     ///   UTOPIA_GCS_TEST_BUCKET=your-bucket \\
@@ -410,11 +416,36 @@ mod tests {
             cfg["service_account_key"] = serde_json::Value::String(k);
         }
         let store = client("gcs", &cfg)?;
+
+        // Look at the raw listing first. `fetch` drops placeholders by size, so
+        // its output alone cannot tell "filtered" from "never there".
+        let prefix = StorePath::from("docs");
+        let mut raw = store.list(Some(&prefix));
+        let mut placeholders = 0usize;
+        while let Some(meta) = raw.next().await {
+            if meta?.size == 0 {
+                placeholders += 1;
+            }
+        }
+        assert!(
+            placeholders > 0,
+            "no zero-byte placeholder under docs/: make a folder in the Cloud Console"
+        );
+
         let (objs, _) = fetch("gcs", store.as_ref(), &bucket, Some("docs")).await?;
+        let keys: Vec<&str> = objs.iter().map(|o| o.external_key.as_str()).collect();
+        assert!(
+            objs.iter().all(|o| !o.bytes.is_empty()),
+            "a placeholder reached fetch's output: {keys:?}"
+        );
 
         let a = objs.iter().find(|o| o.filename == "a.txt").expect("a.txt");
+        assert_eq!(a.bytes, b"hello", "wrong content read back");
         assert_eq!(a.external_key, format!("gs://{bucket}/docs/a.txt"));
-        assert!(a.last_modified.is_some());
+        assert!(
+            a.last_modified.is_some(),
+            "LastModified is the only source of doc_time"
+        );
         Ok(())
     }
 }
