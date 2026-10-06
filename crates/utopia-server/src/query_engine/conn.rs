@@ -1,9 +1,10 @@
-//! 连接串解析。一个输入框、四种 scheme；这里把 URL 拆成各引擎要的字段。
+//! 连接串解析。一个输入框，scheme 决定引擎；这里把 HTTP 族的 URL 拆成各引擎要的字段。
 //!
 //! 写法沿用 `postgres://user:pass@host/db` 的形状：凭据在 userinfo 里，HTTP 族的
 //! 令牌放 password 位（`databricks://:TOKEN@…`），路径是「目录 / 库 / schema」，
-//! 引擎特有的开关走 query。`ssl=false` 让 HTTP 族走明文——给本地代理与测试用，
-//! 线上的三家都只认 https。
+//! 引擎特有的开关走 query。`ssl=false` 让 HTTP 族走明文——给本地代理与测试用。
+//! Databricks 与 Snowflake 线上只认 https；Trino 与 ClickHouse 默认明文，按端口与
+//! `ssl` 升级（各自的规则见 `TrinoConn` / `ClickHouseConn`）。
 
 use percent_encoding::percent_decode_str;
 use url::Url;
@@ -89,6 +90,37 @@ impl TrinoConn {
             password,
             catalog: segs.first().cloned(),
             schema: segs.get(1).cloned(),
+        })
+    }
+}
+
+/// `clickhouse://user[:password]@host[:port]/[database][?ssl=true|false]`
+///
+/// 走 HTTP 接口：明文 8123，https 8443。`ssl=true`（clickhouse-go 的 `secure=true` 也认）
+/// 或端口 443 / 8443 时走 https，`ssl=false` 强制明文。跟 Trino 不同，带密码**不**升级
+/// https：ClickHouse 在明文口上照收密码，自建实例多半就是这样。不写用户就是服务器的
+/// `default` 用户；库名是之后每条查询的默认库，也是取 schema 的范围。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClickHouseConn {
+    pub base: String,
+    pub user: Option<String>,
+    pub password: Option<String>,
+    pub database: Option<String>,
+}
+
+impl ClickHouseConn {
+    pub fn parse(conn: &str) -> anyhow::Result<Self> {
+        let u = Url::parse(conn.trim())?;
+        let https = !ssl_off(&u)
+            && (query(&u, "ssl").as_deref() == Some("true")
+                || query(&u, "secure").as_deref() == Some("true")
+                || matches!(u.port(), Some(443) | Some(8443)));
+        let base = base_of(&u, https, if https { 8443 } else { 8123 })?;
+        Ok(Self {
+            base,
+            user: Some(decode(u.username())).filter(|s| !s.is_empty()),
+            password: u.password().map(decode).filter(|s| !s.is_empty()),
+            database: segments(&u).first().cloned(),
         })
     }
 }
@@ -179,7 +211,34 @@ impl SnowflakeConn {
 
 #[cfg(test)]
 mod tests {
-    use super::{DatabricksConn, SnowflakeConn, TrinoConn};
+    use super::{ClickHouseConn, DatabricksConn, SnowflakeConn, TrinoConn};
+
+    #[test]
+    fn clickhouse_is_plain_http_on_8123_unless_asked_for_tls() {
+        let c = ClickHouseConn::parse("clickhouse://analyst:p%40ss@ch.internal/sales").unwrap();
+        assert_eq!(c.base, "http://ch.internal:8123");
+        assert_eq!(c.user.as_deref(), Some("analyst"));
+        // 带密码不升级：这一点跟 Trino 相反，见 ClickHouseConn 上的注释
+        assert_eq!(c.password.as_deref(), Some("p@ss"));
+        assert_eq!(c.database.as_deref(), Some("sales"));
+
+        let c = ClickHouseConn::parse("clickhouse://u:p@abc.clickhouse.cloud:8443/db").unwrap();
+        assert_eq!(c.base, "https://abc.clickhouse.cloud:8443");
+        let c = ClickHouseConn::parse("clickhouse://u@ch.internal?ssl=true").unwrap();
+        assert_eq!(c.base, "https://ch.internal:8443");
+        assert_eq!(c.database, None);
+        let c = ClickHouseConn::parse("clickhouse://u@ch.internal:9443?secure=true").unwrap();
+        assert_eq!(c.base, "https://ch.internal:9443");
+        let c = ClickHouseConn::parse("clickhouse://u@127.0.0.1:8443?ssl=false").unwrap();
+        assert_eq!(c.base, "http://127.0.0.1:8443");
+
+        // 没有用户就交给服务器的 default 用户
+        let c = ClickHouseConn::parse("clickhouse://ch.internal:8123").unwrap();
+        assert_eq!(c.user, None);
+        assert_eq!(c.password, None);
+
+        assert!(ClickHouseConn::parse("clickhouse:///sales").is_err());
+    }
 
     #[test]
     fn trino_defaults_to_plain_http_and_upgrades_when_it_must() {

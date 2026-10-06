@@ -4,18 +4,21 @@
 //! （`mysql.rs`，一条协议顺带覆盖 TiDB / OceanBase / Doris / StarRocks / MariaDB）
 //! → HTTP 族——
 //! `trino.rs` 一个顶起 Iceberg / Delta / Hive 整个湖仓生态，`databricks.rs`、
-//! `snowflake.rs` 各走自家的 SQL REST API。挂载模型与注册表引擎无关，加引擎只放宽
-//! 一条 CHECK。连接串是唯一的输入：引擎由 scheme 决定（[`engine_from_conn`]），
-//! 剩下的部分各引擎自己拆（`conn.rs`），凭据只在服务端流转。
+//! `snowflake.rs` 各走自家的 SQL REST API，`clickhouse.rs` 走 ClickHouse 的 HTTP 接口。
+//! 挂载模型与注册表引擎无关，加引擎只放宽一条 CHECK。连接串是唯一的输入：引擎由
+//! scheme 决定（[`engine_from_conn`]），剩下的部分各引擎自己拆（`conn.rs`），
+//! 凭据只在服务端流转。
 //!
 //! 安全闸（纵深防御，不信任模型）：
 //! 1. sqlparser 解析：仅放行单条 SELECT/WITH（含 CTE），拒绝 DML/DDL/多语句/SELECT INTO。
 //!    按引擎选方言；sqlparser 没有 Trino 方言，Generic 是它的超集
 //! 2. 强制外包一层 LIMIT（cap+1 探测截断）
 //! 3. 会话级只读 + 语句超时（引擎各自的机制，parser 万一漏网也写不进去）。
-//!    HTTP 族没有会话，只有语句超时——只读靠第 1 层，这是它们比线协议少的那一层
+//!    HTTP 族没有会话，只有语句超时——只读靠第 1 层，这是它们比线协议少的那一层。
+//!    ClickHouse 例外：每个请求自己带 `readonly`，见 `clickhouse.rs`
 //! 4. 结果统一为 JSON Lines：PG 让库自己转；HTTP 族拿到列名与值后在这里拼，列序保留
 
+mod clickhouse;
 mod conn;
 mod databricks;
 mod mysql;
@@ -25,7 +28,8 @@ mod trino;
 
 use sqlparser::ast::Statement;
 use sqlparser::dialect::{
-    DatabricksDialect, GenericDialect, MySqlDialect, PostgreSqlDialect, SnowflakeDialect,
+    ClickHouseDialect, DatabricksDialect, GenericDialect, MySqlDialect, PostgreSqlDialect,
+    SnowflakeDialect,
 };
 use sqlparser::parser::Parser;
 use std::time::Duration;
@@ -38,7 +42,14 @@ pub(crate) const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 pub(crate) const HTTP_POLL_BUDGET: Duration = Duration::from_secs(30);
 
 /// 注册表里 `engine` 列的取值。迁移里的 CHECK 与这张表要一致
-pub const ENGINES: &[&str] = &["postgres", "mysql", "trino", "databricks", "snowflake"];
+pub const ENGINES: &[&str] = &[
+    "postgres",
+    "mysql",
+    "trino",
+    "databricks",
+    "snowflake",
+    "clickhouse",
+];
 
 #[derive(Debug)]
 pub struct QueryResult {
@@ -56,8 +67,8 @@ pub struct SchemaColumn {
     pub comment: Option<String>,
     /// 该列本身是这张表的主键（单列主键；组合主键里这一位仍为 false）。
     /// Postgres（#671）与 MySQL / MariaDB（#678）从 catalog 读出来；Trino / Snowflake /
-    /// Databricks 恒为 false，意思是「不知道」，不是「不是键」（各自能不能读见
-    /// `trino::schema_row` 上的注释）。
+    /// Databricks / ClickHouse 恒为 false，意思是「不知道」，不是「不是键」
+    /// （各自能不能读见 `trino::schema_row` 上的注释）。
     /// 探索提示词靠它把 ID 与量分开，宽表上一个八十列的 schema 没有这个
     /// 几乎认不出哪一列是键（#502）
     pub is_primary_key: bool,
@@ -88,6 +99,7 @@ pub fn engine_from_conn(conn: &str) -> Option<&'static str> {
         "trino" | "presto" => Some("trino"),
         "databricks" => Some("databricks"),
         "snowflake" => Some("snowflake"),
+        "clickhouse" => Some("clickhouse"),
         _ => None,
     }
 }
@@ -106,6 +118,9 @@ pub fn engine_for(engine: &str, conn: &str) -> anyhow::Result<Box<dyn QueryEngin
         "snowflake" => Ok(Box::new(snowflake::SnowflakeEngine::new(
             conn::SnowflakeConn::parse(conn)?,
         ))),
+        "clickhouse" => Ok(Box::new(clickhouse::ClickHouseEngine::new(
+            conn::ClickHouseConn::parse(conn)?,
+        ))),
         other => anyhow::bail!("Unsupported engine: {other}"),
     }
 }
@@ -119,6 +134,7 @@ pub fn guard_sql_for(engine: &str, sql: &str) -> anyhow::Result<String> {
     let parsed = match engine {
         "databricks" => Parser::parse_sql(&DatabricksDialect {}, cleaned),
         "snowflake" => Parser::parse_sql(&SnowflakeDialect {}, cleaned),
+        "clickhouse" => Parser::parse_sql(&ClickHouseDialect {}, cleaned),
         "trino" => Parser::parse_sql(&GenericDialect {}, cleaned),
         "mysql" => Parser::parse_sql(&MySqlDialect {}, cleaned),
         _ => Parser::parse_sql(&PostgreSqlDialect {}, cleaned),
@@ -149,7 +165,7 @@ fn statement_kind(s: &Statement) -> &'static str {
     }
 }
 
-/// 第 2 层：外包一层 LIMIT。三个 HTTP 引擎都认这个写法；PG 有自己的 row_to_json 版本
+/// 第 2 层：外包一层 LIMIT。HTTP 族的引擎都认这个写法；PG 有自己的 row_to_json 版本
 pub(crate) fn wrap_limit(sql: &str) -> String {
     format!("SELECT * FROM ( {sql} ) AS _q LIMIT {}", ROW_CAP + 1)
 }
@@ -185,7 +201,9 @@ pub(crate) fn rows_to_json_lines(
         .collect()
 }
 
-/// Databricks 的 JSON_ARRAY 与 Snowflake 的 data 把每个值都给成字符串（或 null）。
+/// Databricks 的 JSON_ARRAY 与 Snowflake 的 data 把每个值都给成字符串（或 null），
+/// ClickHouse 的 JSONCompactStrings 也是（它只把浮点与布尔交给这里，
+/// 见 `clickhouse::cell`）。
 /// 按列类型把数与布尔还原，其余留字符串——模型对 `"42"` 和 `42` 的算术不一样
 pub(crate) fn coerce(type_name: &str, raw: &serde_json::Value) -> serde_json::Value {
     let serde_json::Value::String(s) = raw else {
@@ -319,7 +337,14 @@ mod tests {
 
     #[test]
     fn every_dialect_keeps_the_same_gate() {
-        for engine in ["postgres", "mysql", "trino", "databricks", "snowflake"] {
+        for engine in [
+            "postgres",
+            "mysql",
+            "trino",
+            "databricks",
+            "snowflake",
+            "clickhouse",
+        ] {
             assert!(
                 guard_sql_for(engine, "SELECT a FROM t WHERE b > 1").is_ok(),
                 "{engine}"
@@ -336,6 +361,14 @@ mod tests {
         assert!(guard_sql_for("trino", "SELECT count(*) FROM hive.default.orders").is_ok());
         // MySQL 的反引号与 PG 方言不兼容，走自己的方言才过得去
         assert!(guard_sql_for("mysql", "SELECT `region` FROM `sales`.`orders`").is_ok());
+        // ClickHouse 的函数名与 FINAL 修饰都要过得去。语句里的 SETTINGS 闸这一层不管：
+        // readonly=1 生效时服务器拒掉它；readonly=2 的账号不拒，那时超时靠 KILL
+        // （见 clickhouse.rs）
+        assert!(guard_sql_for(
+            "clickhouse",
+            "SELECT toStartOfMonth(placed_on) AS m, count() FROM sales.orders FINAL GROUP BY m"
+        )
+        .is_ok());
     }
 
     #[test]
@@ -355,6 +388,10 @@ mod tests {
         assert_eq!(engine_from_conn("mysql://u:p@h:3306/db"), Some("mysql"));
         // 同一套协议的另一个写法，引擎里会被改写成 mysql:// 再交给驱动
         assert_eq!(engine_from_conn("mariadb://u@h/db"), Some("mysql"));
+        assert_eq!(
+            engine_from_conn("clickhouse://u:p@h:8123/sales"),
+            Some("clickhouse")
+        );
         assert_eq!(engine_from_conn("garbage"), None);
     }
 

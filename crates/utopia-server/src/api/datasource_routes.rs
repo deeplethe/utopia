@@ -58,7 +58,7 @@ pub async fn create(
         utopia_core::AppError::invalid(
             "unsupported_conn_scheme",
             format!(
-                "Connection string must start with one of: postgres://, mysql://, trino://, databricks://, snowflake:// (engines: {})",
+                "Connection string must start with one of: postgres://, mysql://, trino://, databricks://, snowflake://, clickhouse:// (engines: {})",
                 crate::query_engine::ENGINES.join(", ")
             ),
         )
@@ -115,7 +115,7 @@ pub async fn test_conn(
         AppError::invalid(
             "unsupported_conn_scheme",
             format!(
-                "Connection string must start with one of: postgres://, mysql://, trino://, databricks://, snowflake:// (engines: {})",
+                "Connection string must start with one of: postgres://, mysql://, trino://, databricks://, snowflake://, clickhouse:// (engines: {})",
                 crate::query_engine::ENGINES.join(", ")
             ),
         )

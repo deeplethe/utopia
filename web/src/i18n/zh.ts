@@ -1072,7 +1072,8 @@ export const zh: Strings = {
         "mysql://user:pass@host:3306/db   （MariaDB、TiDB、OceanBase、Doris、StarRocks）\n" +
         "trino://user[:pass]@host:8080/catalog[/schema]   （Iceberg、Delta Lake、Hive）\n" +
         "databricks://:TOKEN@host/sql/1.0/warehouses/ID?catalog=main\n" +
-        "snowflake://:TOKEN@account.snowflakecomputing.com/DB/SCHEMA?warehouse=WH",
+        "snowflake://:TOKEN@account.snowflakecomputing.com/DB/SCHEMA?warehouse=WH\n" +
+        "clickhouse://user:pass@host:8123/db   （?ssl=true 走 https，8443）",
       add: "添加数据源",
       newTitle: "登记数据源",
       engine: "引擎",

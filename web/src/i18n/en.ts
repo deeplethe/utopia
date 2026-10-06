@@ -1214,7 +1214,8 @@ export const en = {
         "mysql://user:pass@host:3306/db   (MariaDB, TiDB, OceanBase, Doris, StarRocks)\n" +
         "trino://user[:pass]@host:8080/catalog[/schema]   (Iceberg, Delta Lake, Hive)\n" +
         "databricks://:TOKEN@host/sql/1.0/warehouses/ID?catalog=main\n" +
-        "snowflake://:TOKEN@account.snowflakecomputing.com/DB/SCHEMA?warehouse=WH",
+        "snowflake://:TOKEN@account.snowflakecomputing.com/DB/SCHEMA?warehouse=WH\n" +
+        "clickhouse://user:pass@host:8123/db   (?ssl=true: https, 8443)",
       add: "Add data source",
       newTitle: "New data source",
       engine: "Engine",
