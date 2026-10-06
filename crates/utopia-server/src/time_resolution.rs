@@ -13,6 +13,10 @@
 //!    没有一个时间词写在代码里（决定 8）。写明的日期是 A 级，从文档自己给的锚点算出来的是
 //!    B 级，锚不到的是 C 级——C 级什么也不写，等锚点（决定 4、6）。
 //! 4. 结果落到开放陈述的 `valid_from` / `valid_to`（决定 5 的第一根轴），时间轴上才有它。
+//!
+//! 例外只长在推送的陈述上（0054 来源）：`when` / `ended` 写的是完整日期或带区时刻时，
+//! 载荷就已经是结构化的绝对值——结构化的时间戳不是时间词（0045 决定 8，#1089），代码
+//! 直接读成解释，不送模型；没有对话模型时，代码读得动的照解，读不动的留 C，任务照常收工。
 
 use crate::extraction::chat_retrying_rate_limits_at;
 use crate::llm_util;
@@ -386,6 +390,50 @@ fn context_at(context: &DocumentDating, now: Option<usize>) -> DocumentDating {
     scoped
 }
 
+/// 推送的陈述把 `when` / `ended` 写成完整日期或带区时刻时，这里就把它读成一条解释
+/// （#1089；0045 决定 8：结构化的时间戳不是时间词）。形状是点、参照是照写的绝对值、
+/// 粒度是字写到的那一级——与模型对同样的字该给的回答一致。`from` 存换算成 UTC 后的
+/// 部件：`DateParts` 不带区，偏移在 `parse_time` 里已经折进值里；存 UTC 部件的解释
+/// 再算一遍得到同一个值，存原样的本地钟点反而会读出另一个时刻。
+///
+/// 只收 `parse_time` 读到「日」或更细的：`YYYY-MM-DD` 与带 `Z` 或偏移的
+/// `YYYY-MM-DDTHH[:MM[:SS]]`。光杆的年、年月、以及任何读不动的字都回 `None`，
+/// 照旧走模型那条路——这一刀不替代码认时间词。
+fn stated_reading(text: &str, id: i64) -> Option<Interpretation> {
+    let (t, precision) = utopia_extract::parse_time(text)?;
+    use chrono::{Datelike, Timelike};
+    let (granularity, hour, minute, second) = match precision {
+        "day" => (Granularity::Day, None, None, None),
+        "hour" => (Granularity::Hour, Some(t.hour()), None, None),
+        "minute" => (Granularity::Minute, Some(t.hour()), Some(t.minute()), None),
+        "second" => (
+            Granularity::Second,
+            Some(t.hour()),
+            Some(t.minute()),
+            Some(t.second()),
+        ),
+        // 光杆的年、年月不在这刀里（#1089 的界），退回 None 让模型读
+        _ => return None,
+    };
+    Some(Interpretation {
+        id,
+        shape: Shape::Point,
+        reference: Reference::Absolute {
+            from: DateParts {
+                year: t.year(),
+                quarter: None,
+                month: Some(t.month()),
+                day: Some(t.day()),
+                hour,
+                minute,
+                second,
+            },
+            to: None,
+        },
+        granularity,
+    })
+}
+
 /// 一条陈述的起与止：`when` 给起（点与区间也给止），`ended` 给止。
 fn combine(when: Option<Resolved>, ended: Option<Resolved>) -> Resolved {
     let mut r = when.unwrap_or(UNRESOLVED);
@@ -412,11 +460,17 @@ pub async fn resolve_document(state: &AppState, document_id: Uuid) -> anyhow::Re
         return Ok(());
     }
     let kb = utopia_store::kbs::get(pool, doc.kb_id).await?;
-    let settings = utopia_store::settings::get(pool, kb.workspace_id)
+    let settings = utopia_store::settings::get(pool, kb.workspace_id).await?;
+    let client = settings.as_ref().and_then(llm_util::chat_client);
+    // 推送来的陈述（0054）：`when` / `ended` 写的完整日期或带区时刻由代码直接读（#1089），
+    // 没有对话模型也照常解；别的文档照旧——没有对话模型，这一步就没有替它读字的人
+    let pushed = crate::pipeline::source_kind(state, doc.source_id)
         .await?
-        .ok_or_else(|| anyhow::anyhow!("Chat model not configured; cannot resolve time"))?;
-    let client = llm_util::chat_client(&settings)
-        .ok_or_else(|| anyhow::anyhow!("Chat model not configured; cannot resolve time"))?;
+        .as_deref()
+        == Some("statements");
+    if !pushed && client.is_none() {
+        anyhow::bail!("Chat model not configured; cannot resolve time");
+    }
 
     // 1. 文档时间上下文：抽取时各块报上来的（0064）。这里不问模型
     let context: DocumentDating = match doc.time_context.clone() {
@@ -504,12 +558,23 @@ pub async fn resolve_document(state: &AppState, document_id: Uuid) -> anyhow::Re
     let mut distinct: Vec<Key> = Vec::new();
     let mut index: HashMap<Key, usize> = HashMap::new();
     let mut key_of: HashMap<Uuid, Key> = HashMap::new();
+    // 推送来的陈述（0054）：载荷写的完整日期或带区时刻由代码读成解释（#1089）。
+    // 解释与别的提及同去同回，只是它从不进问模型的清单——重问也只能是这个答案，
+    // 代码读过的不许模型盖掉；判据是文档来自 `statements` 来源，不是字长得像日期，
+    // 普通文档里同样的字照旧交给模型
+    let mut presolved: HashMap<usize, Interpretation> = HashMap::new();
     for m in &mentions {
         let key = (m.text.clone(), m.sentence.clone(), now_of(m));
         key_of.insert(m.id, key.clone());
-        if !index.contains_key(&key) {
-            index.insert(key.clone(), distinct.len());
-            distinct.push(key);
+        if index.contains_key(&key) {
+            continue;
+        }
+        index.insert(key.clone(), distinct.len());
+        distinct.push(key);
+        if pushed {
+            if let Some(interp) = stated_reading(&m.text, (distinct.len() - 1) as i64) {
+                presolved.insert(distinct.len() - 1, interp);
+            }
         }
     }
     let ctx = TimeContext {
@@ -518,60 +583,64 @@ pub async fn resolve_document(state: &AppState, document_id: Uuid) -> anyhow::Re
         periods: &context.periods,
         fiscal_year_end: context.fiscal_year_end,
     };
-    let mut interpretations = Vec::new();
+    let mut interpretations: Vec<Interpretation> = presolved.values().cloned().collect();
     let mut received = HashSet::new();
     let mut malformed = 0usize;
     // 问两轮：第一轮全部，第二轮只问第一轮没答到的。模型漏答的提及从前就留着字、没有解释，
-    // 也没有人再问（测量台上的「上周」三遍都是这样）
-    let mut todo: Vec<usize> = (0..distinct.len()).collect();
-    for round in 0..2 {
-        if round == 1 {
-            todo.retain(|i| !received.contains(&(*i as i64)));
-            if todo.is_empty() {
-                break;
-            }
-            tracing::info!(%document_id, unanswered = todo.len(), "时间解释有没答到的，再问一次");
-        }
-        for batch in todo.clone().chunks(BATCH) {
-            let inputs: Vec<MentionInput<'_>> = batch
-                .iter()
-                .map(|&i| MentionInput {
-                    id: i as i64,
-                    text: &distinct[i].0,
-                    sentence: &distinct[i].1,
-                })
-                .collect();
-            let ids: Vec<i64> = inputs.iter().map(|m| m.id).collect();
-            let messages = build_interpretation_messages(&ctx, &inputs);
-            let reply = match chat_retrying_rate_limits_at(
-                state,
-                &settings,
-                &client,
-                &messages,
-                Some(0.0),
-            )
-            .await
-            {
-                Ok(r) => r,
-                Err(e) => {
-                    tracing::warn!(%document_id, error = %e, "时间解释调用失败，这一批留作未解析");
-                    continue;
+    // 也没有人再问（测量台上的「上周」三遍都是这样）。代码已经读出答案的不问
+    let mut todo: Vec<usize> = (0..distinct.len())
+        .filter(|i| !presolved.contains_key(i))
+        .collect();
+    if let (Some(settings), Some(client)) = (settings.as_ref(), client.as_ref()) {
+        for round in 0..2 {
+            if round == 1 {
+                todo.retain(|i| !received.contains(&(*i as i64)));
+                if todo.is_empty() {
+                    break;
                 }
-            };
-            let (interps, skipped) = match parse_interpretation_response(&reply.text, &ids) {
-                Ok(x) => x,
-                Err(e) => {
-                    tracing::warn!(%document_id, error = %e, "时间解释回复解析失败，这一批留作未解析");
-                    continue;
-                }
-            };
-            malformed += skipped;
-            if skipped > 0 {
-                // 坏条目要看得见是哪一条、坏在哪：只报一个数的话，「上周」三遍都没日期也查不出原因
-                tracing::warn!(%document_id, skipped, reply = %reply.text.chars().take(600).collect::<String>(), "时间解释里有读不了的条目");
+                tracing::info!(%document_id, unanswered = todo.len(), "时间解释有没答到的，再问一次");
             }
-            received.extend(interps.iter().map(|interp| interp.id));
-            interpretations.extend(interps);
+            for batch in todo.clone().chunks(BATCH) {
+                let inputs: Vec<MentionInput<'_>> = batch
+                    .iter()
+                    .map(|&i| MentionInput {
+                        id: i as i64,
+                        text: &distinct[i].0,
+                        sentence: &distinct[i].1,
+                    })
+                    .collect();
+                let ids: Vec<i64> = inputs.iter().map(|m| m.id).collect();
+                let messages = build_interpretation_messages(&ctx, &inputs);
+                let reply = match chat_retrying_rate_limits_at(
+                    state,
+                    settings,
+                    client,
+                    &messages,
+                    Some(0.0),
+                )
+                .await
+                {
+                    Ok(r) => r,
+                    Err(e) => {
+                        tracing::warn!(%document_id, error = %e, "时间解释调用失败，这一批留作未解析");
+                        continue;
+                    }
+                };
+                let (interps, skipped) = match parse_interpretation_response(&reply.text, &ids) {
+                    Ok(x) => x,
+                    Err(e) => {
+                        tracing::warn!(%document_id, error = %e, "时间解释回复解析失败，这一批留作未解析");
+                        continue;
+                    }
+                };
+                malformed += skipped;
+                if skipped > 0 {
+                    // 坏条目要看得见是哪一条、坏在哪：只报一个数的话，「上周」三遍都没日期也查不出原因
+                    tracing::warn!(%document_id, skipped, reply = %reply.text.chars().take(600).collect::<String>(), "时间解释里有读不了的条目");
+                }
+                received.extend(interps.iter().map(|interp| interp.id));
+                interpretations.extend(interps);
+            }
         }
     }
     // 收到解释和算出日期是两件事：补答只问没收到的，计算则看全部批次和补答里的解释。
@@ -599,7 +668,23 @@ pub async fn resolve_document(state: &AppState, document_id: Uuid) -> anyhow::Re
             continue;
         };
         let Some((interp, r)) = resolved.get(&i) else {
-            // 这一批没答到：留着字，不写等级（下次重跑再问）
+            // 推送的文档没有对话模型可问（#1089）：代码读不动的提及按 C 记——「有提及、
+            // 没能放上轴」和「没有时间词」要分得出；任务照常收工，不因一个没配的模型
+            // 留下永远失败的任务。解释列留空：没有人读过它，不编一条出来
+            if pushed && client.is_none() {
+                utopia_store::time_mentions::set_resolution(
+                    pool, m.id, "C", None, None, None, None,
+                )
+                .await?;
+                c += 1;
+                let slot = per_fact.entry(m.fact_id).or_insert((None, None));
+                if m.role == "ended" {
+                    slot.1 = Some(UNRESOLVED);
+                } else {
+                    slot.0 = Some(UNRESOLVED);
+                }
+            }
+            // 有模型而没答到的：留着字，不写等级（下次重跑再问）
             continue;
         };
         utopia_store::time_mentions::set_interpretation(
@@ -756,8 +841,70 @@ mod context_tests;
 mod attestation_tests;
 
 #[cfg(test)]
+#[path = "time_resolution_pushed_tests.rs"]
+mod pushed_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 推送载荷里写明的值（#1089）：完整日期与带区时刻读成点状绝对解释，精度随字；
+    /// 光杆的年、年月、读不动的字都回 None——不替代码认时间词
+    #[test]
+    fn a_stated_value_reads_at_the_precision_it_writes() {
+        let read = |s: &str| {
+            let interp = stated_reading(s, 0)?;
+            let Reference::Absolute { from, to } = interp.reference else {
+                return None;
+            };
+            assert_eq!(interp.shape, Shape::Point);
+            assert!(to.is_none());
+            Some((from, interp.granularity))
+        };
+        let date = |y, m, d, h, mi, s| DateParts {
+            year: y,
+            quarter: None,
+            month: Some(m),
+            day: Some(d),
+            hour: h,
+            minute: mi,
+            second: s,
+        };
+        assert_eq!(
+            read("2026-09-23"),
+            Some((date(2026, 9, 23, None, None, None), Granularity::Day))
+        );
+        assert_eq!(
+            read("2026-09-23T08Z"),
+            Some((date(2026, 9, 23, Some(8), None, None), Granularity::Hour))
+        );
+        assert_eq!(
+            read("2026-09-23T08:14Z"),
+            Some((
+                date(2026, 9, 23, Some(8), Some(14), None),
+                Granularity::Minute
+            ))
+        );
+        assert_eq!(
+            read("2026-09-23T08:14:03Z"),
+            Some((
+                date(2026, 9, 23, Some(8), Some(14), Some(3)),
+                Granularity::Second
+            ))
+        );
+        // 偏移折进值里：+08:00 的 08:14 是 UTC 的 00:14
+        assert_eq!(
+            read("2026-09-23T08:14:03+08:00"),
+            Some((
+                date(2026, 9, 23, Some(0), Some(14), Some(3)),
+                Granularity::Second
+            ))
+        );
+        // 这一刀之外的字：光杆的年、年月、自然语言
+        for s in ["2026", "2026-09", "last Tuesday", "ended", ""] {
+            assert!(read(s).is_none(), "{s:?} is not code-resolved");
+        }
+    }
 
     #[test]
     fn a_bare_date_is_named_once() {

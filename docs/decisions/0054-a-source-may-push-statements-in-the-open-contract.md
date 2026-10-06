@@ -87,7 +87,7 @@ Content-Type: application/json
 ## Open questions
 
 - Whether a statement with no offsets should look any different on a Review card. Today it does not.
-- Whether `when` should accept an RFC 3339 instant directly rather than time words, once the `instant` precision on the roadmap exists (0045).
+- Whether `when` should accept an RFC 3339 instant directly rather than time words, once the `instant` precision on the roadmap exists (0045). Settled 2026-10-06 (#1089): `when` and `ended` stay polymorphic and keep the words verbatim as the mention; a pushed complete date or zoned timestamp (`YYYY-MM-DD`, `YYYY-MM-DDTHH[:MM[:SS]]` with `Z` or an offset) is resolved by `resolve_time` itself, at the precision it writes and without a model round trip. Words code cannot read still go to the model, or wait at grade C when no chat model is configured. A bare year or year-month is not in this cut.
 
 ## Revisions
 

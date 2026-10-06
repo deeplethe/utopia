@@ -63,6 +63,8 @@ Each resolved time carries a grade: **A**, an absolute date the text writes; **B
 
 The interpretation is the model's; code does arithmetic on structured fields and checks the words against the chunk. No list of relative expressions, month names or period words is matched in code, in any language.
 
+A timestamp is not a time word: a complete date or zoned timestamp a pushed statement supplies in `when` / `ended` (a `statements` source, 0054) is structured already, so `resolve_time` reads it in code at its stated precision and keeps the literal words as the mention (#1089). Mentions that arrive as prose keep this decision's model path.
+
 ## Not doing
 
 - **Dates computed by the model**, in any field of the contract.
