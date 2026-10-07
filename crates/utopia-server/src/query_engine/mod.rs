@@ -88,7 +88,7 @@ pub trait QueryEngine: Send + Sync {
     async fn execute(&self, sql: &str) -> anyhow::Result<QueryResult>;
 }
 
-/// scheme → 引擎名。界面只有一个连接串输入框，这里是它唯一的分派点。
+/// scheme → 引擎名。界面上每档引擎的表单最后都拼成一条连接串（`dsSpecs`），这里是它唯一的分派点。
 pub fn engine_from_conn(conn: &str) -> Option<&'static str> {
     let scheme = conn.trim().split("://").next()?.to_ascii_lowercase();
     match scheme.as_str() {

@@ -185,7 +185,7 @@ pub(super) fn tools_schema(can_write: bool, data_source_names: &[String]) -> ser
                             },
                             "sql": {
                                 "type": "string",
-                                "description": "One SELECT/WITH statement in the source's own SQL dialect (PostgreSQL, Trino, Databricks or Snowflake; the schema document names the engine)."
+                                "description": "One SELECT/WITH statement in the source's own SQL dialect (PostgreSQL, MySQL, ClickHouse, Trino, Databricks or Snowflake; the schema document names the engine)."
                             },
                             "purpose": {
                                 "type": "string",

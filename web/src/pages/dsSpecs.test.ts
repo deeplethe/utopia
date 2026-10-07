@@ -25,6 +25,18 @@ describe("dsSpecs", () => {
     }
   });
 
+  it("ClickHouse 的用户与库可以不填，端口默认 8123", () => {
+    const ch = dsSpecs().find((s) => s.id === "clickhouse");
+    expect(ch).toBeDefined();
+    expect(ch!.build({ host: "ch.internal" })).toBe("clickhouse://ch.internal:8123");
+    expect(ch!.build({ host: "ch.internal", password: "pw" })).toBe(
+      "clickhouse://default:pw@ch.internal:8123",
+    );
+    expect(
+      ch!.build({ host: "ch.internal", port: "8443", database: "sales", user: "ro", password: "p@ss" }),
+    ).toBe("clickhouse://ro:p%40ss@ch.internal:8443/sales");
+  });
+
   it("连接串那一档原样返回去掉首尾空白的输入", () => {
     const raw = dsSpecs().find((s) => s.id === "raw");
     expect(raw).toBeDefined();

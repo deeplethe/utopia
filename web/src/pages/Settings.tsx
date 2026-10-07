@@ -478,6 +478,24 @@ export function dsSpecs(): EngineSpec[] {
         `mysql://${auth(v.user, v.password)}${v.host}:${v.port || "3306"}/${v.database}`,
     },
     {
+      id: "clickhouse",
+      label: "ClickHouse",
+      // 用户与库都可以不填：不写用户就是服务器的 default，不写库就读所有非系统库。
+      // 端口 8443 / 443 服务端自己走 https，表单里不用再问一次
+      fields: [
+        { key: "host", label: D.fHost, placeholder: "ch.internal" },
+        { key: "port", label: D.fPort, placeholder: "8123" },
+        { key: "database", label: D.fDatabase, optional: true },
+        { key: "user", label: D.fUser, optional: true, placeholder: "default" },
+        { key: "password", label: D.fPassword, optional: true, secret: true },
+      ],
+      // 只填了密码就是 default 用户的密码：没有用户名，服务端不会把密码发出去
+      build: (v) =>
+        `clickhouse://${auth(v.user || (v.password ? "default" : ""), v.password)}` +
+        `${v.host}:${v.port || "8123"}` +
+        (v.database ? `/${enc(v.database)}` : ""),
+    },
+    {
       id: "trino",
       label: "Trino",
       fields: [
