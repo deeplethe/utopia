@@ -178,5 +178,8 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Test
         run: pnpm test
+      # 测量台的判等不依赖任何包，借这个 job 现成的 node 跑，不另开一条流水线
+      - name: Bench scoring tests
+        run: node --test ../scripts/bench/lib.test.mjs
       - name: Build (含类型检查)
         run: pnpm build
