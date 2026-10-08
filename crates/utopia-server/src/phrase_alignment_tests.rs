@@ -14,6 +14,8 @@ struct Model {
     hold: Arc<std::sync::atomic::AtomicBool>,
     entered: Arc<tokio::sync::Notify>,
     release: Arc<tokio::sync::Notify>,
+    /// 嵌入端点被叫了几次：短名单该不该嵌签名（#1097）看的是这个数
+    embeds: Arc<std::sync::atomic::AtomicUsize>,
 }
 async fn reply(State(m): State<Model>, Json(body): Json<Value>) -> impl IntoResponse {
     let n = {
@@ -41,7 +43,8 @@ async fn reply(State(m): State<Model>, Json(body): Json<Value>) -> impl IntoResp
 
 /// 脚本化的嵌入端点：每段文字一个由字节算出的四维向量。只要求确定、条数对得上——
 /// 这里测的是「向量有没有」，不是近不近
-async fn embed(Json(body): Json<Value>) -> impl IntoResponse {
+async fn embed(State(m): State<Model>, Json(body): Json<Value>) -> impl IntoResponse {
+    m.embeds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     let data: Vec<Value> = body["input"]
         .as_array()
         .cloned()
@@ -130,6 +133,7 @@ impl Fx {
             hold: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             entered: Arc::new(tokio::sync::Notify::new()),
             release: Arc::new(tokio::sync::Notify::new()),
+            embeds: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let endpoint = format!("http://{}", listener.local_addr()?);
@@ -250,6 +254,9 @@ impl Fx {
     }
     fn requests(&self) -> Vec<Value> {
         self.model.requests.lock().unwrap().clone()
+    }
+    fn embed_calls(&self) -> usize {
+        self.model.embeds.load(std::sync::atomic::Ordering::SeqCst)
     }
     fn prompt_of(&self, n: usize) -> String {
         self.requests()[n]["messages"][1]["content"]
@@ -506,6 +513,44 @@ async fn overflow_is_recorded_for_a_person_and_recovers_when_candidates_shrink(
         f.run().await?;
         assert_eq!(f.requests().len(), 2);
         assert_eq!(f.binding().await?.status, "bound");
+        anyhow::Ok(())
+    }
+    .await;
+    f.cleanup().await?;
+    run
+}
+
+/// 属性还都没有向量时，短名单不嵌签名（#1097）：嵌了最近邻也是空，模型照样看全部结构
+/// 候选。从前一个没跑过 `embed_ontology` 的库每轮把候选多的签名全送去嵌入，一条也用不上。
+/// 属性有了向量，同一条签名照常嵌、照常开短名单
+#[tokio::test]
+async fn signatures_are_not_embedded_while_no_property_has_a_vector() -> anyhow::Result<()> {
+    let Some(f) = Fx::new().await? else {
+        return Ok(());
+    };
+    let run = async {
+        f.enable_embeddings().await?;
+        // 12 条不声明域/值域的关系，加上 based_in 共 13 > SHORTLIST：这条签名要开短名单
+        for i in 0..12 {
+            sqlx::query("INSERT INTO relation_types(id,kb_id,key,label,kind,temporal) VALUES($1,$2,$3,$3,'relation','state')")
+                .bind(Uuid::now_v7()).bind(f.kb).bind(format!("filler_{i}")).execute(&f.pool).await?;
+        }
+        f.script(bound());
+        f.run().await?;
+        assert_eq!(f.embed_calls(), 0, "no property has a vector: nothing to embed for");
+        assert_eq!(f.binding().await?.status, "bound");
+        assert!(
+            f.prompt_of(0).contains("filler_11"),
+            "without a shortlist the model sees every fitting candidate"
+        );
+
+        sqlx::query("UPDATE relation_types SET embedding = '[1,0,0,0]' WHERE kb_id=$1")
+            .bind(f.kb)
+            .execute(&f.pool)
+            .await?;
+        f.script(bound());
+        f.run().await?;
+        assert_eq!(f.embed_calls(), 1, "with property vectors the signature is embedded");
         anyhow::Ok(())
     }
     .await;

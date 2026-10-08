@@ -289,7 +289,23 @@ async fn shortlist(
         return Ok(out);
     }
     let pool = &state.pool;
-    for batch in wide.chunks(SHORTLIST_EMBED_BATCH) {
+    // 先问这一类属性有没有向量，没有的签名不嵌：嵌了最近邻也是空，照样看全部。一个没跑过
+    // `embed_ontology` 的库从前每轮把一万七千条签名送去嵌入、短名单一条没开（#1097）。
+    // 一类问一句，至多两句
+    let mut has_vectors = HashMap::new();
+    for kind in ["relation", "attribute"] {
+        if wide.iter().any(|s| property_kind(s) == kind) {
+            let has =
+                utopia_store::ontology::has_relation_type_vectors(pool, kb_id, Some(kind)).await?;
+            has_vectors.insert(kind, has);
+        }
+    }
+    let usable: Vec<&PhraseSignature> = wide
+        .iter()
+        .copied()
+        .filter(|s| has_vectors.get(property_kind(s)) == Some(&true))
+        .collect();
+    for batch in usable.chunks(SHORTLIST_EMBED_BATCH) {
         let texts: Vec<String> = batch
             .iter()
             .map(|s| match (s.examples.first(), s.quotes.first()) {
@@ -314,17 +330,12 @@ async fn shortlist(
         };
         for (s, vector) in batch.iter().zip(vectors) {
             let (fitting, _) = &full[&s.key()];
-            let kind = if s.object_is_value {
-                "attribute"
-            } else {
-                "relation"
-            };
             let near = utopia_store::ontology::nearest_relation_type_ids(
                 pool,
                 kb_id,
                 &vector,
                 (fitting.len() * 2) as i64,
-                Some(kind),
+                Some(property_kind(s)),
             )
             .await?;
             if near.is_empty() {
@@ -343,8 +354,23 @@ async fn shortlist(
             );
         }
     }
-    tracing::info!(%kb_id, wide = wide.len(), shortlisted = out.len(), "候选短名单开好");
+    tracing::info!(
+        %kb_id,
+        wide = wide.len(),
+        skipped = wide.len() - usable.len(),
+        shortlisted = out.len(),
+        "候选短名单开好"
+    );
     Ok(out)
+}
+
+/// 签名能绑的是哪一类属性：宾语是字面值的绑属性，否则绑关系
+fn property_kind(s: &PhraseSignature) -> &'static str {
+    if s.object_is_value {
+        "attribute"
+    } else {
+        "relation"
+    }
 }
 
 /// 类别词 → 留给提规则看的属性 id（按相关度）。词的文本加几个例名嵌入，取最近的
@@ -359,7 +385,10 @@ async fn shortlist_kind_words(
     let Some(client) = llm_util::embed_client(settings) else {
         return Ok(out);
     };
-    if words.is_empty() {
+    // 一条带向量的属性都没有，嵌了也是空手而回（理由同 `shortlist`）
+    if words.is_empty()
+        || !utopia_store::ontology::has_relation_type_vectors(&state.pool, kb_id, None).await?
+    {
         return Ok(out);
     }
     for batch in words.chunks(SHORTLIST_EMBED_BATCH) {

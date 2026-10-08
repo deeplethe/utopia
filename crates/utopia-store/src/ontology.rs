@@ -1773,6 +1773,28 @@ pub async fn nearest_relation_type_ids(
     Ok(rows.into_iter().map(|(id,)| id).collect())
 }
 
+/// 这个库里有没有带向量的关系/属性（`only_kind` 同上）。谓词与
+/// [`nearest_relation_type_ids`] 的一字不差：这里答「没有」，那边对任何向量都返回空。
+///
+/// 存在的理由：短语对齐的短名单先把每条签名嵌入、再逐条问最近的属性，问回来是空才知道
+/// 属性还没向量。一个从没跑过 `embed_ontology` 的库每轮都把一万七千条签名送去嵌入，
+/// 一条也用不上（#1097）。先问这一句，用不上就不嵌
+pub async fn has_relation_type_vectors(
+    pool: &PgPool,
+    kb_id: Uuid,
+    only_kind: Option<&str>,
+) -> AppResult<bool> {
+    Ok(sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM relation_types
+                        WHERE kb_id = $1 AND embedding IS NOT NULL
+                          AND ($2::text IS NULL OR kind = $2))",
+    )
+    .bind(kb_id)
+    .bind(only_kind)
+    .fetch_one(pool)
+    .await?)
+}
+
 /// 一次插完一批类，返回 key → id。
 ///
 /// **存在的理由是 fsync。** 逐条 `execute(pool)` 每条各自提交，导入 schema.org
