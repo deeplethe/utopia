@@ -49,7 +49,10 @@ struct ChunkParsed {
 /// 要按分块顺序。`pushed`（0054）的块本身就是契约，不调模型，直接解析。
 ///
 /// `Ok(None)` 是这一块跳过了：调用失败或回复解析不出，原因已经记进 `drop_signal` 和
-/// `unextracted`，主循环接着走下一块。`Err` 只有一种：对话模型没配。
+/// `unextracted`，主循环接着走下一块。
+///
+/// `Err` has two causes: no chat model, or an empty balance (#1095). An empty balance
+/// stops the document, and the error keeps its chain for `alerting::hopeless`.
 ///
 /// 被接管的检查（epoch）留在主循环顶上，不在这里：它要在调模型之前
 #[allow(clippy::too_many_arguments)]
@@ -88,6 +91,7 @@ async fn call_and_parse_one_chunk(
         .await
         {
             Ok(r) => r,
+            Err(e) if utopia_llm::out_of_credit(&e).is_some() => return Err(e),
             Err(e) => {
                 tracing::warn!(%document_id, seq = chunk.seq, error = %e, "开放抽取调用失败，跳过该分块");
                 drop_signal(
@@ -1190,6 +1194,10 @@ pub(crate) async fn run_open(
 #[cfg(test)]
 #[path = "extraction_open_known_flow_tests.rs"]
 mod known_flow_tests;
+
+#[cfg(test)]
+#[path = "extraction_open_out_of_credit_tests.rs"]
+mod out_of_credit_tests;
 
 #[cfg(test)]
 mod tests {
