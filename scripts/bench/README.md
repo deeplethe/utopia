@@ -252,6 +252,16 @@ node scripts/bench/ask.mjs --kb <id> --recall 8       # 只量检索：那条对
 `lib.mjs` 是两个测量台共用的地基——**判等必须是同一份**，各写一份 `same()`
 迟早漂移，而一旦漂移，「提议对了几条」与「答案对了几条」就不是同一把尺子量出来的。
 
+SQL 的空字段（psql 默认显示的 NULL、空字符串）与纯空白不参与数值判等，不能当成 `0`。
+`firstRow()` 仍取第一行各列的数；`value()` 只读第一列，第一列为空就返回空，不取后面的数。
+回归测试不需要模型服务；第二条额外验证真实 PostgreSQL 的输出，只执行 SELECT：
+
+```bash
+node --test scripts/bench/lib.test.mjs
+BENCH_TEST_PSQL="psql -X -h 127.0.0.1 -p 1517 -U utopia -tAc" BENCH_TEST_DB=utopia PGPASSWORD=utopia \
+  node --test scripts/bench/lib.pg.test.mjs
+```
+
 ## 本体的两个数（0061 决定 5）
 
 `competency.mjs` 把一个库**接受了的**能力问题按人在 chat 里问的方式问一遍（走 `/kbs/{id}/chat`，

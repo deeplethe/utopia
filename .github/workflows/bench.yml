@@ -1,0 +1,38 @@
+name: Bench parsers
+
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+    branches: [dev, main]
+
+permissions:
+  contents: read
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: utopia
+          POSTGRES_PASSWORD: utopia
+          POSTGRES_DB: bench_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s
+          --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install PostgreSQL client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+      - name: Numeric SQL benchmark regressions
+        run: node --test scripts/bench/lib.test.mjs scripts/bench/lib.pg.test.mjs
+        env:
+          BENCH_TEST_PSQL: psql -X -h 127.0.0.1 -p 5432 -U utopia -tAc
+          BENCH_TEST_DB: bench_test
+          PGPASSWORD: utopia

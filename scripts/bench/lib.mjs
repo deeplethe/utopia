@@ -70,6 +70,10 @@ export const psql = (sql) => run(withDb(PSQL, APP_DB), sql);
 export const onDb = (db, sql) => run(withDb(PSQL, db), sql);
 export const num = (sql) => Number(psql(sql) || 0);
 
+// psql 默认把 NULL 与空字符串都印成空字段；Number("") 却是 0，
+// 让没有数的字段命中零值真值。两条读数路径都先排除空白，真实的 0 照常读。
+const numericField = (field) => field.trim() === "" ? undefined : Number(field);
+
 /// 一条 SQL 第一行里的所有数字。
 ///
 /// **模型不写单列查询。** 问「平均行金额」，它跑的是
@@ -81,7 +85,7 @@ export function firstRow(db, sql) {
     const out = onDb(db, `SET statement_timeout = '20s'; ${sql}`);
     const first = out.split("\n").map((l) => l.trim()).filter((l) => l !== "" && l !== "SET")[0];
     if (first === undefined) return { empty: true };
-    const ns = first.split("|").map((x) => Number(x)).filter((n) => Number.isFinite(n));
+    const ns = first.split("|").map(numericField).filter((n) => Number.isFinite(n));
     return { ns };
   } catch (e) {
     return { error: String(e.stderr || e.message).split("\n").filter((l) => l.trim())[0]?.slice(0, 120) };
@@ -97,7 +101,8 @@ export function value(db, sql) {
     // 而 -tA 下数据行不带标签——不滤掉它，每条读到的第一行都是 `SET`
     const first = out.split("\n").map((l) => l.trim()).filter((l) => l !== "" && l !== "SET")[0];
     if (first === undefined) return { empty: true };
-    return { n: Number(String(first).split("|")[0]) };
+    const n = numericField(first.split("|")[0]);
+    return n === undefined ? { empty: true } : { n };
   } catch (e) {
     return { error: String(e.stderr || e.message).split("\n").filter((l) => l.trim())[0]?.slice(0, 120) };
   }
