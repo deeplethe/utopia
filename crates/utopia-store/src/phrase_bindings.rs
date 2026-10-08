@@ -73,37 +73,34 @@ pub async fn signatures(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<PhraseSigna
              WHERE f.kb_id = $1 AND f.layer = 'open' AND f.invalidated_at IS NULL
                AND f.phrase IS NOT NULL AND btrim(f.phrase) <> ''
          ),
-         grouped AS (
-             SELECT phrase, subject_type_id, object_type_id, object_is_value, count(*) AS count
-             FROM live GROUP BY phrase, subject_type_id, object_type_id, object_is_value
-         ),
-         picked AS (
-             SELECT g.phrase, g.subject_type_id, g.object_type_id, g.object_is_value,
-                    l.subject_name || ' —' || l.spelling || '→ ' || l.object_name AS example,
-                    coalesce(substr(c.text, l.quote_start + 1, l.quote_end - l.quote_start), '') AS quote,
-                    row_number() OVER (PARTITION BY g.phrase, g.subject_type_id, g.object_type_id, g.object_is_value
+         -- 每组的计数和前 3 条例句在一趟里聚出来。从前每组的例句、引文各是一个关联子查询，
+         -- 每个都把全部陈述重扫一遍，耗时随开放陈述数平方增长：3.6 万条时一趟约 200 秒（#1096）。
+         -- 计数也在这里取，不另聚一份再按四个键用 IS NOT DISTINCT FROM 接回来——那种连接
+         -- Postgres 做不了哈希；分块的原文只为留下的那三条去读
+         ranked AS (
+             SELECT l.*,
+                    row_number() OVER (PARTITION BY l.phrase, l.subject_type_id, l.object_type_id, l.object_is_value
                                        ORDER BY l.recorded_at, l.id) AS rn
-             FROM grouped g
-             JOIN live l ON l.phrase = g.phrase
-                        AND l.subject_type_id IS NOT DISTINCT FROM g.subject_type_id
-                        AND l.object_type_id IS NOT DISTINCT FROM g.object_type_id
-                        AND l.object_is_value = g.object_is_value
-             LEFT JOIN chunks c ON c.id = l.chunk_id
+             FROM live l
+         ),
+         grouped AS (
+             SELECT r.phrase, r.subject_type_id, r.object_type_id, r.object_is_value, count(*) AS count,
+                    array_agg(r.subject_name || ' —' || r.spelling || '→ ' || r.object_name ORDER BY r.rn)
+                        FILTER (WHERE r.rn <= 3) AS examples,
+                    array_agg(coalesce(substr(c.text, r.quote_start + 1, r.quote_end - r.quote_start), '') ORDER BY r.rn)
+                        FILTER (WHERE r.rn <= 3) AS quotes
+             FROM ranked r
+             LEFT JOIN chunks c ON c.id = r.chunk_id AND r.rn <= 3
+             GROUP BY r.phrase, r.subject_type_id, r.object_type_id, r.object_is_value
          )
          SELECT g.phrase, g.subject_type_id, st.key AS subject_type_key,
                 g.object_type_id, ot.key AS object_type_key, g.object_is_value, g.count,
-                ARRAY(SELECT p.example FROM picked p
-                      WHERE p.phrase = g.phrase AND p.subject_type_id IS NOT DISTINCT FROM g.subject_type_id
-                        AND p.object_type_id IS NOT DISTINCT FROM g.object_type_id
-                        AND p.object_is_value = g.object_is_value AND p.rn <= 3 ORDER BY p.rn) AS examples,
-                ARRAY(SELECT p.quote FROM picked p
-                      WHERE p.phrase = g.phrase AND p.subject_type_id IS NOT DISTINCT FROM g.subject_type_id
-                        AND p.object_type_id IS NOT DISTINCT FROM g.object_type_id
-                        AND p.object_is_value = g.object_is_value AND p.rn <= 3 ORDER BY p.rn) AS quotes
+                coalesce(g.examples, '{{}}') AS examples, coalesce(g.quotes, '{{}}') AS quotes
          FROM grouped g
          LEFT JOIN entity_types st ON st.id = g.subject_type_id
          LEFT JOIN entity_types ot ON ot.id = g.object_type_id
-         ORDER BY g.count DESC, g.phrase",
+         -- 计数和短语相同、两端的类不同的签名，顺序也得定下来：对齐按这个顺序分批送模型
+         ORDER BY g.count DESC, g.phrase, g.subject_type_id, g.object_type_id, g.object_is_value",
         phrase = phrase_sql("f.phrase")
     );
     Ok(sqlx::query_as(&sql).bind(kb_id).fetch_all(pool).await?)

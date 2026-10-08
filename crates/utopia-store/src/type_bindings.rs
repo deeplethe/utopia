@@ -67,28 +67,42 @@ pub async fn signatures<'e>(
              WHERE e.kb_id = $1 AND e.merged_into IS NULL
                AND e.specific_type IS NOT NULL AND btrim(e.specific_type) <> ''
          ),
+         -- 写法、例名、关系短语的前 3 个各在一趟里聚出来。从前每个词各跑三个关联子查询，
+         -- 每个都把全部实体（短语那个还连着陈述）重扫一遍，耗时随库的大小平方增长（#1096）
          grouped AS (
-             SELECT kind_word, count(*) AS count FROM live GROUP BY kind_word
+             SELECT kind_word, count(*) AS count,
+                    (array_agg(canonical_name ORDER BY (description IS NOT NULL), created_at, id))[1:3] AS examples
+             FROM live GROUP BY kind_word
+         ),
+         spellings AS (
+             SELECT kind_word, spelling,
+                    row_number() OVER (PARTITION BY kind_word ORDER BY count(*) DESC, spelling) AS rn
+             FROM live GROUP BY kind_word, spelling
+         ),
+         words AS (
+             SELECT kind_word, array_agg(spelling ORDER BY rn) AS words
+             FROM spellings WHERE rn <= 3 GROUP BY kind_word
+         ),
+         phrase_counts AS (
+             SELECT l.kind_word, f.phrase,
+                    row_number() OVER (PARTITION BY l.kind_word ORDER BY count(*) DESC, f.phrase) AS rn
+             FROM facts f JOIN live l ON l.id = f.subject_id
+             WHERE f.kb_id = $1 AND f.layer = 'open' AND f.invalidated_at IS NULL
+               AND f.phrase IS NOT NULL
+             GROUP BY l.kind_word, f.phrase
+         ),
+         phrases AS (
+             SELECT kind_word, array_agg(phrase ORDER BY rn) AS phrases
+             FROM phrase_counts WHERE rn <= 3 GROUP BY kind_word
          )
          SELECT g.kind_word,
                 g.count,
-                ARRAY(SELECT s.spelling FROM (
-                          SELECT l.spelling, count(*) AS n FROM live l
-                          WHERE l.kind_word = g.kind_word
-                          GROUP BY l.spelling ORDER BY n DESC, l.spelling LIMIT 3) s
-                ) AS words,
-                ARRAY(SELECT l.canonical_name FROM live l
-                      WHERE l.kind_word = g.kind_word
-                      ORDER BY (l.description IS NOT NULL), l.created_at, l.id LIMIT 3
-                ) AS examples,
-                ARRAY(SELECT s.phrase FROM (
-                          SELECT f.phrase, count(*) AS n
-                          FROM facts f JOIN live l ON l.id = f.subject_id
-                          WHERE f.kb_id = $1 AND f.layer = 'open' AND f.invalidated_at IS NULL
-                            AND f.phrase IS NOT NULL AND l.kind_word = g.kind_word
-                          GROUP BY f.phrase ORDER BY n DESC, f.phrase LIMIT 3) s
-                ) AS phrases
+                coalesce(w.words, '{{}}') AS words,
+                g.examples,
+                coalesce(p.phrases, '{{}}') AS phrases
          FROM grouped g
+         LEFT JOIN words w ON w.kind_word = g.kind_word
+         LEFT JOIN phrases p ON p.kind_word = g.kind_word
          ORDER BY g.count DESC, g.kind_word",
         kind = kind_word_sql("e.specific_type")
     );
