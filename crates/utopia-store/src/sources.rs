@@ -418,49 +418,6 @@ pub async fn finish_sync(
     Ok(true)
 }
 
-/// 文档打标签（整组替换）。
-///
-/// **零调用，故意留着**：没有路由，界面上也没有入口。标签会是文档上唯一
-/// 「人自己贴的」维度——来源是它从哪来的，名字与状态是系统给的，三者都表达
-/// 不了「这批要脱敏」这种横跨来源、只有人知道的分组。要不要有这个维度，
-/// 悬而未决——完整的两面之辞写在 `migrations/0002_ingest.sql` 的 `tags` 列上，
-/// 别当死代码删掉。
-pub async fn set_document_tags(
-    pool: &PgPool,
-    kb_id: Uuid,
-    document_id: Uuid,
-    tags: &[String],
-) -> AppResult<()> {
-    let cleaned: Vec<String> = tags
-        .iter()
-        .map(|t| t.trim().to_string())
-        .filter(|t| !t.is_empty())
-        .collect();
-    let res = sqlx::query(
-        "UPDATE documents SET tags = $3, updated_at = now() WHERE id = $1 AND kb_id = $2",
-    )
-    .bind(document_id)
-    .bind(kb_id)
-    .bind(&cleaned)
-    .execute(pool)
-    .await?;
-    if res.rows_affected() == 0 {
-        return Err(AppError::NotFound);
-    }
-    Ok(())
-}
-
-/// 同步用去重：该 KB 是否已有同内容文档。
-pub async fn document_exists_by_sha(pool: &PgPool, kb_id: Uuid, sha256: &str) -> AppResult<bool> {
-    let row: Option<(Uuid,)> =
-        sqlx::query_as("SELECT id FROM documents WHERE kb_id = $1 AND sha256 = $2 LIMIT 1")
-            .bind(kb_id)
-            .bind(sha256)
-            .fetch_optional(pool)
-            .await?;
-    Ok(row.is_some())
-}
-
 /// 记录同步时刻（避免调度器在长同步过程中重复触发后又立刻到期）。
 pub async fn touch_sync_time(pool: &PgPool, id: Uuid, at: DateTime<Utc>) -> AppResult<()> {
     sqlx::query("UPDATE sources SET last_sync_at = $2 WHERE id = $1")
