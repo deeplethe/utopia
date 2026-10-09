@@ -114,19 +114,19 @@ pub fn rate_limited(err: &anyhow::Error) -> Option<&RateLimited> {
 /// 实测一篇 32 块的文档在一小时里两类都撞上：502 四次、连接没送到两次。
 pub fn transient(err: &anyhow::Error) -> Option<(&'static str, Option<Duration>)> {
     if let Some(hit) = rate_limited(err) {
-        return Some(("端点限流", hit.retry_after));
+        return Some(("LLM endpoint is rate limiting", hit.retry_after));
     }
     if let Some(hit) = unavailable(err) {
-        return Some(("端点不可用", hit.retry_after));
+        return Some(("LLM endpoint is unavailable", hit.retry_after));
     }
     if err.chain().any(|e| e.is::<Interrupted>()) {
-        return Some(("流断在半路", None));
+        return Some(("LLM response stream was interrupted", None));
     }
     let sending = err
         .chain()
         .find_map(|e| e.downcast_ref::<Unreachable>())
         .filter(|u| !u.0.is_timeout());
-    sending.map(|_| ("请求没送到", None))
+    sending.map(|_| ("LLM request could not be sent", None))
 }
 
 /// 端点开口了又半路没了：流断在一句话中间，既没有 `[DONE]` 也没有 `finish_reason`。
@@ -2122,7 +2122,7 @@ data: {\"choices\":[{\"delta\":{\"content\":\"tail\"},\"finish_reason\":\"stop\"
         server.await.unwrap();
         assert_eq!(
             crate::transient(&err).map(|(w, _)| w),
-            Some("流断在半路"),
+            Some("LLM response stream was interrupted"),
             "{err:#}"
         );
 
@@ -2422,7 +2422,7 @@ data: [DONE]
         assert!(crate::is_unreachable(&err), "{err:#}");
         assert_eq!(
             crate::transient(&err).map(|(w, _)| w),
-            Some("请求没送到"),
+            Some("LLM request could not be sent"),
             "{err:#}"
         );
 

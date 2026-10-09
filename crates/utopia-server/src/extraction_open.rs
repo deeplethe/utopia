@@ -95,11 +95,11 @@ async fn call_and_parse_one_chunk(
                     kb_id,
                     document_id,
                     reason::CHUNK_UNEXTRACTED,
-                    "调用失败，这一块没有进图",
-                    Some(&format!("#{}：{e}", chunk.seq)),
+                    "request failed; this chunk did not enter the graph",
+                    Some(&format!("#{}: {e}", chunk.seq)),
                 )
                 .await;
-                unextracted.push((chunk.seq, format!("调用失败：{e}")));
+                unextracted.push((chunk.seq, format!("request failed: {e}")));
                 return Ok(None);
             }
         };
@@ -117,13 +117,13 @@ async fn call_and_parse_one_chunk(
             // 别的解析失败是「回复不合结构」。两种都写成同一句话就分不开了
             let (why, detail) = if cut_by_ceiling {
                 (
-                    "回复撞上 token 上限被截断，剩下的解析不了，这一块没有进图",
-                    format!("#{}：hit the token ceiling；{e}", chunk.seq),
+                    "response hit the token ceiling and could not be parsed; this chunk did not enter the graph",
+                    format!("#{}: hit the token ceiling; {e}", chunk.seq),
                 )
             } else {
                 (
-                    "回复解析不了，这一块没有进图",
-                    format!("#{}：{e}", chunk.seq),
+                    "response could not be parsed; this chunk did not enter the graph",
+                    format!("#{}: {e}", chunk.seq),
                 )
             };
             drop_signal(
@@ -135,7 +135,7 @@ async fn call_and_parse_one_chunk(
                 Some(&detail),
             )
             .await;
-            unextracted.push((chunk.seq, format!("回复解析失败：{e}")));
+            unextracted.push((chunk.seq, format!("response parsing failed: {e}")));
             return Ok(None);
         }
     };

@@ -78,6 +78,11 @@ flowchart TB
 
 ### Where this stage drops things
 
+**Failure diagnostics are stored in English.** The extraction worker writes its
+chunk-failure labels, the exhausted-retry reason and the per-attempt summary into
+`documents.graph_error`, and Library shows that text as stored. Provider and parser
+messages are kept verbatim.
+
 Eleven reason codes, all recorded in `extraction_drops` and visible in the UI (one is a trace, not a drop):
 
 | Reason | When |

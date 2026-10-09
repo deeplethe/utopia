@@ -74,7 +74,7 @@ pub(crate) async fn chat_retrying_rate_limits_at(
             return Err(err);
         };
         if attempt == RATE_LIMIT_TRIES {
-            return Err(err.context(format!("{what}退避 {RATE_LIMIT_TRIES} 次仍未通过")));
+            return Err(err.context(format!("{what} after {RATE_LIMIT_TRIES} attempts")));
         }
         let delay = jitter(retry_after.unwrap_or(backoff).min(RATE_LIMIT_CAP));
         tracing::warn!(
@@ -159,14 +159,15 @@ pub(crate) fn incomplete_reason(unextracted: &[(i32, String)], attempted: usize)
         .collect();
     let more = unextracted.len().saturating_sub(sample.len());
     let tail = if more > 0 {
-        format!("；另有 {more} 个")
+        format!("; {more} more")
     } else {
         String::new()
     };
     Some(format!(
-        "本轮 {attempted} 个分块里 {} 个没能抽取：{}{tail}",
+        "{} of {attempted} {} could not be extracted in this attempt: {}{tail}",
         unextracted.len(),
-        sample.join("；")
+        if attempted == 1 { "chunk" } else { "chunks" },
+        sample.join("; ")
     ))
 }
 
@@ -419,7 +420,7 @@ mod tests {
     #[test]
     fn a_document_with_a_skipped_chunk_is_not_complete() {
         assert_eq!(incomplete_reason(&[], 23), None, "全抽完才算完成");
-        let one = [(7, "调用失败：timeout".to_string())];
+        let one = [(7, "request failed: timeout".to_string())];
         let msg = incomplete_reason(&one, 23).expect("有块没抽成就不该算完成");
         assert!(msg.contains("23"), "分母要说出来：{msg}");
         assert!(msg.contains("#7"), "得指得出是哪一块：{msg}");
@@ -429,11 +430,11 @@ mod tests {
     /// 但**剩下多少必须说**——否则读的人会以为只坏了三块。
     #[test]
     fn many_failures_are_summarised_without_hiding_the_count() {
-        let many: Vec<(i32, String)> = (1..=20).map(|i| (i, "调用失败".into())).collect();
+        let many: Vec<(i32, String)> = (1..=20).map(|i| (i, "request failed".into())).collect();
         let msg = incomplete_reason(&many, 60).unwrap();
         assert!(msg.contains("20"), "总数要在：{msg}");
-        assert!(msg.contains("另有 17 个"), "省略掉的数量要说出来：{msg}");
-        assert_eq!(msg.matches("调用失败").count(), 3, "只举三个");
+        assert!(msg.contains("; 17 more"), "省略掉的数量要说出来：{msg}");
+        assert_eq!(msg.matches("request failed").count(), 3, "只举三个");
     }
 
     /// 重试时 `chunks_for_extraction` 只取还没抽的块，所以分母是**本轮**的数，
@@ -441,7 +442,10 @@ mod tests {
     #[test]
     fn the_denominator_is_this_rounds_chunks_not_the_document() {
         let msg = incomplete_reason(&[(2, "x".into())], 3).unwrap();
-        assert!(msg.starts_with("本轮 3 个分块"), "{msg}");
+        assert!(
+            msg.starts_with("1 of 3 chunks could not be extracted in this attempt:"),
+            "{msg}"
+        );
     }
 
     #[tokio::test]
