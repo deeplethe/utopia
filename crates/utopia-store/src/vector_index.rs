@@ -209,6 +209,33 @@ pub struct Built {
     pub seconds: f64,
 }
 
+/// 用表的 owner 建。`owner_url` 是迁移身份的连接串，只在它跟运行身份分开时才有。
+///
+/// **建索引要的是表的所有权，授权顶替不了。** 部署按 `.env.example` 分开两个身份时，
+/// 应用连库用的是受限角色 `utopia_app`，它在这里拿到的是 `must be owner of table`：
+/// 任务失败三次，索引永远建不出来，每一次近邻查询都退回全表精确扫描。四万一千个名字
+/// 向量的库上，消解给每个 mention 做的那一次查找要一分半到三分钟（#1120）。
+///
+/// 所以分开了身份就用迁移那个身份开一条连接，建完即关——跟启动时跑迁移是同一个做法，
+/// 高权限连接不在运行期常驻。没分开时 `owner_url` 是 `None`，照旧用应用的池子
+pub async fn build_as_owner(
+    app: &PgPool,
+    owner_url: Option<&str>,
+    target: Target,
+    dims: usize,
+) -> AppResult<Built> {
+    let Some(url) = owner_url else {
+        return build(app, target, dims).await;
+    };
+    let owner = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect(url)
+        .await?;
+    let built = build(&owner, target, dims).await;
+    owner.close().await;
+    built
+}
+
 /// 任务本体。**事务外**（CONCURRENTLY 的要求）、**串行**（并行建索引要共享内存，
 /// Docker 默认 64 MB 的 `/dev/shm` 会让它报 could not resize shared memory segment；
 /// 串行 6 万行 1024 维约 90 秒，到处能跑）。上一次建到一半留下的无效索引先删——
