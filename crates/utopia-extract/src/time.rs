@@ -1,14 +1,13 @@
 //! 时间提法的解读（0045 决定 2、3、8）：**模型读，代码算**。
 //!
-//! 两次调用，都只返回结构化的字段，模型从不写一个算出来的日期：
+//! 只返回结构化的字段，模型从不写一个算出来的日期：
 //!
-//! 1. **给文档定日期**（[`build_dating_messages`] / [`parse_dating_response`]）：读文件开头，
-//!    抄下文档自己的日期（电头、申报日、公报的报告年份）、它命名的期间及其边界、财年
-//!    的截止日。上传时间永远不进来——那是记录时间轴（决定 3）。
-//! 2. **解读提法**（[`build_interpretation_messages`] / [`parse_interpretation_response`]）：
-//!    每条提法给形状、引用、粒度。绝对值按原文的字抄成数字部件；相对的说锚点（另一条
-//!    提法、文档本身、文档命名的期间）与偏移（数、单位、方向）；期间报名字。日历算术、
-//!    财年到区间、按粒度截断、形状蕴含的区间，全在服务端算。
+//! **解读提法**（[`build_interpretation_messages`] / [`parse_interpretation_response`]）：
+//! 每条提法给形状、引用、粒度。绝对值按原文的字抄成数字部件；相对的说锚点（另一条
+//! 提法、文档本身、文档命名的期间）与偏移（数、单位、方向）；期间报名字。日历算术、
+//! 财年到区间、按粒度截断、形状蕴含的区间，全在服务端算。
+//!
+//! 文档自己的日期不再单独问一次模型：每块在抽取时报它那段文字写明的日期（0064）。
 //!
 //! 代码里**没有时间词**（决定 8）：不认月份名、不认「去年」「上年末」，只解 JSON、验
 //! 部件范围、拼提示词。提示词是常量英文；例子是中性的（镇议会、桥、面包房），不出自
@@ -329,48 +328,6 @@ pub struct TimeContext<'a> {
     pub fiscal_year_end: Option<(u32, u32)>,
 }
 
-/// 定日期的系统消息。只抄开头说了的；文档自己的日期，从不是今天；部件是抄写的数字
-const DATING_SYSTEM: &str = "\
-You read the opening of a document and write down what it states about the document's own \
-time: its date, the periods it names with their bounds, and the day its fiscal year ends. You \
-transcribe what the words state; you never compute a date. Output one JSON object and nothing \
-else, shaped like this:\n\
-\n\
-{\"date\": {\"y\": 2011, \"m\": 3, \"d\": 4}, \"date_words\": \"March 4, 2011\", \"periods\": [[\"name as written\", {\"y\": 2010, \"m\": 10, \"d\": 1}, {\"y\": 2011, \"m\": 9, \"d\": 30}]], \"fiscal_year_end\": [9, 30]}\n\
-\n\
-1. date is the document's own date: the day it was written, issued, filed, published or signed \
-(a dateline, a filing date, a date under the title), or, for a report or bulletin that covers a \
-period, the period it reports on. It is never today's date, and never a date the opening \
-mentions for something else — an event it reports, an agreement it refers to, a deadline it \
-sets. null when the opening states none.\n\
-2. A date is written as parts, each a number transcribed from the words: y the year, m the \
-month (a month name becomes its number), d the day, and h, min, s for a clock time when one is \
-written. Write only the parts the words state: a bulletin for the year 2024 has {\"y\": 2024}; \
-a report for March 2024 has {\"y\": 2024, \"m\": 3}; a dateline \"4 March 2011\" has \
-{\"y\": 2011, \"m\": 3, \"d\": 4}.\n\
-3. date_words is the words that state the date, copied verbatim from the opening; null when \
-date is null.\n\
-4. periods lists the periods the opening names and bounds, one entry each, [name, from, to]: \
-a fiscal year or quarter, a reporting period, a term. name is the period as the opening writes \
-it (\"fiscal 2019\", \"the second quarter\", \"2024年\"); from and to are its first and last \
-day, month or year as parts, at the precision the words give. A reporting year \"2024\" runs \
-from {\"y\": 2024} to {\"y\": 2024}. A fiscal year or quarter the opening states by its end \
-date (\"the year ended September 30, 2019\") runs from the day after the previous one ended to \
-that end date. Leave out a period whose bounds the opening does not fix.\n\
-5. fiscal_year_end is [month, day] on which the document's fiscal year ends, when the opening \
-states it or a stated fiscal year end makes it plain; null otherwise.\n\
-6. Never compute a date from today, never resolve a relative expression, never fill in a part \
-the words do not state. When the opening states nothing about the document's date or periods, \
-output {\"date\": null, \"date_words\": null, \"periods\": [], \"fiscal_year_end\": null}.\n\
-\n\
-Example. The opening \"Westbrook Town Council — Minutes of the meeting held on March 4, 2011. \
-Present: the mayor and six councillors.\" gives {\"date\": {\"y\": 2011, \"m\": 3, \"d\": 4}, \
-\"date_words\": \"March 4, 2011\", \"periods\": [], \"fiscal_year_end\": null}. The opening \
-\"Harbor Bakery — Annual report for fiscal 2019, the year ended September 30, 2019. Issued \
-November 12, 2019.\" gives {\"date\": {\"y\": 2019, \"m\": 11, \"d\": 12}, \"date_words\": \
-\"November 12, 2019\", \"periods\": [[\"fiscal 2019\", {\"y\": 2018, \"m\": 10, \"d\": 1}, \
-{\"y\": 2019, \"m\": 9, \"d\": 30}]], \"fiscal_year_end\": [9, 30]}";
-
 /// 解读提法的系统消息。形状各一行；引用是字面说的，不是它蕴含的；从不计算
 const INTERPRETATION_SYSTEM: &str = "\
 You interpret the time expressions of a document. Each mention is given with its id, its words \
@@ -439,22 +396,6 @@ a second shop.\"]:\n\
  [3, \"point\", {\"kind\": \"absolute\", \"from\": {\"y\": 2019}}, \"year\"],\n\
  [4, \"point\", {\"kind\": \"anchored\", \"anchor\": {\"kind\": \"mention\", \"id\": 3}, \"offset\": {\"count\": 2, \"unit\": \"year\", \"direction\": \"after\"}}, \"year\"],\n\
  [5, \"point\", {\"kind\": \"anchored\", \"anchor\": {\"kind\": \"document\"}, \"offset\": {\"count\": 1, \"unit\": \"year\", \"direction\": \"before\"}}, \"year\"]]}";
-
-/// 定日期的两条消息：常量系统消息 + 文件名与开头。开头不在这里截——它就是这次
-/// 调用的正文，预算由调用方定
-pub fn build_dating_messages(filename: &str, opening: &str) -> Vec<ChatMessage> {
-    let user = format!("Document: {filename}\n\nOpening:\n\"\"\"\n{opening}\n\"\"\"");
-    vec![
-        ChatMessage {
-            role: "system".into(),
-            content: DATING_SYSTEM.to_string(),
-        },
-        ChatMessage {
-            role: "user".into(),
-            content: user,
-        },
-    ]
-}
 
 /// 解读提法的两条消息：常量系统消息 + 语境块 + 提法清单（编号、原文的字、句子）
 pub fn build_interpretation_messages(
@@ -607,53 +548,6 @@ fn word<T: DeserializeOwned>(v: &Value) -> Option<T> {
         .to_ascii_lowercase()
         .replace([' ', '-'], "_");
     serde_json::from_value(Value::String(s)).ok()
-}
-
-/// 期间条目 `[name, from, to]`
-fn named_period(v: &Value) -> Option<NamedPeriod> {
-    let arr = v.as_array()?;
-    Some(NamedPeriod {
-        name: text(arr.first()?)?,
-        from: parts(arr.get(1)?)?,
-        to: parts(arr.get(2)?)?,
-    })
-}
-
-/// 解定日期的回复。日期、财年截止日坏了就留空并计数；期间逐条计数
-pub fn parse_dating_response(raw: &str) -> anyhow::Result<DocumentDating> {
-    let value = reply_value(raw, "document dating")?;
-    let mut out = DocumentDating::default();
-    match value.get("date") {
-        None | Some(Value::Null) => {}
-        Some(v) => match parts(v) {
-            Some(d) => out.date = Some(d),
-            None => out.skipped += 1,
-        },
-    }
-    out.date_words = value.get("date_words").and_then(text);
-    if let Some(items) = value.get("periods").and_then(Value::as_array) {
-        for item in items {
-            match named_period(item) {
-                Some(p) => out.periods.push(p),
-                None => out.skipped += 1,
-            }
-        }
-    }
-    match value.get("fiscal_year_end") {
-        None | Some(Value::Null) => {}
-        Some(v) => {
-            let pair = v.as_array().and_then(|a| {
-                let m = int(a.first()?)?;
-                let d = int(a.get(1)?)?;
-                ((1..=12).contains(&m) && (1..=31).contains(&d)).then_some((m as u32, d as u32))
-            });
-            match pair {
-                Some(p) => out.fiscal_year_end = Some(p),
-                None => out.skipped += 1,
-            }
-        }
-    }
-    Ok(out)
 }
 
 /// 锚点：`{"kind": "mention", "id": N}` / `{"kind": "document"}` / `{"kind": "period", "name"}`；
@@ -899,65 +793,11 @@ mod tests {
         }
     }
 
-    /// 一份完整的定日期回复：带部件的日期、原话、两个期间、财年截止日
-    const DATING: &str = r#"{"date": {"y": 2019, "m": 11, "d": 12}, "date_words": "November 12, 2019",
-        "periods": [["fiscal 2019", {"y": 2018, "m": 10, "d": 1}, {"y": 2019, "m": 9, "d": 30}],
-                    ["2024年", {"y": 2024}, {"y": 2024}]],
-        "fiscal_year_end": [9, 30]}"#;
-
-    #[test]
-    fn a_dating_reply_parses_into_the_context() {
-        let d = parse_dating_response(DATING).unwrap();
-        assert_eq!(d.skipped, 0);
-        assert_eq!(d.date, Some(ymd(2019, 11, 12)));
-        assert_eq!(d.date_words.as_deref(), Some("November 12, 2019"));
-        assert_eq!(d.periods.len(), 2);
-        assert_eq!(d.periods[0].name, "fiscal 2019");
-        assert_eq!(d.periods[0].from, ymd(2018, 10, 1));
-        assert_eq!(d.periods[0].to, ymd(2019, 9, 30));
-        assert_eq!(d.periods[1].name, "2024年");
-        assert_eq!(d.periods[1].from, year(2024));
-        assert_eq!(d.periods[1].to, year(2024));
-        assert_eq!(d.fiscal_year_end, Some((9, 30)));
-    }
-
-    #[test]
-    fn a_dating_reply_with_no_date_leaves_everything_empty() {
-        let d = parse_dating_response(
-            r#"{"date": null, "date_words": null, "periods": [], "fiscal_year_end": null}"#,
-        )
-        .unwrap();
-        assert_eq!(d.date, None);
-        assert_eq!(d.date_words, None);
-        assert!(d.periods.is_empty());
-        assert_eq!(d.fiscal_year_end, None);
-        assert_eq!(d.skipped, 0);
-    }
-
-    /// 坏的日期、坏的期间、坏的财年截止日各计一次；好的期间照收
-    #[test]
-    fn a_dating_reply_counts_its_malformed_items() {
-        let d = parse_dating_response(
-            r#"{"date": {"y": 2019, "m": 13}, "date_words": "Undecimber 2019",
-                "periods": [["fiscal 2019", {"y": 2018, "m": 10, "d": 1}, {"y": 2019, "m": 9, "d": 30}],
-                            ["broken", {"y": 2018}],
-                            ["day without month", {"y": 2018, "d": 5}, {"y": 2019}]],
-                "fiscal_year_end": [13, 1]}"#,
-        )
-        .unwrap();
-        assert_eq!(d.date, None);
-        assert_eq!(d.periods.len(), 1);
-        assert_eq!(d.fiscal_year_end, None);
-        assert_eq!(d.skipped, 4);
-    }
-
     #[test]
     fn a_clock_time_parses_and_prints_on_the_ladder() {
-        let d = parse_dating_response(
-            r#"{"date": {"y": 2011, "m": 3, "d": 4, "h": 14, "min": 30, "s": 5}, "date_words": "14:30:05 on March 4, 2011"}"#,
-        )
-        .unwrap();
-        let date = d.date.unwrap();
+        let date =
+            parts(&serde_json::json!({"y": 2011, "m": 3, "d": 4, "h": 14, "min": 30, "s": 5}))
+                .unwrap();
         assert_eq!(date.granularity(), Granularity::Second);
         assert_eq!(date.to_string(), "2011-03-04 14:30:05");
         assert_eq!(year(2024).to_string(), "2024");
@@ -1138,18 +978,7 @@ mod tests {
     }
 
     #[test]
-    fn a_cut_off_dating_reply_keeps_the_complete_periods() {
-        let marker = r#"["2024年", {"y": 20"#;
-        let cut = DATING.find(marker).unwrap() + marker.len();
-        let d = parse_dating_response(&DATING[..cut]).unwrap();
-        assert_eq!(d.date, Some(ymd(2019, 11, 12)));
-        assert_eq!(d.periods.len(), 1);
-        assert_eq!(d.periods[0].name, "fiscal 2019");
-    }
-
-    #[test]
     fn a_reply_without_json_is_an_error() {
-        assert!(parse_dating_response("I could not find a date.").is_err());
         assert!(parse_interpretation_response("no", &[1]).is_err());
     }
 
@@ -1167,25 +996,6 @@ mod tests {
         "10-Q",
         "10-K",
     ];
-
-    #[test]
-    fn the_dating_prompt_carries_the_document_and_the_rules() {
-        let msgs = build_dating_messages(
-            "minutes.pdf",
-            "Westbrook Town Council — Minutes of the meeting held on March 4, 2011.",
-        );
-        assert_eq!(msgs.len(), 2);
-        assert_eq!(msgs[0].role, "system");
-        assert!(msgs[0].content.contains("Never compute"));
-        assert!(msgs[0].content.contains("never today's date"));
-        assert!(msgs[0].content.contains("fiscal_year_end"));
-        for mark in CORPUS_MARKS {
-            assert!(!msgs[0].content.contains(mark), "prompt carries {mark}");
-        }
-        assert_eq!(msgs[1].role, "user");
-        assert!(msgs[1].content.contains("Document: minutes.pdf"));
-        assert!(msgs[1].content.contains("held on March 4, 2011"));
-    }
 
     #[test]
     fn the_interpretation_prompt_carries_the_context_and_every_mention() {
@@ -1268,7 +1078,7 @@ mod tests {
 
     /// 存成 JSONB 再读回来，一字不差
     #[test]
-    fn interpretations_and_datings_round_trip_through_serde() {
+    fn interpretations_round_trip_through_serde() {
         let ids: Vec<i64> = (1..=11).collect();
         let (items, _) = parse_interpretation_response(INTERPRETED, &ids).unwrap();
         for item in &items {
@@ -1282,20 +1092,5 @@ mod tests {
         assert_eq!(json["reference"]["anchor"]["kind"], "document");
         assert_eq!(json["reference"]["offset"]["unit"], "year");
         assert_eq!(json["granularity"], "year");
-
-        let dating = parse_dating_response(DATING).unwrap();
-        let json = serde_json::to_string(&dating).unwrap();
-        let back: DocumentDating = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.date, dating.date);
-        assert_eq!(back.date_words, dating.date_words);
-        assert_eq!(back.periods, dating.periods);
-        assert_eq!(back.fiscal_year_end, dating.fiscal_year_end);
-        assert_eq!(back.skipped, dating.skipped);
-        let stored = serde_json::to_value(&dating).unwrap();
-        assert_eq!(stored["date"]["year"], 2019, "stored parts use full names");
-        assert_eq!(stored["fiscal_year_end"], serde_json::json!([9, 30]));
-
-        let old: DocumentDating = serde_json::from_str("{}").unwrap();
-        assert_eq!(old.date, None, "a row stored without fields reads as empty");
     }
 }

@@ -587,9 +587,9 @@ pub async fn bound_map(pool: &PgPool, kb_id: Uuid) -> AppResult<HashMap<String, 
     Ok(rows.into_iter().collect())
 }
 
-/// 没有类对得上的类别词：按老流程提到本体页（`proposed_type` → `adopt_proposed_types`）。
+/// 没有类对得上的类别词：把模型提的类名记在实体的 `proposed_type` 上，类型消解读它。
 ///
-/// 守 `set_proposed_type` 的约：只写第一次、最长 60 字；只提活着的、还没类的、人没
+/// 只写第一次、最长 60 字；只提活着的、还没类的、人没
 /// 定过的实体——采纳时人定过的不会被认领，数进「将重新归类 N 个」里就是虚的。
 /// 返回写上的行数。
 pub async fn propose(

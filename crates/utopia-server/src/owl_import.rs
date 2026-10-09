@@ -345,7 +345,7 @@ pub async fn plan(
 ///
 /// 单次导入认本文件里的类和库里已有的类（见 [`apply`] 里的 resolve），但包是挨个
 /// 装的：装 W3C Org 时 FOAF 还没来，`headOf` 的 `rdfs:domain foaf:Agent` 就落了空；
-/// 等 FOAF 装好，没人回头补。没有 domain 的谓词 `judge_direction` 不判方向，
+/// 等 FOAF 装好，没人回头补。没有 domain 的谓词判不出方向，
 /// 反向的 `Project Aurora head_of Li Ting` 就原样进图（#222）。
 ///
 /// 只补不删，关联表 ON CONFLICT DO NOTHING，重复跑无害。属性不在这里：属性的
@@ -584,7 +584,7 @@ pub async fn apply(
         //
         // **库里已有的类也算数。** 从前只认本文件里的类，于是 W3C Org 的
         // `headOf rdfs:domain foaf:Agent` 在 FOAF 已经装好的库里照样丢 domain，
-        // 而没有 domain 的谓词 `judge_direction` 根本不判方向（#222）
+        // 而没有 domain 的谓词根本判不出方向（#222）
         let resolve = |iris: &[String]| -> Vec<Uuid> {
             iris.iter()
                 .filter_map(|i| {

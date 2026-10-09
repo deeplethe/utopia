@@ -5,10 +5,9 @@
 //! 而 0009 刚在同一片区域踩过 `NULL <> uuid` 的坑——类型系统数得清 Rust，
 //! 数不到 SQL 里去。
 //!
-//! 四条断言对应四条路径：
+//! 三条断言对应三条路径：
 //!
 //! - 类型消解取材（`entities_for_type_resolution`）不该捞人拍过板的
-//! - 本体长出新类后的认领（`adopt_proposed_types`）不该盖掉人拍过板的
 //! - 抽取升格不该给「人说过就是没有类型」的实体安一个类型 ← 0009 × P4 的交叉
 //! - `retype_entities` 用现成的 `actor` 参数区分 human / inferred
 //!
@@ -121,56 +120,6 @@ async fn type_resolution_leaves_human_decisions_alone() -> anyhow::Result<()> {
             "抽取定的类型该被重判——organization 有子类 startup，这正是消解的用武之地"
         );
         assert!(!picked.contains(&by_human), "人拍过板的不该被拿去重判");
-        Ok::<_, anyhow::Error>(())
-    }
-    .await;
-
-    sqlx::query("DELETE FROM knowledge_bases WHERE id = $1")
-        .bind(f.kb)
-        .execute(&pool)
-        .await?;
-    run
-}
-
-/// 本体长出新类之后的认领，同样不该盖掉人的决定。
-///
-/// 这一条顺带保证了 `unadopt_types` 的正确性：human 行永远不进采纳批次，
-/// 撤销时也就不会遇到它们，不必额外还原 `type_source`。
-#[tokio::test]
-async fn adopting_a_new_class_does_not_claim_human_typed_entities() -> anyhow::Result<()> {
-    let Some(url) = utopia_store::test_db::url() else {
-        return Ok(());
-    };
-    let pool = PgPool::connect(&url).await?;
-    let f = seed(&pool).await?;
-
-    let run = async {
-        // 两个实体都被模型提议过 startup，但一个的类型是人定的
-        for (name, source) in [("Acme", "human"), ("Globex", "extracted")] {
-            let id = entity(&pool, &f, name, Some(f.org_type), source).await?;
-            sqlx::query("UPDATE entities SET proposed_type = 'startup' WHERE id = $1")
-                .bind(id)
-                .execute(&pool)
-                .await?;
-        }
-
-        let (_, moved) = utopia_store::resolution::adopt_proposed_types(
-            &pool,
-            f.kb,
-            f.sub_type,
-            &["startup".to_string()],
-            None,
-        )
-        .await?;
-        assert_eq!(moved, 1, "只该认领那个不是人定的");
-
-        let human: Option<Uuid> = sqlx::query_scalar(
-            "SELECT type_id FROM entities WHERE kb_id = $1 AND canonical_name = 'Acme'",
-        )
-        .bind(f.kb)
-        .fetch_one(&pool)
-        .await?;
-        assert_eq!(human, Some(f.org_type), "人定的类型原样未动");
         Ok::<_, anyhow::Error>(())
     }
     .await;

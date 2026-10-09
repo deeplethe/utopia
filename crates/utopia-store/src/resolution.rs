@@ -2415,85 +2415,6 @@ pub async fn put_verdict(
     Ok(())
 }
 
-/// 把提议过 `forms` 里那些类型的实体改到 `type_id` 上。返回 (批次 id, 改动数)。
-///
-/// 与谓词那边的 `graph::adopt_proposed_predicates` 对称：**只建类型不动实体，
-/// 本体长大了、图没变好**——提议过 model 的实体会继续挂在 concept 下。
-///
-/// 实体是可变行（P0 的 PATCH 就直接改），所以这里就是 UPDATE，撤销靠账本
-/// 记下改之前的类型，而不是靠 supersedes 链。
-pub async fn adopt_proposed_types(
-    pool: &PgPool,
-    kb_id: Uuid,
-    type_id: Uuid,
-    forms: &[String],
-    // None = 引擎自动（本体长出新类之后的收尾认领没有人在按）
-    actor: Option<Uuid>,
-) -> AppResult<(Uuid, u32)> {
-    let batch_id = Uuid::now_v7();
-    if forms.is_empty() {
-        return Ok((batch_id, 0));
-    }
-    // 已经在目标类上的不算改动，也不进账本——撤销时不该把它们推回去。
-    //
-    // **`IS DISTINCT FROM` 而不是 `<>`**：0009 之后 type_id 可能是 NULL，而
-    // `NULL <> uuid` 求值为 NULL 不是 true，那一行会被悄悄滤掉——偏偏带着
-    // proposed_type 的几乎全是还没判出类型的实体，整个认领功能会一声不响地空转
-    let targets: Vec<(Uuid, Option<Uuid>, String)> = sqlx::query_as(
-        "SELECT id, type_id, canonical_name FROM entities
-         WHERE kb_id = $1 AND merged_into IS NULL
-           -- 人拍过板的不认领。**这一行顺带让 unadopt 天然正确**：human 行
-           -- 永远不进采纳批次，撤销时也就不会遇到它们，不必额外还原 type_source
-           AND type_source <> 'human'
-           AND proposed_type = ANY($2) AND type_id IS DISTINCT FROM $3",
-    )
-    .bind(kb_id)
-    .bind(forms)
-    .bind(type_id)
-    .fetch_all(pool)
-    .await?;
-
-    let mut names: HashSet<String> = HashSet::new();
-    let mut moved = 0u32;
-    for (entity_id, from_type, name) in targets {
-        let mut tx = pool.begin().await?;
-        sqlx::query(
-            // actor 有值 = 人在界面上点的批准，他背书了这个类型 → 受保护。
-            // 无值 = 本体长出新类之后的收尾认领，没人在按
-            "UPDATE entities
-                SET type_id = $2, proposed_type = NULL, updated_at = now(),
-                    type_source = CASE WHEN $3::uuid IS NULL THEN 'inferred' ELSE 'human' END
-             WHERE id = $1",
-        )
-        .bind(entity_id)
-        .bind(type_id)
-        .bind(actor)
-        .execute(&mut *tx)
-        .await?;
-        sqlx::query(
-            "INSERT INTO entity_retypes
-                (batch_id, kb_id, entity_id, from_type_id, to_type_id, actor_id)
-             VALUES ($1, $2, $3, $4, $5, $6)",
-        )
-        .bind(batch_id)
-        .bind(kb_id)
-        .bind(entity_id)
-        .bind(from_type)
-        .bind(type_id)
-        .bind(actor)
-        .execute(&mut *tx)
-        .await?;
-        tx.commit().await?;
-        names.insert(name);
-        moved += 1;
-    }
-    // 消歧后缀的兜底值就是类型标签，改了类就得重算（同 P0 的实体改类）
-    for n in &names {
-        refresh_disambiguators(pool, kb_id, n).await?;
-    }
-    Ok((batch_id, moved))
-}
-
 /// 撤销一次实体改类：把它们放回原来的类型。
 ///
 /// 类型本身不删——与谓词那边同一条理由：有实体指向过它，而"它存在过"是历史。
@@ -2969,9 +2890,7 @@ pub async fn nearest_typed_for_each_with(
 
 /// 按实体逐个改类，写进同一本账。返回 (批次 id, 改动数)。
 ///
-/// 与 [`adopt_proposed_types`] 的区别只在挑选方式：那个按 `proposed_type` 这个
-/// **说法**认领一批，这个由调用方点名——类型消解裁决出来的是"这个实体是那个类"，
-/// 不是"叫这个说法的都是那个类"。
+/// 由调用方点名：类型消解裁决出来的是"这个实体是那个类"，不是"叫这个说法的都是那个类"。
 ///
 /// 账本格式一字不差，所以 [`unadopt_types`] 原样能撤。
 pub async fn retype_entities(

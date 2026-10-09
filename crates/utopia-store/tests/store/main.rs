@@ -43,7 +43,6 @@ mod a_deleted_document_no_longer_attests;
 mod a_deletion_is_an_event;
 mod a_derivation_follows_the_second_clock;
 mod a_described_thing_is_an_entity_without_a_name;
-mod a_direction_is_judged_by_range_too;
 mod a_dirty_ledger_stops_the_migration;
 mod a_disambiguator_follows_the_ontology;
 mod a_document_opening_is_its_first_live_chunk;
