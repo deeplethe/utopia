@@ -42,6 +42,9 @@ pub struct AppState {
     pub events: broadcast::Sender<AppEvent>,
     /// 正在生成的回答，按会话查。**刷新页面之后还能接上**（见 `live`）
     pub live: Arc<crate::live::Registry>,
+    /// 表的 owner 的连接串：迁移身份与运行身份分开时才有（`UTOPIA_MIGRATION_URL`）。
+    /// 运行期只有建向量索引用它，用完即关（`vector_index::build_as_owner`，#1120）
+    pub owner_database_url: Option<String>,
 }
 
 impl AppState {
@@ -75,6 +78,7 @@ impl AppState {
             model_gates: Arc::new(crate::llm_util::ModelGates::default()),
             events,
             live: Arc::new(crate::live::Registry::default()),
+            owner_database_url: cfg.migration_url.clone(),
         }
     }
 
