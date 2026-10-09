@@ -16,19 +16,12 @@ use crate::graph::{add_evidence, insert_value_fact, Validity};
 use crate::resolution::normalize_name;
 use sqlx::PgPool;
 use std::collections::HashMap;
-use utopia_core::models::{NameView, RelationType};
+use utopia_core::models::NameView;
 use utopia_core::AppResult;
 use uuid::Uuid;
 
 /// 内建属性的 key。与 `is_a` 同一个做法：`builtin = TRUE`，建库时不铺，第一次要时建
 pub const KNOWN_AS: &str = "known_as";
-
-/// 这条关系类型是不是名字属性。给模型看的清单、本体引导、本体向量索引都要把它拿掉：
-/// 名字走自己的通道（抽取回复里的 `names`，服务端核对它在原文里），不能当一条普通属性
-/// 被模型直接写进来——那样就绕过了核对
-pub fn is_name_attribute(r: &RelationType) -> bool {
-    r.builtin && r.key == KNOWN_AS
-}
 
 /// 取（没有就建）这个库的 `known_as` 属性。
 pub async fn ensure_known_as(pool: &PgPool, kb_id: Uuid) -> AppResult<Uuid> {

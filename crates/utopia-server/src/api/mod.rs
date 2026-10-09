@@ -350,15 +350,6 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
             "/kbs/{id}/ontology/relation-types/{type_id}/reconcile",
             post(ontology_routes::reconcile_relation_type),
         )
-        .route(
-            "/kbs/{id}/ontology/misses/dismiss",
-            post(ontology_routes::dismiss_miss),
-        )
-        .route(
-            "/kbs/{id}/ontology/misses/restore",
-            post(ontology_routes::restore_miss),
-        )
-        .route("/kbs/{id}/ontology/suggest", post(ontology_routes::suggest))
         // 上次算出来、还没人表态的那些（见 `ontology_proposals`）。刷新页面靠它，不必重跑模型
         .route(
             "/kbs/{id}/ontology/proposals",
@@ -399,22 +390,6 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
         .route(
             "/kbs/{id}/ontology/imports/preview",
             post(ontology_routes::preview_import).layer(DefaultBodyLimit::max(16 * 1024 * 1024)),
-        )
-        .route(
-            "/kbs/{id}/ontology/proposed-predicates",
-            get(ontology_routes::proposed_predicates),
-        )
-        .route(
-            "/kbs/{id}/ontology/auto-extension",
-            get(ontology_routes::last_auto_extension),
-        )
-        .route(
-            "/kbs/{id}/ontology/adopt-predicate",
-            post(ontology_routes::adopt_predicate),
-        )
-        .route(
-            "/kbs/{id}/ontology/adopt-predicate/{batch_id}",
-            axum::routing::delete(ontology_routes::unadopt_predicate),
         )
         .route("/kbs/{id}/search", post(search_routes::search))
         .route("/kbs/{id}/chat", post(chat::chat))

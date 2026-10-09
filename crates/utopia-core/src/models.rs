@@ -605,30 +605,6 @@ pub struct FactQualifier {
     pub entity_name: Option<String>,
 }
 
-/// 抽取未匹配统计（本体扩展建议的信号源）。
-#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
-pub struct OntologyMiss {
-    pub kind: String,
-    pub key: String,
-    pub example: Option<String>,
-    pub count: i32,
-}
-
-/// 一个待认领的表层谓词：原文这么说过，但本体里没有对应关系，事实降级成了
-/// related_to。与 `OntologyMiss` 的纯计数不同，它连着具体事实——所以采纳时
-/// 能说清"将重新归类 57 条"，并真的去改。
-#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
-pub struct ProposedPredicate {
-    pub form: String,
-    /// 有多少条 live 的 related_to 事实由这个说法而来
-    pub fact_count: i64,
-    /// 出现在多少篇文档里。只在一篇里出现过的是那篇文档的用词，不是这个
-    /// 组织的词汇——自动扩展据此设门槛，人工提案只作参考不拦
-    pub doc_count: i64,
-    /// 一条样例（"Dino Crisis (Steam) → GeForce NOW"），让人一眼判断这是什么关系
-    pub example: Option<String>,
-}
-
 /// 一次 OWL 导入的记录。原文按内容寻址存在 blob 里，这行只是账。
 /// `summary` 记下那次投影做了什么，包括**暂未投影**的公理——将来补上消费者
 /// 时据此知道哪些导入值得重跑。
@@ -650,17 +626,6 @@ pub struct ModelLimit {
     pub base_url: String,
     pub model: String,
     pub max_concurrent: i32,
-}
-
-/// 一个待认领的实体类型：模型提议过、本体没有、实体因此降级成了 concept。
-/// 与 `ProposedPredicate` 对称——它连着具体实体，所以采纳时能说清"将重新归类
-/// 43 个"并真的去改，而不是只建一个空类。
-#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
-pub struct ProposedType {
-    pub form: String,
-    pub entity_count: i64,
-    /// 一个样例名字，让人一眼判断这是什么类
-    pub example: Option<String>,
 }
 
 /// 抽取丢弃信号：事实抽出来了却没能落地，以及为什么。
@@ -1200,27 +1165,6 @@ pub struct TypeCandidate {
     /// 关系行才有：`relation` 或 `attribute`
     pub kind: Option<String>,
     pub distance: f32,
-}
-
-/// 一个被记下来、但本体里没有对应属性的**字面值**说法。
-///
-/// 跟 [`ProposedPredicate`] 是一对：那个是宾语指向实体的（"收购"），
-/// 这个是宾语是字面值的（"成立日期 = 2015"）。两者不能混——提案要产出的东西
-/// 不一样（关系 vs 属性），而混起来的后果具体：一条 `founding_date` 会变成
-/// 一条指向「2015」这个假实体的边。
-#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
-pub struct ProposedAttribute {
-    pub form: String,
-    pub fact_count: i64,
-    pub doc_count: i64,
-    /// 一条样例值（`"2015"`、`1200`），让人一眼看出这是什么类型的数
-    pub example: Option<String>,
-    /// 这个说法**实际挂在哪些类上**（主语的类型）。
-    ///
-    /// 属性必须声明 domain，而 domain 猜错的代价是硬的：主语类型对不上
-    /// 就整条丢弃（`attr_domain_mismatch`）。所以不问模型，直接从数据里取——
-    /// 事实已经在那儿了，它们的主语是什么类是事实，不是判断
-    pub domain_keys: Vec<String>,
 }
 
 /// 一条口径改动之前的样子。

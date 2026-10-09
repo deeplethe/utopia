@@ -1,17 +1,14 @@
-//! 关系的签名（domain / range）在**三条写路径**上都得算数（#190 / #196）。
+//! 关系的签名（domain / range）在抽取之外的写路径上也得算数（#190 / #196）。
 //!
-//! 抽取写入时按 #138 掰正方向或留空谓词，但写谓词的路不止一条：**采纳**把谓词挂回
-//! 旧事实，**合并**换掉主语的类型。守卫只装在抽取上，另外两条各自绕过去——实测采纳
-//! 把违反率从 0 抬到 12.3%。这里守三件事：
+//! 抽取写入时按 #138 掰正方向或留空谓词，但**合并**会换掉主语的类型，守卫只装在抽取上
+//! 就被它绕过去。这里守两件事：
 //!
-//! 1. 采纳走同一道判断：主语不合宾语合 → 对调着挂；两边都不合 → 不挂，事实留在空谓词上。
-//! 2. 合并之后，被换了主语的事实若违反签名 → `axiom_violations` 里多一条 `signature`。
-//! 3. 一致性检查（R0）也能量出签名违规，事实撤了它就被清掉。
+//! 1. 合并之后，被换了主语的事实若违反签名 → `axiom_violations` 里多一条 `signature`。
+//! 2. 一致性检查（R0）也能量出签名违规，事实撤了它就被清掉。
 //!
 //! 没有 `UTOPIA_DATABASE_URL` 时跳过而不是失败。自建自拆，绝不碰已有的库。
 
 use sqlx::PgPool;
-use utopia_store::graph::Adopted;
 use uuid::Uuid;
 
 struct Fixture {
@@ -24,8 +21,6 @@ struct Fixture {
     acme: Uuid,
     alice: Uuid,
     bob: Uuid,
-    doc: Uuid,
-    chunk: Uuid,
 }
 
 async fn seed(pool: &PgPool) -> anyhow::Result<Fixture> {
@@ -130,39 +125,7 @@ async fn seed(pool: &PgPool) -> anyhow::Result<Fixture> {
         acme,
         alice,
         bob,
-        doc,
-        chunk,
     })
-}
-
-/// 一条没有谓词、证据里留着原文说法 `employee` 的事实——采纳要改写的正是这种
-async fn surfaced_fact(
-    pool: &PgPool,
-    f: &Fixture,
-    subject: Uuid,
-    object: Uuid,
-) -> anyhow::Result<Uuid> {
-    let id = Uuid::now_v7();
-    sqlx::query(
-        "INSERT INTO facts (id, kb_id, subject_id, predicate_id, object_id, confidence)
-         VALUES ($1, $2, $3, NULL, $4, 0.9)",
-    )
-    .bind(id)
-    .bind(f.kb)
-    .bind(subject)
-    .bind(object)
-    .execute(pool)
-    .await?;
-    sqlx::query(
-        "INSERT INTO fact_evidence (fact_id, chunk_id, quote, proposed_predicate, document_id, doc_version)
-         VALUES ($1, $2, 'employee of', 'employee', $3, 1)",
-    )
-    .bind(id)
-    .bind(f.chunk)
-    .bind(f.doc)
-    .execute(pool)
-    .await?;
-    Ok(id)
 }
 
 async fn live_employee_edges(pool: &PgPool, f: &Fixture) -> anyhow::Result<Vec<(Uuid, Uuid)>> {
@@ -191,7 +154,7 @@ async fn open_signature_breaks(pool: &PgPool, kb: Uuid) -> anyhow::Result<Vec<Uu
 }
 
 #[tokio::test]
-async fn adoption_and_merge_respect_the_signature() -> anyhow::Result<()> {
+async fn a_merge_that_breaks_the_signature_is_recorded() -> anyhow::Result<()> {
     let Some(url) = utopia_store::test_db::url() else {
         return Ok(());
     };
@@ -199,44 +162,21 @@ async fn adoption_and_merge_respect_the_signature() -> anyhow::Result<()> {
     let f = seed(&pool).await?;
 
     let run = async {
-        // 模型写的是 "Alice is an employee of Acme" —— 主语 person 违反 domain、宾语 company 符合
-        let reversed = surfaced_fact(&pool, &f, f.alice, f.acme).await?;
-        // "Bob is an employee of Alice" —— 两边都是 person，这个关系压根不适用
-        let hopeless = surfaced_fact(&pool, &f, f.bob, f.alice).await?;
-
-        // 1. 采纳：一条对调着挂上，一条不挂
-        let Adopted {
-            moved, left_off, ..
-        } = utopia_store::graph::adopt_proposed_predicates(
-            &pool,
-            f.kb,
-            f.employee,
-            &["employee".to_string()],
-            false,
+        // Acme employee Alice：主语 company、宾语 person，合签名
+        sqlx::query(
+            "INSERT INTO facts (id, kb_id, subject_id, predicate_id, object_id)
+             VALUES ($1, $2, $3, $4, $5)",
         )
+        .bind(Uuid::now_v7())
+        .bind(f.kb)
+        .bind(f.acme)
+        .bind(f.employee)
+        .bind(f.alice)
+        .execute(&pool)
         .await?;
-        assert_eq!(moved, 1, "the reversed one is adoptable once swapped");
-        assert_eq!(left_off, 1, "the hopeless one must be left without a predicate");
-        assert_eq!(
-            live_employee_edges(&pool, &f).await?,
-            vec![(f.acme, f.alice)],
-            "adoption must write the edge in the ontology's direction: Acme employee Alice"
-        );
-        let (still_bare,): (bool,) =
-            sqlx::query_as("SELECT predicate_id IS NULL AND invalidated_at IS NULL FROM facts WHERE id = $1")
-                .bind(hopeless)
-                .fetch_one(&pool)
-                .await?;
-        assert!(still_bare, "a fact that fits neither way stays live and predicate-less");
-        let (old_gone,): (bool,) =
-            sqlx::query_as("SELECT invalidated_at IS NOT NULL FROM facts WHERE id = $1")
-                .bind(reversed)
-                .fetch_one(&pool)
-                .await?;
-        assert!(old_gone, "the reversed row was superseded, not left beside the corrected one");
         assert!(open_signature_breaks(&pool, f.kb).await?.is_empty());
 
-        // 2. 合并：把 Acme 并进 Bob（person），Acme employee Alice 的主语变成 person
+        // 1. 合并：把 Acme 并进 Bob（person），Acme employee Alice 的主语变成 person
         utopia_store::resolution::merge_entities(&pool, f.kb, f.acme, f.bob, None, "test")
             .await?;
         let edges = live_employee_edges(&pool, &f).await?;
@@ -254,7 +194,7 @@ async fn adoption_and_merge_respect_the_signature() -> anyhow::Result<()> {
             "a merge that breaks the signature must show up as an open violation"
         );
 
-        // 3. 一致性检查量得出它，撤了事实就清掉
+        // 2. 一致性检查量得出它，撤了事实就清掉
         let report = utopia_store::reasoning::run(&pool, f.kb).await?;
         assert_eq!(report.found, 1);
         assert_eq!(report.inserted, 0, "already recorded by the merge; the check must not duplicate it");

@@ -1721,15 +1721,8 @@ export const en = {
         ? `Closed ${close} · ${review} in Review`
         : `Closed ${close}`,
     uniquenessSince: (d: string) => `since ${d}`,
-    dismiss: "Dismiss",
-    dismissed: (n: number) => `Dismissed (${n})`,
     /* 数字是**忽略之后**还在涨的那个——这一行的全部意义就在于此：
        当初"只出现过一次"的判断依据可能早就不成立了 */
-    dismissedHint:
-      "Still counted, but kept out of suggestions. If one has grown since you dismissed it, restore it.",
-    restore: "Restore",
-    suggest: "Suggest with AI",
-    suggesting: "Analyzing…",
     noMisses: "Nothing the documents say is waiting for a place in the ontology.",
     uncovered: (kindWords: number, phrases: number) => {
       const what = [
@@ -1746,41 +1739,8 @@ export const en = {
     mapOver: "Use existing",
     /* 影响面：采纳一个提案会把多少条无谓词事实认过去。
        没有这一句，"Add" 只是凭空多一个空关系 */
-    willRemap: (n: number) =>
-      n === 1 ? "reclassifies 1 fact" : `reclassifies ${n} facts`,
-    adopted: (n: number) =>
-      n === 1
-        ? "Added — 1 fact reclassified"
-        : `Added — ${n} facts reclassified`,
-    /* 一部分值换不动这个类型就没被改写。只报改写了多少条是报喜不报忧 */
-    adoptedPartly: (moved: number, left: number) =>
-      `Added — ${moved} reclassified, ${left} left behind (value did not fit the type)`,
-    /* 撤销：采纳改写了成批事实，没有回头路的话没人敢点第一下 */
-    undoAdopt: (key: string, n: number) =>
-      `${key} added, ${n} fact${n === 1 ? "" : "s"} reclassified`,
-    undoAdoptBtn: "Undo",
-    reverted: (n: number) =>
-      n === 1 ? "Reverted — 1 fact restored" : `Reverted — ${n} facts restored`,
-    undoKeepsRelation: "The relation stays; only the facts move back.",
-    /* 撤销要二次确认：它一次改回成批事实 */
-    undoTitle: "Undo this ontology change?",
-    undoHint: (n: number) =>
-      `${n} fact${n === 1 ? "" : "s"} will go back to “related to”. The relation itself stays — ` +
-      `nothing is deleted, and you can adopt it again later.`,
-    undoConfirm: "Undo",
-    undoCancel: "Keep",
     /* 自动扩本体的通知：默认开启的前提是它的动作可见且可退。
        只记在审计台账里不算可见——那是查证用的，不是通知用的 */
-    autoRanTitle: "Utopia extended this ontology from your documents",
-    autoRanBody: (rels: string[], facts: number) =>
-      `Added ${rels.join(", ")} · ${facts} fact${facts === 1 ? "" : "s"} reclassified`,
-    autoRanOff: "Turn this off in knowledge base settings.",
-    /* 批量：常见情形是"这些都对"，一条条点是把一个决定拆成八个 */
-    addAll: (n: number) => `Add all ${n}`,
-    addingAll: "Adding…",
-    addAllLabel: "batch",
-    addAllPartial: (keys: string[]) =>
-      `Some could not be added: ${keys.join(", ")} — the rest went through.`,
     proposals: "AI proposals",
     keyHint: "lowercase_snake_case",
     /* ---- 0061: the ontology agent and its questions ---- */
@@ -2351,14 +2311,6 @@ export const en = {
     title: "Knowledge base settings",
     general: "General",
     members: "Members",
-    /* 自动扩本体开关。说明必须讲清关掉之后失去的**只是**代劳，不是留意——
-       否则用户会以为关掉它就看不到未匹配的信号了 */
-    autoExtend: "Extend the ontology automatically",
-    autoExtendNote:
-      "When extraction meets a relation this ontology does not have, add it and reclassify the " +
-      "facts that were waiting for it. Every change is listed and can be undone. Turning this " +
-      "off does not stop Utopia from noticing — the phrases still collect under Unmatched, they " +
-      "just wait for you to approve them.",
     materialize: "Materialize inferences",
     materializeNote:
       "Write facts the ontology entails into the ledger — transitive chains and symmetric pairs. " +

@@ -1,5 +1,5 @@
 import type { SourceKind } from "./sourceKinds";
-import { S, lang } from "./i18n";
+import { S } from "./i18n";
 import { createParser } from "eventsource-parser";
 
 export class ApiError extends Error {
@@ -1293,12 +1293,6 @@ export interface QuestionReport {
   uncovered: { kind_words: number; phrases: number };
 }
 
-export interface OntologyMiss {
-  kind: "entity_type" | "relation_type";
-  key: string;
-  example: string | null;
-  count: number;
-}
 
 /** 一条谓词的一端挂着两个以上开放值（#341）。
  *
@@ -1413,12 +1407,6 @@ export interface OntologyProposals {
   })[];
 }
 
-/** 原文说过、本体里没有、因而事实没有谓词的说法。 */
-export interface ProposedPredicate {
-  form: string;
-  fact_count: number;
-  example: string | null;
-}
 
 /** 一个类/属性在这次导入里的去向。key_taken = key 被另一个 IRI 占着，报告但不动 */
 export interface PlannedItem {
@@ -2218,9 +2206,6 @@ export const api = {
     request<{
       entity_types: EntityTypeView[];
       relation_types: RelationTypeView[];
-      misses: OntologyMiss[];
-      /** 已忽略的，连同它此后继续累积的计数。抑制照旧，只是看得见 */
-      dismissed_misses: OntologyMiss[];
     }>(`/api/v1/kbs/${kbId}/ontology`),
   createEntityType: (kbId: string, body: Record<string, unknown>) =>
     request<{ id: string }>(`/api/v1/kbs/${kbId}/ontology/entity-types`, {
@@ -2363,23 +2348,6 @@ export const api = {
   /** 两个数（0061 决定 5） */
   questionReport: (kbId: string) =>
     request<QuestionReport>(`/api/v1/kbs/${kbId}/questions/report`),
-  dismissMiss: (kbId: string, kind: string, key: string) =>
-    request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/ontology/misses/dismiss`, {
-      method: "POST",
-      body: JSON.stringify({ kind, key }),
-    }),
-  restoreMiss: (kbId: string, kind: string, key: string) =>
-    request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/ontology/misses/restore`, {
-      method: "POST",
-      body: JSON.stringify({ kind, key }),
-    }),
-  /** reason 只给人看，而人就在这次请求的另一端——所以语言由调用方说，
-      不是后端的设置（docs/decisions/0004）。description 的语言跟知识库走，服务端自己知道 */
-  suggestOntology: (kbId: string) =>
-    request<OntologyProposals>(`/api/v1/kbs/${kbId}/ontology/suggest`, {
-      method: "POST",
-      body: JSON.stringify({ locale: lang }),
-    }),
 
   /** 上传本体文件只算出计划，一个字节都不写库 */
   previewOntologyImport: (kbId: string, file: File) => {
@@ -2402,57 +2370,6 @@ export const api = {
   ontologyImports: (kbId: string) =>
     request<{ imports: OntologyImportView[] }>(
       `/api/v1/kbs/${kbId}/ontology/imports`,
-    ),
-
-  proposedPredicates: (kbId: string) =>
-    request<{ forms: ProposedPredicate[] }>(
-      `/api/v1/kbs/${kbId}/ontology/proposed-predicates`,
-    ),
-  /** 最近一次自动扩本体做了什么，以及还能不能撤销（撤干净了返回 null） */
-  lastAutoExtension: (kbId: string) =>
-    request<{
-      run: {
-        at: string;
-        relations: string[] | null;
-        classes: string[] | null;
-        facts_remapped: number | null;
-        batches: string[];
-      } | null;
-    }>(`/api/v1/kbs/${kbId}/ontology/auto-extension`),
-  /** 建关系 **并**把等着它的无谓词事实认过去——后半句才是收益 */
-  adoptPredicate: (
-    kbId: string,
-    body: {
-      key: string;
-      /** true = key 指的是已有的关系/属性，只改写事实，不建新类型 */
-      existing?: boolean;
-      /** attribute 走另一条改写路径：值要按 datatype 换算 */
-      kind?: "relation" | "attribute";
-      datatype?: string;
-      unit?: string;
-      label?: string;
-      temporal?: string;
-      functional?: boolean;
-      description?: string;
-      forms: string[];
-    },
-  ) =>
-    request<{
-      id: string;
-      remapped: number;
-      batch: string;
-      /** 值换不动那个 datatype、因而没被改写的条数。改写了 3 条丢下 2 条，
-          只报前半句就是报喜不报忧 */
-      unconvertible?: number;
-    }>(`/api/v1/kbs/${kbId}/ontology/adopt-predicate`, {
-      method: "POST",
-      body: JSON.stringify(body),
-    }),
-  /** 撤销一次采纳：新写的行作废、旧行复活。关系类型留着 */
-  unadoptPredicate: (kbId: string, batchId: string) =>
-    request<{ reverted: number }>(
-      `/api/v1/kbs/${kbId}/ontology/adopt-predicate/${batchId}`,
-      { method: "DELETE" },
     ),
 
   sources: (kbId: string) =>

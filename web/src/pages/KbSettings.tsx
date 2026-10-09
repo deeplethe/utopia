@@ -113,7 +113,6 @@ export function KbSettings() {
   const [name, setName] = useState("");
   const [desc, setDesc] = useState("");
   const [visibility, setVisibility] = useState<"open" | "restricted">("open");
-  const [autoExtend, setAutoExtend] = useState(true);
   // **默认关**，与上面那个相反：推理往账本里写事实，而声明可能是错的
   const [materialize, setMaterialize] = useState(false);
   // 类型消解自动跑（0016 C2）：只自动落地子树内精化的那一档
@@ -130,7 +129,6 @@ export function KbSettings() {
       setName(kb.data.name);
       setDesc(kb.data.description ?? "");
       setVisibility(kb.data.visibility);
-      setAutoExtend(kb.data.auto_extend_ontology);
       setMaterialize(kb.data.materialize_inferences);
       setAutoResolve(kb.data.auto_type_resolution);
       setGovernance(kb.data.governance);
@@ -171,7 +169,6 @@ export function KbSettings() {
     desc.trim() !== (kb.data.description ?? "");
   const visibilityDirty = visibility !== kb.data.visibility;
   const automationDirty =
-    autoExtend !== kb.data.auto_extend_ontology ||
     materialize !== kb.data.materialize_inferences ||
     autoResolve !== kb.data.auto_type_resolution ||
     governance !== kb.data.governance ||
@@ -327,7 +324,6 @@ export function KbSettings() {
                       disabled={!automationDirty || saveAutomation.isPending}
                       onClick={() =>
                         saveAutomation.mutate({
-                          auto_extend_ontology: autoExtend,
                           materialize_inferences: materialize,
                           auto_type_resolution: autoResolve,
                           governance,
@@ -341,16 +337,7 @@ export function KbSettings() {
                 }
               >
                 <div className="space-y-3">
-                  {/* 自动扩本体：默认开，因为新库的十个默认关系不是任何人选的。
-                      说明里要讲清关掉之后失去的**只是**代劳，不是留意 */}
-                  <Checkbox
-                    checked={autoExtend}
-                    onChange={(v) => setAutoExtend(v)}
-                    label={S.kbset.autoExtend}
-                    hint={S.kbset.autoExtendNote}
-                  />
-                  {/* 物化推理：**默认关**，与上面那个相反。自动扩本体动的是词表，
-                      这个动的是账本——它按公理往图里写事实，而声明可能是错的 */}
+                  {/* 物化推理：**默认关**。它动的是账本——按公理往图里写事实，而声明可能是错的 */}
                   <Checkbox
                     checked={materialize}
                     onChange={(v) => setMaterialize(v)}

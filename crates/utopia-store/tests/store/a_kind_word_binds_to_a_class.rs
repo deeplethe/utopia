@@ -12,7 +12,7 @@ use sqlx::PgPool;
 use std::collections::HashSet;
 use std::time::Duration;
 use utopia_store::graph::{self, FactObject};
-use utopia_store::{ontology, resolution, type_bindings};
+use utopia_store::{ontology, type_bindings};
 use uuid::Uuid;
 
 const ORG: &str = "kind-word-binding-test";
@@ -328,13 +328,6 @@ async fn a_kind_word_is_counted_once_bound_once_and_applied_to_its_entities() ->
             0,
             "只写第一次，与 set_proposed_type 同一条"
         );
-        let proposed = resolution::proposed_types(&pool, f.kb).await?;
-        let p = proposed
-            .iter()
-            .find(|p| p.form == "stockholder proposal")
-            .expect("the ontology page offers it");
-        assert_eq!(p.entity_count, 1);
-        assert_eq!(p.example.as_deref(), Some(PROPOSAL));
         // 绑定的形状：绑上了就得有类
         assert!(type_bindings::decide(
             &pool,

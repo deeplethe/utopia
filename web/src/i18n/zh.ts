@@ -1507,13 +1507,6 @@ export const zh: Strings = {
     uniquenessDone: (close: number, review: number) =>
       review > 0 ? `已闭合 ${close} 条 · ${review} 条待审` : `已闭合 ${close} 条`,
     uniquenessSince: (d: string) => `自 ${d}`,
-    dismiss: "忽略",
-    dismissed: (n: number) => `已忽略（${n}）`,
-    dismissedHint:
-      "仍在计数，只是不进建议。如果某一个在你忽略之后涨了，可以撤回。",
-    restore: "撤回忽略",
-    suggest: "用 AI 建议",
-    suggesting: "分析中…",
     noMisses: "文档说到的东西里，没有在等本体给位置的。",
     uncovered: (kindWords: number, phrases: number) => {
       const what = [
@@ -1526,30 +1519,6 @@ export const zh: Strings = {
     },
     approve: "加入",
     mapOver: "用已有的",
-    willRemap: (n: number) => `将重新归类 ${n} 条事实`,
-    adopted: (n: number) => `已加入——${n} 条事实已重新归类`,
-    adoptedPartly: (moved: number, left: number) =>
-      `已加入——${moved} 条已重新归类，${left} 条留在原处（值与类型对不上）`,
-    undoAdopt: (key: string, n: number) =>
-      `已加入 ${key}，${n} 条事实已重新归类`,
-    undoAdoptBtn: "撤销",
-    reverted: (n: number) => `已撤销——${n} 条事实已复原`,
-    undoKeepsRelation: "关系保留；只有事实被移回去。",
-    undoTitle: "撤销这次本体变更？",
-    undoHint: (n: number) =>
-      `${n} 条事实会回到「related to」。关系本身保留——` +
-      `什么都不会被删除，之后仍可再次采纳。`,
-    undoConfirm: "撤销",
-    undoCancel: "保持",
-    autoRanTitle: "Utopia 依据你的文档扩展了这个本体",
-    autoRanBody: (rels: string[], facts: number) =>
-      `新增 ${rels.join("、")} · ${facts} 条事实已重新归类`,
-    autoRanOff: "可在知识库设置里关掉它。",
-    addAll: (n: number) => `全部加入（${n}）`,
-    addingAll: "加入中…",
-    addAllLabel: "批量",
-    addAllPartial: (keys: string[]) =>
-      `有几个没能加入：${keys.join("、")}——其余的已经成功。`,
     proposals: "AI 提案",
     keyHint: "小写下划线命名",
     /* ---- 0061：本体代理与能力问题 ---- */
@@ -2050,11 +2019,6 @@ export const zh: Strings = {
     title: "知识库设置",
     general: "常规",
     members: "成员",
-    autoExtend: "自动扩展本体",
-    autoExtendNote:
-      "当抽取遇到这个本体里没有的关系时，把它加进来，并把一直等着它的那些事实重新归类。" +
-      "每一次变更都会列出，并且可以撤销。关掉它并不会让 Utopia 不再留意——" +
-      "那些说法仍然会汇集到「未匹配」下，只是要等你点头。",
     materialize: "物化推理",
     materializeNote:
       "把本体蕴含的事实写进账本——传递链与对称对。它们带派生标记、单列一段，背后的声明要是错了，撤掉只要一下。",

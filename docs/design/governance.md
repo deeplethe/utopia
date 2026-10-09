@@ -68,9 +68,9 @@ becomes a `derived_contradiction` violation with a clue (stale, wrong merge, uns
 repairs (close at a date, retract, go to duplicates, relax the ontology, accept); derived against
 derived aggregates per rule pair as `rules_disagree`; a disputed fact is marked where it sits [0017].
 
-**Switches.** `auto_extend_ontology`, `auto_type_resolution`, `materialize_inferences`, `governance`:
+**Switches.** `auto_type_resolution`, `materialize_inferences`, `governance`:
 all default on; every automatic action is visible and reversible, and a switch governs action,
-never attention [0003 d4, 0016 C2, 0002 d6 revised, 0025 d2 revised]. Nods stay with people [0015].
+never attention [0016 C2, 0002 d6 revised, 0025 d2 revised]. Nods stay with people [0015].
 
 **Measured.** `scripts/bench/govern.mjs` against 411 hand-labelled name pairs: 97.7% decided on its
 own, 96.7% agreement, 6 wrong merges (4 of them one flipping pair), 12 left for people, 13 minutes

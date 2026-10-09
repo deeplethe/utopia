@@ -307,10 +307,6 @@ async fn the_name_attribute_is_not_an_ordinary_attribute() -> anyhow::Result<()>
     let f = seed(&pool).await?;
     let run = async {
         let known_as = names::ensure_known_as(&pool, f.kb).await?;
-        assert_eq!(
-            utopia_store::ontology::relation_type_id_by_key(&pool, f.kb, names::KNOWN_AS).await?,
-            None
-        );
         let edited = utopia_store::ontology::update_relation_type(
             &pool,
             f.kb,

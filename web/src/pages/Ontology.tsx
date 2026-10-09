@@ -28,7 +28,6 @@ import {
   type EntityTypeView,
   type ImportPlan,
   type OntologyImportView,
-  type OntologyMiss,
   type AgentProposalFields,
   type CompetencyQuestion,
   type PlannedItem,
@@ -53,7 +52,6 @@ import {
 import {
   Button,
   Chip,
-  DangerConfirm,
   Dialog,
   Disclosure,
   IconButton,
@@ -270,8 +268,6 @@ export function Ontology() {
   const ont = data.data;
   const entity_types = ont?.entity_types ?? [];
   const relation_types = ont?.relation_types ?? [];
-  const misses = ont?.misses ?? [];
-  const dismissed_misses = ont?.dismissed_misses ?? [];
   // 属性不进 Properties 列表：它们挂在类下，在类详情区编辑
   const relations = relation_types.filter((r) => r.kind !== "attribute");
   // 面板要演完退场再卸载：一取消选中就 unmount 是瞬间消失（图谱页同一个做法）。
@@ -464,7 +460,6 @@ export function Ontology() {
         <RailItem
           active={sel?.kind === "misses"}
           icon={<Inbox size={14} />}
-          count={loading ? undefined : misses.length}
           onClick={() => setSel({ kind: "misses" })}
         >
           {S.ontology.missesShort}
@@ -532,8 +527,6 @@ export function Ontology() {
               <div>
                 <MissesPanel
                   kbId={kb.id}
-                  misses={misses}
-                  dismissedMisses={dismissed_misses ?? []}
                   onChanged={refresh}
                   onError={onError}
                 />
@@ -1813,36 +1806,15 @@ function UniquenessPanel({
   );
 }
 
-/** Suggest 提的那部分：批量加入只吃它们。代理提的每条都是人签的契约（0012），不进「全部加入」 */
-function manualOnly(d: OntologyProposals): OntologyProposals {
-  const own = <T extends { proposed_by?: string }>(xs: T[] | undefined) =>
-    (xs ?? []).filter((x) => x.proposed_by !== "agent");
-  return {
-    entity_types: own(d.entity_types),
-    relation_types: own(d.relation_types),
-    attribute_types: own(d.attribute_types),
-    map_to: own(d.map_to),
-  };
-}
-function manualCount(d: OntologyProposals): number {
-  const m = manualOnly(d);
-  return (
-    m.entity_types.length +
-    m.relation_types.length +
-    (m.attribute_types?.length ?? 0) +
-    (m.map_to?.length ?? 0)
-  );
-}
-
-/** 库里现在有几条代理提的提案：等代理答完的判据 */
-function agentCount(d: OntologyProposals | null | undefined): number {
+/** 库里现在有几条还没人表态的提案：等代理答完的判据，也是「有没有可看的」 */
+function proposalCount(d: OntologyProposals | null | undefined): number {
   if (!d) return 0;
-  return [
-    ...(d.map_to ?? []),
-    ...d.entity_types,
-    ...d.relation_types,
-    ...(d.attribute_types ?? []),
-  ].filter((p) => p.proposed_by === "agent").length;
+  return (
+    (d.map_to?.length ?? 0) +
+    d.entity_types.length +
+    d.relation_types.length +
+    (d.attribute_types?.length ?? 0)
+  );
 }
 
 /** 代理提案多带的几格（0061）：定义、会绑的形状、类别词、服务的问题。
@@ -2119,14 +2091,10 @@ function QuestionsPanel({
 
 function MissesPanel({
   kbId,
-  misses,
-  dismissedMisses,
   onChanged,
   onError,
 }: {
   kbId: string;
-  misses: OntologyMiss[];
-  dismissedMisses: OntologyMiss[];
   onChanged: () => void;
   onError: (e: unknown) => void;
 }) {
@@ -2135,20 +2103,14 @@ function MissesPanel({
     queryKey: ["questionReport", kbId],
     queryFn: () => api.questionReport(kbId),
   }).data?.uncovered;
-  // 默认收起：已忽略的是**背景信息**，不该跟待处理的挤在一起抢注意力
-  const [showDismissed, setShowDismissed] = useState(false);
   const [proposals, setProposals] = useState<OntologyProposals | null>(null);
-  // 上次算出来、还没人表态的那些：刷新页面之后从库里捞回来（0049）。
-  //
-  // 从前这里只有上面那个 useState——刷新一次、切走一次，整批提议就没了，
-  // 想再看只能重跑一次模型，而重跑未必给出同一批归并。归并了哪些说法正是
-  // 唯一能查证过并的东西（0003 的 optimized_for → runs_on 就是这么抓出来的）
   // 叫了代理之后等它：任务在后台跑，隔几秒看一眼库里有没有新提案（0061）。
-  // 记的是叫它那一刻代理提案的条数——多出来了就是它答完了；两分钟没动静就不等了
+  // 记的是叫它那一刻提案的条数——多出来了就是它答完了；两分钟没动静就不等了
   const [awaitingAgent, setAwaitingAgent] = useState<{
     since: number;
     had: number;
   } | null>(null);
+  // 还没人表态的提案存在库里（0049）：刷新页面、切走再回来都从这里捞
   const storedProposals = useQuery({
     queryKey: ["storedProposals", kbId],
     queryFn: () => api.storedProposals(kbId),
@@ -2157,52 +2119,20 @@ function MissesPanel({
   useEffect(() => {
     if (!awaitingAgent || !storedProposals.data) return;
     const d = storedProposals.data;
-    const now = agentCount(d);
-    if (now > awaitingAgent.had || Date.now() - awaitingAgent.since > 120_000) {
+    if (
+      proposalCount(d) > awaitingAgent.had ||
+      Date.now() - awaitingAgent.since > 120_000
+    ) {
       setProposals(d);
       setAwaitingAgent(null);
     }
   }, [awaitingAgent, storedProposals.data]);
   useEffect(() => {
-    // 只在还没有本地结果时回填。刚点完 Suggest 的那一批更新，不该被覆盖
+    // 只在还没有本地结果时回填：刚表过态的那一批不该被库里的旧快照盖回去
     if (proposals === null && storedProposals.data) {
-      const d = storedProposals.data;
-      const empty =
-        !d.entity_types?.length &&
-        !d.relation_types?.length &&
-        !d.attribute_types?.length &&
-        !d.map_to?.length;
-      if (!empty) setProposals(d);
+      if (proposalCount(storedProposals.data) > 0) setProposals(storedProposals.data);
     }
   }, [storedProposals.data, proposals]);
-  // 最近一次采纳，供撤销。只留最近一次——旧批次要撤销走审计台账，
-  // 那里本来就记着每次采纳动了哪个关系、多少条
-  const [lastAdopt, setLastAdopt] = useState<{
-    batches: string[];
-    key: string;
-    moved: number;
-  } | null>(null);
-  // 撤销要二次确认：一次改回成批事实
-  const [confirmUndo, setConfirmUndo] = useState<{
-    batches: string[];
-    moved: number;
-  } | null>(null);
-  // 系统自动扩过本体没有——横幅要据此显示，撤干净了后端返回 null
-  const autoRun = useQuery({
-    queryKey: ["auto-extension", kbId],
-    queryFn: () => api.lastAutoExtension(kbId),
-  });
-  // 待认领的表层谓词：提案的影响面（"将改写 57 条"）从这里算
-  const surface = useQuery({
-    queryKey: ["proposed-predicates", kbId],
-    queryFn: () => api.proposedPredicates(kbId),
-  });
-  const factsWaiting = (forms: string[]) => {
-    const byForm = new Map(
-      (surface.data?.forms ?? []).map((f) => [f.form, f.fact_count]),
-    );
-    return forms.reduce((n, f) => n + (byForm.get(f) ?? 0), 0);
-  };
 
   const askAgent = useMutation({
     mutationFn: () => api.proposeOntology(kbId),
@@ -2210,11 +2140,20 @@ function MissesPanel({
       toast.info(S.ontology.agentQueued);
       setAwaitingAgent({
         since: Date.now(),
-        had: agentCount(storedProposals.data ?? proposals),
+        had: proposalCount(storedProposals.data ?? proposals),
       });
     },
     onError,
   });
+  type Section = "map_to" | "entity_types" | "relation_types" | "attribute_types";
+  const drop = (section: Section, key: string) =>
+    setProposals(
+      (prev) =>
+        prev && {
+          ...prev,
+          [section]: (prev[section] ?? []).filter((x) => x.key !== key),
+        },
+    );
   // 拒绝连理由：改状态不删行，理由下一轮代理读得到（0061）
   const rejectProposal = useMutation({
     mutationFn: ({
@@ -2222,334 +2161,52 @@ function MissesPanel({
       key,
       reason,
     }: {
-      section: "map_to" | "entity_types" | "relation_types" | "attribute_types";
+      section: Section;
       key: string;
       reason?: string;
     }) => api.decideProposal(kbId, section, key, "rejected", reason),
     onSuccess: (_d, v) => {
       toast.success(S.ontology.rejectedProposal);
-      setProposals(
-        (prev) =>
-          prev && {
-            ...prev,
-            [v.section]: (prev[v.section] ?? []).filter((x) => x.key !== v.key),
-          },
-      );
+      drop(v.section, v.key);
     },
     onError,
   });
-  const reject = (
-    section: "map_to" | "entity_types" | "relation_types" | "attribute_types",
-    key: string,
-  ) => {
+  const reject = (section: Section, key: string) => {
     const reason = window.prompt(S.ontology.rejectReasonPrompt) ?? "";
     rejectProposal.mutate({ section, key, reason: reason.trim() || undefined });
   };
-  const suggest = useMutation({
-    mutationFn: () => api.suggestOntology(kbId),
-    onSuccess: setProposals,
-    onError,
-  });
-  const dismiss = useMutation({
-    mutationFn: ({ kind, key }: { kind: string; key: string }) =>
-      api.dismissMiss(kbId, kind, key),
-    onSuccess: onChanged,
-    onError,
-  });
-  const restore = useMutation({
-    mutationFn: ({ kind, key }: { kind: string; key: string }) =>
-      api.restoreMiss(kbId, kind, key),
-    onSuccess: onChanged,
-    onError,
-  });
-  const approveEntity = useMutation({
-    // 代理提的走采纳端点：服务端建类、标记提案、排对齐（0061 决定 3）
-    mutationFn: (p: {
-      key: string;
-      label: string;
-      description?: string;
-      proposed_by?: string;
-    }) =>
-      p.proposed_by === "agent"
-        ? api.adoptProposal(kbId, "entity_types", p.key)
-        : api.createEntityType(kbId, {
-            key: p.key,
-            label: p.label,
-            description: p.description,
-          }),
-    onSuccess: (_data, p) => {
-      // 已采纳：从提案列表移除，并顺带清掉对应的未匹配统计 chip（本体已覆盖）
-      toast.success(S.toast.added);
-      setProposals(
-        (prev) =>
-          prev && {
-            ...prev,
-            entity_types: prev.entity_types.filter((x) => x.key !== p.key),
-          },
-      );
-      api.dismissMiss(kbId, "entity_type", p.key).catch(() => {});
-      // 提案表态落库（0049）：下一轮 Suggest 不会把它刷回待看
-      api.decideProposal(kbId, "entity_types", p.key, "adopted").catch(() => {});
+  // 采纳走服务端一个端点：建类或属性（或写下人的绑定）、标记提案、排对齐（0061 决定 3）
+  const adopt = useMutation({
+    mutationFn: ({ section, key }: { section: Section; key: string }) =>
+      api.adoptProposal(kbId, section, key),
+    onSuccess: (_d, v) => {
+      toast.success(v.section === "map_to" ? S.toast.saved : S.toast.added);
+      drop(v.section, v.key);
       onChanged();
     },
     onError,
   });
-  const approveRelation = useMutation({
-    // 带 forms 的提案走 adopt：建关系顺带把等着它的无谓词事实认过去。
-    // 只建关系的话本体长大了、图没变好——那些事实会继续是"有关联"
-    mutationFn: (p: {
-      key: string;
-      label: string;
-      temporal?: string;
-      functional?: boolean;
-      description?: string;
-      forms?: string[];
-      proposed_by?: string;
-    }) =>
-      p.proposed_by === "agent"
-        ? api.adoptProposal(kbId, "relation_types", p.key)
-        : p.forms?.length
-        ? api.adoptPredicate(kbId, {
-            key: p.key,
-            label: p.label,
-            temporal: p.temporal ?? "state",
-            functional: p.functional ?? false,
-            description: p.description,
-            forms: p.forms,
-          })
-        : api.createRelationType(kbId, {
-            key: p.key,
-            label: p.label,
-            temporal: p.temporal ?? "state",
-            functional: p.functional ?? false,
-            description: p.description,
-          }),
-    onSuccess: (data, p) => {
-      const d = data as { remapped?: number; batch?: string };
-      const moved = d.remapped ?? 0;
-      toast.success(moved > 0 ? S.ontology.adopted(moved) : S.toast.added);
-      // 撤销的把手：采纳改写了成批事实，没有回头路的话没人敢点第一下
-      if (moved > 0 && d.batch)
-        setLastAdopt({ batches: [d.batch], key: p.key, moved });
-      setProposals(
-        (prev) =>
-          prev && {
-            ...prev,
-            relation_types: prev.relation_types.filter((x) => x.key !== p.key),
-          },
-      );
-      api.dismissMiss(kbId, "relation_type", p.key).catch(() => {});
-      api.decideProposal(kbId, "relation_types", p.key, "adopted").catch(() => {});
-      onChanged();
-    },
-    onError,
-  });
-
-  // 逐条串行而不是加个批量端点：每个谓词各有自己的批次和撤销粒度，
-  // 而且部分失败能如实报告（"5 个成功，1 个 key 已存在"）而不是整批回滚
-  // 属性提案：宾语是字面值的那些。走同一个采纳入口，但值要按 datatype
-  // 换算，换不动的不改写——所以回执里的 unconvertible 必须说出来
-  const approveAttribute = useMutation({
-    mutationFn: (p: {
-      key: string;
-      label: string;
-      datatype?: string;
-      unit?: string;
-      description?: string;
-      forms?: string[];
-      proposed_by?: string;
-    }) =>
-      p.proposed_by === "agent"
-        ? api
-            .adoptProposal(kbId, "attribute_types", p.key)
-            .then(() => ({}) as Awaited<ReturnType<typeof api.adoptPredicate>>)
-        : api.adoptPredicate(kbId, {
-        key: p.key,
-        kind: "attribute",
-        label: p.label,
-        datatype: p.datatype ?? "text",
-        unit: p.unit,
-        description: p.description,
-        forms: p.forms ?? [],
-      }),
-    onSuccess: (data, p) => {
-      const moved = data.remapped ?? 0;
-      const left = data.unconvertible ?? 0;
-      toast.success(
-        left > 0
-          ? S.ontology.adoptedPartly(moved, left)
-          : moved > 0
-            ? S.ontology.adopted(moved)
-            : S.toast.added,
-      );
-      if (moved > 0 && data.batch)
-        setLastAdopt({ batches: [data.batch], key: p.key, moved });
-      setProposals(
-        (prev) =>
-          prev && {
-            ...prev,
-            attribute_types: (prev.attribute_types ?? []).filter(
-              (x) => x.key !== p.key,
-            ),
-          },
-      );
-      for (const form of p.forms ?? [])
-        api.dismissMiss(kbId, "attribute_type", form).catch(() => {});
-      api.decideProposal(kbId, "attribute_types", p.key, "adopted").catch(() => {});
-      onChanged();
-    },
-    onError,
-  });
-  // 映射到已有类型：不建东西，只把这些说法的事实挂过去。
-  // 跟新建走同一个采纳入口，因为它对图做的事一模一样——也因此同样可撤销
-  const approveMapping = useMutation({
-    // 代理提的「已有」：形状各写一条人的绑定判定（0061 cut 1.1），走采纳端点
-    mutationFn: (p: {
-      key: string;
-      kind?: string;
-      forms?: string[];
-      proposed_by?: string;
-    }) =>
-      p.proposed_by === "agent"
-        ? api
-            .adoptProposal(kbId, "map_to", p.key)
-            .then(() => ({}) as Awaited<ReturnType<typeof api.adoptPredicate>>)
-        : api.adoptPredicate(kbId, {
-            key: p.key,
-            existing: true,
-            // 目标是属性时值要按它的 datatype 换算，服务端据此分道
-            kind: p.kind === "attribute" ? "attribute" : "relation",
-            forms: p.forms ?? [],
-          }),
-    onSuccess: (data, p) => {
-      const moved = data.remapped ?? 0;
-      const left = data.unconvertible ?? 0;
-      toast.success(
-        left > 0
-          ? S.ontology.adoptedPartly(moved, left)
-          : moved > 0
-            ? S.ontology.adopted(moved)
-            : S.toast.saved,
-      );
-      if (moved > 0 && data.batch)
-        setLastAdopt({ batches: [data.batch], key: p.key, moved });
-      setProposals(
-        (prev) =>
-          prev && {
-            ...prev,
-            map_to: (prev.map_to ?? []).filter((x) => x.key !== p.key),
-          },
-      );
-      for (const form of p.forms ?? [])
-        api.dismissMiss(kbId, "relation_type", form).catch(() => {});
-      onChanged();
-    },
-    onError,
-  });
-  const addAll = useMutation({
-    mutationFn: async (all: OntologyProposals) => {
-      const batches: string[] = [];
-      let moved = 0;
-      const failed: string[] = [];
-      for (const p of all.entity_types) {
-        try {
-          await api.createEntityType(kbId, { key: p.key, label: p.label });
-        } catch {
-          failed.push(p.key);
-        }
-      }
-      for (const p of all.relation_types) {
-        try {
-          if (p.forms?.length) {
-            const r = await api.adoptPredicate(kbId, {
-              key: p.key,
-              label: p.label,
-              temporal: p.temporal ?? "state",
-              functional: p.functional ?? false,
-              description: p.description,
-              forms: p.forms,
-            });
-            moved += r.remapped;
-            if (r.remapped > 0) batches.push(r.batch);
-          } else {
-            await api.createRelationType(kbId, {
-              key: p.key,
-              label: p.label,
-              temporal: p.temporal ?? "state",
-              functional: p.functional ?? false,
-              description: p.description,
-            });
-          }
-        } catch {
-          failed.push(p.key);
-        }
-      }
-      for (const p of all.attribute_types ?? []) {
-        if (!p.forms?.length) continue;
-        try {
-          const r = await api.adoptPredicate(kbId, {
-            key: p.key,
-            kind: "attribute",
-            label: p.label,
-            datatype: p.datatype ?? "text",
-            unit: p.unit,
-            description: p.description,
-            forms: p.forms,
-          });
-          moved += r.remapped;
-          if (r.remapped > 0) batches.push(r.batch);
-        } catch {
-          failed.push(p.key);
-        }
-      }
-      for (const p of all.map_to ?? []) {
-        if (!p.forms?.length) continue;
-        try {
-          const r = await api.adoptPredicate(kbId, {
-            key: p.key,
-            existing: true,
-            kind: p.kind === "attribute" ? "attribute" : "relation",
-            forms: p.forms,
-          });
-          moved += r.remapped;
-          if (r.remapped > 0) batches.push(r.batch);
-        } catch {
-          failed.push(p.key);
-        }
-      }
-      return { batches, moved, failed };
-    },
-    onSuccess: (r) => {
-      if (r.failed.length) toast.error(S.ontology.addAllPartial(r.failed));
-      else toast.success(S.ontology.adopted(r.moved));
-      if (r.batches.length)
-        setLastAdopt({
-          batches: r.batches,
-          key: S.ontology.addAllLabel,
-          moved: r.moved,
-        });
-      setProposals(null);
-      onChanged();
-    },
-    onError,
-  });
-
-  const unadopt = useMutation({
-    mutationFn: async (batches: string[]) => {
-      let reverted = 0;
-      for (const b of batches)
-        reverted += (await api.unadoptPredicate(kbId, b)).reverted;
-      return { reverted };
-    },
-    onSuccess: (r) => {
-      toast.success(S.ontology.reverted(r.reverted));
-      setLastAdopt(null);
-      setConfirmUndo(null);
-      autoRun.refetch();
-      onChanged();
-    },
-    onError,
-  });
+  const actions = (section: Section, key: string, label: string) => (
+    <>
+      <Button
+        variant="primary"
+        size="sm"
+        className="ml-auto"
+        onClick={() => adopt.mutate({ section, key })}
+        disabled={adopt.isPending}
+      >
+        {label}
+      </Button>
+      <Button
+        size="sm"
+        variant="secondary"
+        onClick={() => reject(section, key)}
+        disabled={rejectProposal.isPending}
+      >
+        {S.ontology.rejectProposal}
+      </Button>
+    </>
+  );
 
   return (
     // 整页视图不再套一层卡片：标题是页标题，正文平铺（与 Refine / Rules 同一副样子）
@@ -2558,203 +2215,31 @@ function MissesPanel({
         title={S.ontology.misses}
         sub={S.ontology.missesHint}
         actions={
-          <>
-            {misses.length > 0 && (
-              <Button
-                size="sm"
-                variant="secondary"
-                onClick={() => suggest.mutate()}
-                disabled={suggest.isPending}
-              >
-                {suggest.isPending ? S.ontology.suggesting : S.ontology.suggest}
-              </Button>
-            )}
-            <Button
-              size="sm"
-              variant="secondary"
-              title={S.ontology.askAgentHint}
-              onClick={() => askAgent.mutate()}
-              disabled={askAgent.isPending || awaitingAgent !== null}
-            >
-              {awaitingAgent ? S.ontology.agentWaiting : S.ontology.askAgent}
-            </Button>
-          </>
-        }
-      />
-
-      {misses.length === 0 ? (
-        // 两个数还没取回来时不说话：先说一句「没有在等的」再改口，比空着更糟
-        uncovered && (
-          <p className="text-body text-ink-2">
-            {uncovered.kind_words + uncovered.phrases > 0
-              ? S.ontology.uncovered(uncovered.kind_words, uncovered.phrases)
-              : S.ontology.noMisses}
-          </p>
-        )
-      ) : (
-        <div className="flex flex-wrap gap-2">
-          {misses.map((m) => (
-            <span
-              key={`${m.kind}:${m.key}`}
-              className="glass rounded-cell px-3 py-1 text-small flex items-center gap-2"
-              title={m.example ?? ""}
-            >
-              <Chip tone={m.kind === "entity_type" ? "info" : "violet"}>
-                {m.kind === "entity_type" ? "C" : "P"}
-              </Chip>
-              <span className="font-mono text-ink-2">{m.key}</span>
-              <span className="text-ink-2">×{m.count}</span>
-              <IconButton
-                size="sm"
-                label={S.ontology.dismiss}
-                className="-mr-1"
-                onClick={() => dismiss.mutate({ kind: m.kind, key: m.key })}
-              >
-                ✕
-              </IconButton>
-            </span>
-          ))}
-        </div>
-      )}
-      {dismissedMisses.length > 0 && (
-        <div className="mt-3 border-t border-line pt-3">
-          <Button
-            variant="ghost"
-            size="sm"
-            className="-ml-2"
-            onClick={() => setShowDismissed((v) => !v)}
-          >
-            {showDismissed ? "▾" : "▸"} {S.ontology.dismissed(dismissedMisses.length)}
-          </Button>
-          {showDismissed && (
-            <>
-              <p className="text-small text-ink-2 mt-2 mb-2">
-                {S.ontology.dismissedHint}
-              </p>
-              <div className="flex flex-wrap gap-2">
-                {dismissedMisses.map((m) => (
-                  <span
-                    key={`d:${m.kind}:${m.key}`}
-                    className="glass rounded-cell px-3 py-1 text-small flex items-center gap-2 opacity-60"
-                    title={m.example ?? ""}
-                  >
-                    <Chip tone={m.kind === "entity_type" ? "info" : "violet"}>
-                      {m.kind === "entity_type" ? "C" : "P"}
-                    </Chip>
-                    <span className="font-mono text-ink-2 line-through">
-                      {m.key}
-                    </span>
-                    <span className="text-ink-2">×{m.count}</span>
-                    <IconButton
-                      size="sm"
-                      label={S.ontology.restore}
-                      className="-mr-1"
-                      onClick={() => restore.mutate({ kind: m.kind, key: m.key })}
-                    >
-                      ↺
-                    </IconButton>
-                  </span>
-                ))}
-              </div>
-            </>
-          )}
-        </div>
-      )}
-      {/* 系统自己动了本体，必须让人看见——只记在审计台账里不算可见。
-          默认开启的前提是它的动作可见且可退，这条横幅是"可见"那一半 */}
-      {autoRun.data?.run && !lastAdopt && (
-        <div className="mt-3 rounded-panel border border-line-strong bg-surface px-3 py-3">
-          <div className="flex items-start gap-2">
-            <div className="min-w-0 flex-1">
-              <p className="text-small text-ink">
-                {S.ontology.autoRanTitle}
-              </p>
-              <p className="mt-1 text-fine text-ink-2">
-                {S.ontology.autoRanBody(
-                  autoRun.data.run.relations ?? [],
-                  autoRun.data.run.facts_remapped ?? 0,
-                )}
-              </p>
-              <p className="mt-1 text-fine text-ink-2">
-                {S.ontology.autoRanOff}
-              </p>
-            </div>
-            <Button
-              size="sm"
-              variant="secondary"
-              disabled={unadopt.isPending}
-              onClick={() =>
-                setConfirmUndo({
-                  batches: autoRun.data!.run!.batches,
-                  moved: autoRun.data!.run!.facts_remapped ?? 0,
-                })
-              }
-            >
-              {S.ontology.undoAdoptBtn}
-            </Button>
-          </div>
-        </div>
-      )}
-
-      {/* 采纳改写了成批事实——没有回头路的话没人敢点第一下 */}
-      {lastAdopt && (
-        <div className="mt-3 flex items-center gap-2 rounded-panel border border-line bg-surface px-3 py-2">
-          <span className="text-small text-ink-2">
-            {S.ontology.undoAdopt(lastAdopt.key, lastAdopt.moved)}
-          </span>
-          <span className="text-fine text-ink-2">
-            {S.ontology.undoKeepsRelation}
-          </span>
           <Button
             size="sm"
             variant="secondary"
-            className="ml-auto"
-            disabled={unadopt.isPending}
-            onClick={() =>
-              setConfirmUndo({
-                batches: lastAdopt.batches,
-                moved: lastAdopt.moved,
-              })
-            }
+            title={S.ontology.askAgentHint}
+            onClick={() => askAgent.mutate()}
+            disabled={askAgent.isPending || awaitingAgent !== null}
           >
-            {S.ontology.undoAdoptBtn}
+            {awaitingAgent ? S.ontology.agentWaiting : S.ontology.askAgent}
           </Button>
-        </div>
-      )}
+        }
+      />
 
-      {/* 撤销一次改回成批事实：轻确认——它本身也是可逆的，不必打字解锁 */}
-      {confirmUndo && (
-        <DangerConfirm
-          title={S.ontology.undoTitle}
-          hint={S.ontology.undoHint(confirmUndo.moved)}
-          confirmLabel={S.ontology.undoConfirm}
-          cancelLabel={S.ontology.undoCancel}
-          busy={unadopt.isPending}
-          onConfirm={() => unadopt.mutate(confirmUndo.batches)}
-          onCancel={() => setConfirmUndo(null)}
-        />
+      {/* 两个数还没取回来时不说话：先说一句「没有在等的」再改口，比空着更糟 */}
+      {uncovered && (
+        <p className="text-body text-ink-2">
+          {uncovered.kind_words + uncovered.phrases > 0
+            ? S.ontology.uncovered(uncovered.kind_words, uncovered.phrases)
+            : S.ontology.noMisses}
+        </p>
       )}
       {proposals && (
         <div className="mt-4 border-t border-line pt-3">
-          <div className="mb-2 flex items-center gap-2">
-            <h4 className="text-small font-semibold text-ink-2">
-              {S.ontology.proposals}
-            </h4>
-            {/* 常见情形是"这些都对"——一条条点是把一个决定拆成八个 */}
-            {manualCount(proposals) > 1 && (
-              <Button
-                size="sm"
-                variant="secondary"
-                className="ml-auto"
-                disabled={addAll.isPending}
-                onClick={() => addAll.mutate(manualOnly(proposals))}
-              >
-                {addAll.isPending
-                  ? S.ontology.addingAll
-                  : S.ontology.addAll(manualCount(proposals))}
-              </Button>
-            )}
-          </div>
+          <h4 className="mb-2 text-small font-semibold text-ink-2">
+            {S.ontology.proposals}
+          </h4>
           <div className="space-y-2">
             {/* 排在最前：它说的是"本体已经有了"，而这正是最该先看见的一句。
                 排在新建后面的话，人一路点下来就把重复建出来了 */}
@@ -2771,36 +2256,11 @@ function MissesPanel({
                     {p.forms.join(" · ")}
                   </span>
                 )}
-                {/* 改写多少条是 0003 那条路的账；代理提的走绑定，形状数在 AgentMeta 里 */}
-                {!!p.forms?.length && p.proposed_by !== "agent" && (
-                  <span className="text-small text-accent">
-                    {S.ontology.willRemap(factsWaiting(p.forms))}
-                  </span>
-                )}
                 {p.reason && (
-                  <span className="text-small text-ink-2 truncate">
-                    {p.reason}
-                  </span>
+                  <span className="text-small text-ink-2 truncate">{p.reason}</span>
                 )}
                 <AgentMeta p={p} />
-                <Button variant="primary"
-                  size="sm"
-                  className="ml-auto"
-                  onClick={() => approveMapping.mutate(p)}
-                  disabled={approveMapping.isPending}
-                >
-                  {S.ontology.mapOver}
-                </Button>
-                {p.proposed_by === "agent" && (
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    onClick={() => reject("map_to", p.key)}
-                    disabled={rejectProposal.isPending}
-                  >
-                    {S.ontology.rejectProposal}
-                  </Button>
-                )}
+                {actions("map_to", p.key, S.ontology.mapOver)}
               </div>
             ))}
             {proposals.entity_types.map((p) => (
@@ -2809,29 +2269,10 @@ function MissesPanel({
                 <span className="font-mono text-ink-2">{p.key}</span>
                 <span className="text-ink">{p.label}</span>
                 {p.reason && (
-                  <span className="text-small text-ink-2 truncate">
-                    {p.reason}
-                  </span>
+                  <span className="text-small text-ink-2 truncate">{p.reason}</span>
                 )}
                 <AgentMeta p={p} />
-                <Button variant="primary"
-                  size="sm"
-                  className="ml-auto"
-                  onClick={() => approveEntity.mutate(p)}
-                  disabled={approveEntity.isPending}
-                >
-                  {S.ontology.approve}
-                </Button>
-                {p.proposed_by === "agent" && (
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    onClick={() => reject("entity_types", p.key)}
-                    disabled={rejectProposal.isPending}
-                  >
-                    {S.ontology.rejectProposal}
-                  </Button>
-                )}
+                {actions("entity_types", p.key, S.ontology.approve)}
               </div>
             ))}
             {proposals.relation_types.map((p) => (
@@ -2840,40 +2281,11 @@ function MissesPanel({
                 <span className="font-mono text-ink-2">{p.key}</span>
                 <span className="text-ink">{p.label}</span>
                 {p.temporal && <Chip tone="neutral">{p.temporal}</Chip>}
-                {/* 影响面：采纳后会改写多少条、归并了哪些写法。没有这个，
-                    "approve" 就只是凭空多一个空关系 */}
-                {!!p.forms?.length && p.proposed_by !== "agent" && (
-                  <span
-                    className="text-small text-accent"
-                    title={p.forms.join(" · ")}
-                  >
-                    {S.ontology.willRemap(factsWaiting(p.forms))}
-                  </span>
-                )}
                 {p.reason && (
-                  <span className="text-small text-ink-2 truncate">
-                    {p.reason}
-                  </span>
+                  <span className="text-small text-ink-2 truncate">{p.reason}</span>
                 )}
                 <AgentMeta p={p} />
-                <Button variant="primary"
-                  size="sm"
-                  className="ml-auto"
-                  onClick={() => approveRelation.mutate(p)}
-                  disabled={approveRelation.isPending}
-                >
-                  {S.ontology.approve}
-                </Button>
-                {p.proposed_by === "agent" && (
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    onClick={() => reject("relation_types", p.key)}
-                    disabled={rejectProposal.isPending}
-                  >
-                    {S.ontology.rejectProposal}
-                  </Button>
-                )}
+                {actions("relation_types", p.key, S.ontology.approve)}
               </div>
             ))}
             {(proposals.attribute_types ?? []).map((p) => (
@@ -2884,46 +2296,16 @@ function MissesPanel({
                 <span className="text-ink">{p.label}</span>
                 <Chip tone="neutral">{p.datatype ?? "text"}</Chip>
                 {p.unit && <Chip tone="neutral">{p.unit}</Chip>}
-                {!!p.forms?.length && p.proposed_by !== "agent" && (
-                  <span
-                    className="text-small text-accent"
-                    title={p.forms.join(" · ")}
-                  >
-                    {S.ontology.willRemap(factsWaiting(p.forms))}
-                  </span>
-                )}
                 {p.reason && (
-                  <span className="text-small text-ink-2 truncate">
-                    {p.reason}
-                  </span>
+                  <span className="text-small text-ink-2 truncate">{p.reason}</span>
                 )}
                 <AgentMeta p={p} />
-                <Button variant="primary"
-                  size="sm"
-                  className="ml-auto"
-                  onClick={() => approveAttribute.mutate(p)}
-                  disabled={approveAttribute.isPending}
-                >
-                  {S.ontology.approve}
-                </Button>
-                {p.proposed_by === "agent" && (
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    onClick={() => reject("attribute_types", p.key)}
-                    disabled={rejectProposal.isPending}
-                  >
-                    {S.ontology.rejectProposal}
-                  </Button>
-                )}
+                {actions("attribute_types", p.key, S.ontology.approve)}
               </div>
             ))}
-            {proposals.entity_types.length === 0 &&
-              proposals.relation_types.length === 0 &&
-              !proposals.attribute_types?.length &&
-              !proposals.map_to?.length && (
-                <p className="text-body text-ink-2">—</p>
-              )}
+            {proposalCount(proposals) === 0 && (
+              <p className="text-body text-ink-2">—</p>
+            )}
           </div>
         </div>
       )}

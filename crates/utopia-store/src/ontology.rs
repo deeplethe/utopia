@@ -4,8 +4,8 @@ use pgvector::Vector;
 use sqlx::{PgConnection, PgPool};
 use std::collections::HashSet;
 use utopia_core::models::{
-    EntityInstance, EntityTypeView, OntologyImportView, OntologyMiss, RelationAxioms,
-    RelationTypeView, TypeCandidate,
+    EntityInstance, EntityTypeView, OntologyImportView, RelationAxioms, RelationTypeView,
+    TypeCandidate,
 };
 use utopia_core::{AppError, AppResult};
 use uuid::Uuid;
@@ -881,112 +881,6 @@ pub async fn delete_relation_type(pool: &PgPool, kb_id: Uuid, id: Uuid) -> AppRe
 
 /* ---- 未匹配统计 ---- */
 
-pub async fn record_miss(
-    pool: &PgPool,
-    kb_id: Uuid,
-    kind: &str,
-    key: &str,
-    example: Option<&str>,
-) -> AppResult<()> {
-    sqlx::query(
-        // **被拒绝过的照样累加。**
-        //
-        // 从前这里带着 `WHERE dismissed_at IS NULL`，理由是"否则计数会把'不要'
-        // 重新顶成一个待处理信号"。那个理由针对的是**呈现**，用的手段却是
-        // **停止计数**——两件事被绑在一起了，代价是一次点击变成永久失明：
-        // 第一篇里出现一次的说法被忽略掉，后面二十篇都在用它，计数仍停在 1，
-        // 谁也不知道当初那个判断已经不成立，那批事实永远没有谓词。
-        //
-        // 用户是对**当时看得见的证据**做的判断，不是对所有时间。所以计数照记，
-        // 抑制交给读取侧：`list_misses` 仍然只返回未忽略的，提案与自动扩本体
-        // 一步没变；已忽略的连同更新后的计数走 `list_dismissed_misses`，
-        // 在面板上单列一处，人看见涨到 40 了可以自己撤回
-        "INSERT INTO ontology_misses (kb_id, kind, key, example)
-         VALUES ($1, $2, left($3, 80), left($4, 200))
-         ON CONFLICT (kb_id, kind, key)
-         DO UPDATE SET count = ontology_misses.count + 1,
-                       example = COALESCE(EXCLUDED.example, ontology_misses.example),
-                       updated_at = now()",
-    )
-    .bind(kb_id)
-    .bind(kind)
-    .bind(key)
-    .bind(example)
-    .execute(pool)
-    .await?;
-    Ok(())
-}
-
-pub async fn list_misses(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<OntologyMiss>> {
-    Ok(sqlx::query_as(
-        "SELECT kind, key, example, count FROM ontology_misses
-         WHERE kb_id = $1 AND dismissed_at IS NULL
-         ORDER BY count DESC, updated_at DESC LIMIT 50",
-    )
-    .bind(kb_id)
-    .fetch_all(pool)
-    .await?)
-}
-
-/// 已被忽略的说法，连同**它此后继续累积的计数**。
-///
-/// 存在的理由是忽略这个动作曾经是单向门：点下去之后既不再呈现、也不再计数，
-/// 于是"当时只出现过一次"这个判断依据一旦过期，没有任何人看得见。
-/// 这个列表是那扇门上的窗——抑制照旧，但看得见抑制掉的是什么、现在有多重。
-pub async fn list_dismissed_misses(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<OntologyMiss>> {
-    Ok(sqlx::query_as(
-        "SELECT kind, key, example, count FROM ontology_misses
-         WHERE kb_id = $1 AND dismissed_at IS NOT NULL
-         ORDER BY count DESC, updated_at DESC LIMIT 50",
-    )
-    .bind(kb_id)
-    .fetch_all(pool)
-    .await?)
-}
-
-/// 撤回一次忽略：这个说法重新进入提案与自动扩本体。
-pub async fn restore_miss(pool: &PgPool, kb_id: Uuid, kind: &str, key: &str) -> AppResult<()> {
-    sqlx::query(
-        "UPDATE ontology_misses SET dismissed_at = NULL, updated_at = now()
-         WHERE kb_id = $1 AND kind = $2 AND key = $3 AND dismissed_at IS NOT NULL",
-    )
-    .bind(kb_id)
-    .bind(kind)
-    .bind(key)
-    .execute(pool)
-    .await?;
-    Ok(())
-}
-
-/// 用户说"不要这个"。**标记而非删除**——删掉的话下一次抽取遇到同一个词
-/// 原样插回来，用户的拒绝活不过一轮抽取。自动扩展路径也据此绕开。
-///
-/// 可撤回（见 [`restore_miss`]），且撤回之后计数是连续的——忽略期间照样在记。
-pub async fn dismiss_miss(pool: &PgPool, kb_id: Uuid, kind: &str, key: &str) -> AppResult<()> {
-    sqlx::query(
-        "UPDATE ontology_misses SET dismissed_at = now()
-         WHERE kb_id = $1 AND kind = $2 AND key = $3 AND dismissed_at IS NULL",
-    )
-    .bind(kb_id)
-    .bind(kind)
-    .bind(key)
-    .execute(pool)
-    .await?;
-    Ok(())
-}
-
-/// 本体已经覆盖了这个说法（采纳时调用）：与"用户拒绝"不同，这条真的可以清掉，
-/// 下次抽取它会命中本体，不再是未匹配。
-pub async fn clear_miss(pool: &PgPool, kb_id: Uuid, kind: &str, key: &str) -> AppResult<()> {
-    sqlx::query("DELETE FROM ontology_misses WHERE kb_id = $1 AND kind = $2 AND key = $3")
-        .bind(kb_id)
-        .bind(kind)
-        .bind(key)
-        .execute(pool)
-        .await?;
-    Ok(())
-}
-
 /* ---- OWL 导入 ---- */
 
 /// 建一个带 IRI 的类。IRI 是全局身份，重导入据它匹配（见 0001 P2）。
@@ -1546,109 +1440,6 @@ pub async fn nearest_relation_types(
         .collect())
 }
 
-/// 按 key 找关系/属性的 id。给"映射到已有类型"那条路用。
-///
-/// 不区分 kind：属性与关系同住一张表且共用 key 命名空间，调用方拿到 id 之后
-/// 该怎么用它自己清楚（改写事实时谓词就是谓词）。
-///
-/// 名字属性找不到（0041）：把一批「简称」「former_name」的值事实归并到 `known_as`
-/// 上，等于绕开了名字的核对与配对，所以这条路不给它
-pub async fn relation_type_id_by_key(
-    pool: &PgPool,
-    kb_id: Uuid,
-    key: &str,
-) -> AppResult<Option<Uuid>> {
-    let row: Option<(Uuid,)> = sqlx::query_as(
-        "SELECT id FROM relation_types
-              WHERE kb_id = $1 AND key = $2 AND NOT (builtin AND key = 'known_as')",
-    )
-    .bind(kb_id)
-    .bind(key)
-    .fetch_optional(pool)
-    .await?;
-    Ok(row.map(|(id,)| id))
-}
-
-/// 一个**从没当关系用过**的关系，改判成属性。改成了返回 true。
-///
-/// 冷启动认出某个说法该是属性、去建的时候，键可能已经被一个同名关系占着
-/// （实测：`Relation key 'valuation' already exists`，然后整批放弃，那些数
-/// 永远拿不到谓词）。可占着这个键的关系常常是空的——本体包带进来的、或者
-/// 早先按票数建的，一条事实都没挂上。空的关系改判不破坏任何东西：
-/// 没有边会因此断，撤销也只是再改回去。
-///
-/// **有事实的一律不动**。`invested`、`raised` 这类既连实体又带数额的，
-/// 改判会把已有的边连根拔起；那是本体与语料的真分歧，该留给人看，
-/// 不该由冷启动替人决定。
-pub async fn attribute_from_unused_relation(
-    pool: &PgPool,
-    kb_id: Uuid,
-    key: &str,
-    domains: &[Uuid],
-    datatype: &str,
-    unit: Option<&str>,
-) -> AppResult<Option<Uuid>> {
-    validate_attribute_fields("attribute", domains, Some(datatype))?;
-    let mut tx = pool.begin().await?;
-    // 零事实不等于零判据：公理旗标与 inverse_of/sub_property_of 会让这条关系
-    // 成为派生目标（违规的 detail.predicate_id 指到它）。改判清了那些贡献，
-    // 按同一条对账规矩走（0062）——先记旧判据下的检出，写完再对账
-    let candidate: Option<(Uuid,)> = sqlx::query_as(
-        "SELECT id FROM relation_types
-          WHERE kb_id = $1 AND key = $2 AND kind = 'relation'
-            AND NOT EXISTS (SELECT 1 FROM facts f WHERE f.predicate_id = relation_types.id)",
-    )
-    .bind(kb_id)
-    .bind(key)
-    .fetch_optional(&mut *tx)
-    .await?;
-    let Some((id,)) = candidate else {
-        tx.rollback().await?;
-        return Ok(None);
-    };
-    let was_detected = crate::reasoning::detection_keys(&mut tx, kb_id).await?;
-    // 属性不声明判据：旗标与双向链接都清掉（axioms() 不按 kind 过滤，
-    // 留着它们等於留着一套无人问的公理）
-    sqlx::query(
-        "UPDATE relation_types SET kind = 'attribute', datatype = $2, unit = $3,
-                inverse_of = NULL, sub_property_of = NULL,
-                is_transitive = false, is_symmetric = false, is_asymmetric = false,
-                is_irreflexive = false, functional = false, inverse_functional = false
-         WHERE id = $1",
-    )
-    .bind(id)
-    .bind(datatype)
-    .bind(unit)
-    .execute(&mut *tx)
-    .await?;
-    sqlx::query("UPDATE relation_types SET inverse_of = NULL WHERE inverse_of = $1")
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query("UPDATE relation_types SET sub_property_of = NULL WHERE sub_property_of = $1")
-        .bind(id)
-        .execute(&mut *tx)
-        .await?;
-    // domain / range 在各自的表里，不是列。属性没有 range——值域落在 datatype 上
-    set_domains_ranges(&mut tx, id, domains, &[]).await?;
-    crate::reasoning::reconcile_ontology(&mut tx, kb_id, &was_detected).await?;
-    tx.commit().await?;
-    Ok(Some(id))
-}
-
-/// 一个属性声明的 datatype。改写字面值事实时要按它换算。
-///
-/// 以**库里这一条**为准而不是以请求为准：指向已有属性时请求里根本没有
-/// datatype，而即便有，本体说了算。
-pub async fn relation_type_datatype(pool: &PgPool, id: Uuid) -> AppResult<Option<String>> {
-    let row: Option<(Option<String>,)> =
-        sqlx::query_as("SELECT datatype FROM relation_types WHERE id = $1")
-            .bind(id)
-            .fetch_optional(pool)
-            .await?;
-    Ok(row.and_then(|(d,)| d))
-}
-
 /// 把一个 IRI 认到已有的**本地**类上（原本没有 IRI 的那种）。
 ///
 /// **只写 IRI 与形状，不动 label、description、颜色。** 认领要解决的是
@@ -2178,35 +1969,6 @@ pub async fn open_proposal(
     .bind(key)
     .fetch_optional(pool)
     .await?)
-}
-
-/// 把一轮 Suggest 的结果写下来。
-///
-/// **已经有人表过态的不动。** `WHERE status = 'open'` 那一句是这个函数的全部要点：
-/// 重跑 Suggest 会再次算出被拒绝过的那条提案（原材料还在 `ontology_misses` 里），
-/// 不加这句它就会被刷回 open——等于每跑一次都把人的否决抹掉一次。
-pub async fn save_proposals(
-    pool: &PgPool,
-    kb_id: Uuid,
-    items: &[(String, String, serde_json::Value)],
-) -> AppResult<()> {
-    for (section, key, payload) in items {
-        sqlx::query(
-            "INSERT INTO ontology_proposals (id, kb_id, section, key, payload)
-             VALUES ($1, $2, $3, $4, $5)
-             ON CONFLICT (kb_id, section, key) DO UPDATE
-               SET payload = EXCLUDED.payload, created_at = now()
-               WHERE ontology_proposals.status = 'open'",
-        )
-        .bind(Uuid::now_v7())
-        .bind(kb_id)
-        .bind(section)
-        .bind(key)
-        .bind(payload)
-        .execute(pool)
-        .await?;
-    }
-    Ok(())
 }
 
 /// 还等着人看的提案。新的排前面——旧的那批已经被看过好几眼了。

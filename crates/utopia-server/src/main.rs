@@ -3,7 +3,6 @@ mod alerting;
 mod api;
 mod auth;
 mod blob;
-mod bootstrap_ontology;
 mod client_ctx;
 mod docs_corpus;
 mod errata;
@@ -29,7 +28,6 @@ mod owl_import;
 mod pack_alignment;
 mod phrase_alignment;
 mod pipeline;
-mod predicate_match;
 mod query_engine;
 mod rdf;
 mod readers;
@@ -451,15 +449,6 @@ async fn dispatch(st: &state::AppState, job: &utopia_store::jobs::Job) -> anyhow
         "extract_document" => {
             let id = payload_document_id(&job.payload)?;
             extraction::extract_document(st, id, payload_proposer(&job.payload)).await
-        }
-        "bootstrap_ontology" => {
-            let kb_id: Uuid = job
-                .payload
-                .get("kb_id")
-                .and_then(|v| v.as_str())
-                .and_then(|s| s.parse().ok())
-                .ok_or_else(|| anyhow::anyhow!("payload 缺少 kb_id"))?;
-            bootstrap_ontology::bootstrap_ontology(st, kb_id).await
         }
         // 本体向量索引：**后台建，不卡请求**。
         // 一份 965 类的本体首次要嵌 2600 行，六到八分钟；放在

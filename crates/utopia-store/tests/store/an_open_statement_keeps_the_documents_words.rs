@@ -291,14 +291,7 @@ async fn an_open_statement_shows_under_its_phrase_and_reuses_its_row() -> anyhow
         .await?;
         assert!(created && other != fact);
 
-        // 4. 短语不是等着被采纳的说法
-        let proposed = graph::proposed_predicates(&pool, f.kb).await?;
-        assert!(
-            proposed.iter().all(|p| p.form != "acquired"),
-            "开放短语不能进采纳候选：{proposed:?}"
-        );
-
-        // 5. 角色词属性与时间词各自取得回来
+        // 4. 角色词属性与时间词各自取得回来
         let qualifiers = graph::statement_qualifiers_for(&pool, &[fact]).await?;
         let q = &qualifiers[&fact];
         assert_eq!(q.len(), 1);
