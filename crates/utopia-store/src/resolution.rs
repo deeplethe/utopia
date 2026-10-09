@@ -318,6 +318,10 @@ async fn propose_by_name_vector(
         if near.name.to_lowercase() == mention_name || !seen.insert(near.entity_id) {
             continue;
         }
+        // 只差一个数的名字向量上几乎重合，却几乎从不是同一个（见 `numbers_differ`）
+        if crate::names::numbers_differ(raw_name, &near.name) {
+            continue;
+        }
         let near_family = near
             .type_label
             .as_deref()
@@ -784,10 +788,13 @@ async fn containment_reviews(
         // 哪些类型对可能指同一个东西，既有规则已经想清楚了，别另发明一套：
         // 本体声明互斥的永不合并，person vs organization 永不合并，
         // concept 兜底与谁都可能是一个
-        .filter(|(_, _, type_key, other_type, _)| {
+        .filter(|(_, other_name, type_key, other_type, _)| {
             !other_type.is_some_and(|t| disjoint.contains(&t))
                 && classify_type_drift(mention_key.as_deref(), type_key.as_deref())
                     != TypeDrift::Disjoint
+                // `migration 39` 是 `migration 395` 的子串，但不是它的简称（见 `numbers_differ`）。
+                // 筛在 take 之前：带别的数的兄弟不该占掉真候选的名额
+                && !crate::names::numbers_differ(name, other_name)
         })
         .take(MAX_CONTAIN_REVIEWS)
         .map(|(id, other_name, _, _, emb)| {
