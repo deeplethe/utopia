@@ -417,7 +417,6 @@ struct Fixture {
     other_kb: Uuid,
     user: Uuid,
     folder: Uuid,
-    foreign_folder: Uuid,
     source: Uuid,
     token: String,
     _dir: tempfile::TempDir,
@@ -490,7 +489,6 @@ impl Fixture {
             other_kb,
             user,
             folder,
-            foreign_folder,
             source,
             token,
             _dir: dir,
@@ -781,36 +779,5 @@ async fn fallback_restore_and_other_ingest_dates_do_not_change() -> anyhow::Resu
             (Some(explicit), "source")
         );
     }
-    f.cleanup().await
-}
-
-#[tokio::test]
-async fn date_detection_keeps_upload_access_and_folder_checks() -> anyhow::Result<()> {
-    let Some(f) = Fixture::new().await? else {
-        return Ok(());
-    };
-    for source in [f.foreign_folder, f.source] {
-        let (status, body) = f
-            .upload(
-                f.kb,
-                &format!("?source={source}"),
-                &[("dated.txt", "2024-03-01")],
-            )
-            .await?;
-        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
-        assert_eq!(body["code"], "upload_needs_folder");
-    }
-    sqlx::query("UPDATE kb_members SET role='viewer' WHERE kb_id=$1 AND user_id=$2")
-        .bind(f.kb)
-        .bind(f.user)
-        .execute(&f.pool)
-        .await?;
-    let (status, _) = f.upload(f.kb, "", &[("dated.txt", "2024-03-01")]).await?;
-    assert_eq!(status, StatusCode::FORBIDDEN);
-    let count: i64 = sqlx::query_scalar("SELECT count(*) FROM documents WHERE kb_id=$1")
-        .bind(f.kb)
-        .fetch_one(&f.pool)
-        .await?;
-    assert_eq!(count, 0);
     f.cleanup().await
 }

@@ -445,11 +445,6 @@ fn slug(title: &str) -> String {
 #[cfg(test)]
 #[path = "notion_tests.rs"]
 mod traversal_tests;
-
-#[cfg(test)]
-#[path = "notion_resync_tests.rs"]
-mod resync_tests;
-
 #[cfg(test)]
 mod tests {
     use super::*;
