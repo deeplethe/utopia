@@ -86,6 +86,7 @@ mod a_search_puts_the_exact_name_first;
 mod a_search_reads_the_base_as_it_was;
 mod a_secret_is_sealed_at_rest;
 mod a_signature_holds_on_every_path;
+mod a_similar_name_is_proposed_not_merged;
 mod a_source_kind_is_listed_once;
 mod a_source_reaches_only_where_it_was_granted;
 mod a_statement_is_attested_by_what_its_document_says;

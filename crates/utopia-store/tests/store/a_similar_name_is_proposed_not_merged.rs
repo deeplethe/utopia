@@ -332,3 +332,77 @@ async fn a_new_name_is_pending_until_its_vector_is_set() -> anyhow::Result<()> {
     teardown(&pool, &f).await?;
     run
 }
+
+/// 判过「不是一个」的一对，实体再被提到时不再排（#1104）。名字向量通道每次提到都跑，
+/// 而审核表只对 pending 的行去重：从前裁决器分开过的一对，下一篇文档一提到就又是一条
+/// 新的 pending。还没判的那一对不受影响，照常提议
+#[tokio::test]
+async fn a_pair_kept_apart_is_not_proposed_again() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let f = seed(&pool, "name-vector-kept-apart").await?;
+    let run = async {
+        let near: Vec<f32> = vec![0.95, 0.31, 0.0];
+        let mention = || {
+            utopia_store::resolution::resolve_mention(
+                &pool,
+                f.kb,
+                Some(f.device),
+                "海探1",
+                None,
+                Some(&near),
+                None,
+                &[],
+            )
+        };
+        let first = mention().await?;
+        assert!(first.created);
+        for v in &first.reviews {
+            utopia_store::resolution::create_review(
+                &pool,
+                f.kb,
+                first.entity_id,
+                v.other_id,
+                v.score,
+                &v.reason,
+                v.stage,
+            )
+            .await?;
+        }
+        // 裁决器判 海探1 与 海洋探测器1号 不是一个；跟 海洋探测队长 的那一对还没判
+        let (review,): (Uuid,) = sqlx::query_as(
+            "SELECT id FROM resolution_reviews WHERE kb_id = $1 AND status = 'pending'
+              AND $2 IN (left_id, right_id)",
+        )
+        .bind(f.kb)
+        .bind(f.probe)
+        .fetch_one(&pool)
+        .await?;
+        utopia_store::resolution::close_review_auto(&pool, review, "kept", "kept_apart|test")
+            .await?;
+
+        let again = mention().await?;
+        assert!(!again.created, "同一个字面名字归到上一轮建的实体");
+        assert_eq!(again.entity_id, first.entity_id);
+        let proposed: Vec<Uuid> = vector_reviews(&again)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert!(
+            !proposed.contains(&f.probe),
+            "分开过的一对不该再提议：{:?}",
+            again.reviews
+        );
+        assert!(
+            proposed.contains(&f.captain),
+            "还没判的一对照常提议（入队时对 pending 幂等）：{:?}",
+            again.reviews
+        );
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    teardown(&pool, &f).await?;
+    run
+}
