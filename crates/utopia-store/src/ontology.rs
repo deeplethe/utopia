@@ -1053,53 +1053,6 @@ pub async fn update_type_from_import(
     Ok(row.map(|(id,)| id))
 }
 
-/// 设父类。自环与已是该父类的情形静默跳过。
-/// 从导入建一个属性（`kind='attribute'`），带 IRI。
-///
-/// 与 [`create_relation_type`] 的区别只在多了 `iri` 与 key 冲突的处置：
-/// 导入按 IRI 认身份，key 撞了是"两个不同的东西争一个短标签"，
-/// 由调用方在计划阶段报告并跳过，到这里不该再撞——所以冲突时返回 None
-/// 而不是覆盖，让调用方把它计进"跳过"。
-///
-/// `temporal` 固定 `state`：属性是随时间变化的取值（薪资、人数），
-/// 新值闭合旧值正是我们要的。OWL 里没有对应概念，猜 event 或 eternal 都更差。
-#[allow(clippy::too_many_arguments)]
-pub async fn create_attribute_with_iri(
-    pool: &PgPool,
-    kb_id: Uuid,
-    key: &str,
-    label: &str,
-    description: &str,
-    iri: &str,
-    domains: &[Uuid],
-    datatype: &str,
-) -> AppResult<Option<Uuid>> {
-    validate_key(key)?;
-    let id = Uuid::now_v7();
-    let row: Option<(Uuid,)> = sqlx::query_as(
-        "INSERT INTO relation_types
-             (id, kb_id, key, label, temporal, functional, inverse_functional,
-              description, kind, datatype, iri)
-         VALUES ($1, $2, $3, $4, 'state', FALSE, FALSE, $5, 'attribute', $6, $7)
-         ON CONFLICT (kb_id, key) DO NOTHING
-         RETURNING id",
-    )
-    .bind(id)
-    .bind(kb_id)
-    .bind(key)
-    .bind(label)
-    .bind(description)
-    .bind(datatype)
-    .bind(iri)
-    .fetch_optional(pool)
-    .await?;
-    let Some((new_id,)) = row else {
-        return Ok(None);
-    };
-    set_domains_ranges(&mut *pool.acquire().await?, new_id, domains, &[]).await?;
-    Ok(Some(new_id))
-}
-
 /// 从导入建一个关系（`kind='relation'`），带 IRI。
 ///
 /// `temporal` 固定 `state`：OWL 没有对应概念，而 state（有区间）是三者里唯一
@@ -1685,71 +1638,6 @@ pub async fn adopt_iri_onto_key(
     Ok(row.map(|(id,)| id))
 }
 
-/// 与给定向量最近的若干**类 id**（只回 id，调用方手里已有类的全量数据）。
-///
-/// 给抽取用：分块向量在抽取循环里本来就有（实体消解在用），拿它检索出这一块
-/// 可能用得上的类，只把这些铺进提示词。
-pub async fn nearest_entity_type_ids(
-    pool: &PgPool,
-    kb_id: Uuid,
-    embedding: &[f32],
-    limit: i64,
-) -> AppResult<Vec<Uuid>> {
-    let rows: Vec<(Uuid,)> = sqlx::query_as(
-        "SELECT id FROM entity_types
-         WHERE kb_id = $1 AND embedding IS NOT NULL
-         ORDER BY embedding <=> $2
-         LIMIT $3",
-    )
-    .bind(kb_id)
-    .bind(Vector::from(embedding.to_vec()))
-    .bind(limit)
-    .fetch_all(pool)
-    .await?;
-    Ok(rows.into_iter().map(|(id,)| id).collect())
-}
-
-/// 同上，关系与属性。`only_kind` 分道：关系清单与属性清单在提示词里是两段。
-/// 同上，但**只在 domain 落在这批类上的那些关系里**检索。
-///
-/// 存在的理由：全库检索对关系几乎没有区分度（1500 字的分块向量 vs 几个词的
-/// 关系标签，距离全挤在一条窄带里）。实测一块讲「Jensen Huang, founder and CEO
-/// of NVIDIA」的正文，`founder` 排 267、`job_title` 排 618（共 1026）——两个都进不了
-/// 前 30 的窗口，于是模型没有地方写职务，索性不写。**不是抽错，是没被问到。**
-///
-/// 把池子先按 domain 收窄到「这一块认出来的那些类身上声明的关系」，同一块里
-/// `founder` 升到 29、`job_title` 升到 55（共 86）。收窄靠的是本体自己声明的
-/// 结构，不是又一个相似度模型。
-pub async fn nearest_relation_type_ids_in_domains(
-    pool: &PgPool,
-    kb_id: Uuid,
-    embedding: &[f32],
-    limit: i64,
-    only_kind: Option<&str>,
-    domains: &[Uuid],
-) -> AppResult<Vec<Uuid>> {
-    if domains.is_empty() {
-        return Ok(Vec::new());
-    }
-    let rows: Vec<(Uuid,)> = sqlx::query_as(
-        "SELECT r.id FROM relation_types r
-         WHERE r.kb_id = $1 AND r.embedding IS NOT NULL
-           AND ($4::text IS NULL OR r.kind = $4)
-           AND EXISTS (SELECT 1 FROM relation_type_domains d
-                       WHERE d.relation_type_id = r.id AND d.entity_type_id = ANY($5))
-         ORDER BY r.embedding <=> $2
-         LIMIT $3",
-    )
-    .bind(kb_id)
-    .bind(Vector::from(embedding.to_vec()))
-    .bind(limit)
-    .bind(only_kind)
-    .bind(domains)
-    .fetch_all(pool)
-    .await?;
-    Ok(rows.into_iter().map(|(id,)| id).collect())
-}
-
 pub async fn nearest_relation_type_ids(
     pool: &PgPool,
     kb_id: Uuid,
@@ -2247,18 +2135,6 @@ pub async fn decide_proposal(
     .execute(pool)
     .await?;
     Ok(())
-}
-
-/// 还有多少条等着看。0003 的缺口：关掉自动扩展开关之后没有「自上次以来有 N 条」
-/// 的提醒，信号在面板里但没人主动看——有了这张表，提醒就是这一句。
-pub async fn open_proposal_count(pool: &PgPool, kb_id: Uuid) -> AppResult<i64> {
-    let (n,): (i64,) = sqlx::query_as(
-        "SELECT count(*) FROM ontology_proposals WHERE kb_id = $1 AND status = 'open'",
-    )
-    .bind(kb_id)
-    .fetch_one(pool)
-    .await?;
-    Ok(n)
 }
 
 /// 主语的类型合不合这个关系声明的 domain。沿继承链往上找。

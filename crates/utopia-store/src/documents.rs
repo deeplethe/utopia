@@ -671,35 +671,6 @@ pub async fn set_content_date(pool: &PgPool, id: Uuid, date: DateTime<Utc>) -> A
     Ok(())
 }
 
-/// 变更：原地替换文档内容（新 sha），状态回 pending 待重跑管道。
-#[allow(clippy::too_many_arguments)]
-pub async fn replace_content(
-    pool: &PgPool,
-    id: Uuid,
-    filename: &str,
-    mime: &str,
-    size_bytes: i64,
-    sha256: &str,
-    doc_time: Option<chrono::DateTime<chrono::Utc>>,
-) -> AppResult<()> {
-    sqlx::query(
-        "UPDATE documents SET filename = $2, mime = $3, size_bytes = $4, sha256 = $5,
-                doc_time = COALESCE($6, doc_time),
-                status = 'pending', graph_status = 'none', error = NULL,
-                missing_since = NULL, updated_at = now()
-         WHERE id = $1",
-    )
-    .bind(id)
-    .bind(filename)
-    .bind(mime)
-    .bind(size_bytes)
-    .bind(sha256)
-    .bind(doc_time)
-    .execute(pool)
-    .await?;
-    Ok(())
-}
-
 /// 移动/改名：同内容换了路径，只更新身份，不重跑管道。
 pub async fn update_location(
     pool: &PgPool,
@@ -1863,21 +1834,6 @@ pub async fn extract_epoch(pool: &PgPool, id: Uuid) -> AppResult<i32> {
         .fetch_one(pool)
         .await?;
     Ok(epoch)
-}
-
-/// 这个库还有没有在排队或正在跑的抽取。
-///
-/// 冷启动自动扩本体要等一批文档都抽完再动手：只看第一篇的话，
-/// 先到的那篇的词汇会独占本体。最后一篇跑完的任务负责触发。
-pub async fn extraction_idle(pool: &PgPool, kb_id: Uuid) -> AppResult<bool> {
-    let (pending,): (i64,) = sqlx::query_as(
-        "SELECT count(*) FROM documents
-         WHERE kb_id = $1 AND deleted_at IS NULL AND graph_status IN ('queued', 'extracting')",
-    )
-    .bind(kb_id)
-    .fetch_one(pool)
-    .await?;
-    Ok(pending == 0)
 }
 
 /// 全库分块，按文档分组，供检索索引重建用。
