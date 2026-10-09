@@ -6,7 +6,7 @@
 //! persisted row carries its object and the full three-part proof.
 
 use sqlx::PgPool;
-use utopia_store::business_rules::ConditionInput;
+use utopia_store::business_rules::{self, ConclusionInput, ConditionInput};
 use uuid::Uuid;
 
 struct Fixture {
@@ -209,6 +209,122 @@ fn conditions(f: &Fixture) -> [ConditionInput; 2] {
             side: "y".into(),
         },
     ]
+}
+
+fn pressure_condition(f: &Fixture, side: &str) -> [ConditionInput; 1] {
+    [ConditionInput {
+        group: 0,
+        predicate_id: f.pressure,
+        op: "gt".into(),
+        operand: Some(serde_json::json!(80.0)),
+        side: side.into(),
+    }]
+}
+
+/// 只改结论、不带条件的更新会清掉连接而把 Y 侧条件留下（#1109）：整条更新被拒，什么都不写
+#[tokio::test]
+async fn dropping_the_join_is_refused_while_the_rule_keeps_y_conditions() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    utopia_store::db::migrate(&pool).await?;
+    let f = seed(&pool).await?;
+
+    let run = async {
+        let rule = business_rules::create(
+            &pool,
+            f.kb,
+            "high pressure on the joined entity",
+            "",
+            f.well,
+            "relation",
+            None,
+            Some(f.upstream_of),
+            None,
+            None,
+            Some(f.supplies),
+            &pressure_condition(&f, "y"),
+        )
+        .await?;
+        let attribute = ConclusionInput {
+            kind: "attribute".into(),
+            type_id: None,
+            predicate_id: Some(f.depth),
+            value: Some(serde_json::json!(1.0)),
+            expr: None,
+            join_predicate_id: None,
+        };
+        let saved = || async {
+            sqlx::query_as::<_, (String, Option<Uuid>, String)>(
+                "SELECT r.conclusion, r.join_predicate_id, c.subject_side
+                   FROM attribute_rules r JOIN attribute_rule_conditions c ON c.rule_id = r.id
+                  WHERE r.id = $1",
+            )
+            .bind(rule)
+            .fetch_one(&pool)
+            .await
+        };
+
+        let refused =
+            business_rules::update(&pool, f.kb, rule, None, None, None, None, Some(&attribute))
+                .await
+                .expect_err("the Y condition the rule keeps still needs its join");
+        assert!(
+            matches!(
+                &refused,
+                utopia_core::AppError::Invalid {
+                    code: "condition_side_without_join",
+                    ..
+                }
+            ),
+            "{refused:?}"
+        );
+        assert_eq!(
+            saved().await?,
+            ("relation".into(), Some(f.supplies), "y".into())
+        );
+
+        // 同一次更新里把条件换到 X 侧，去掉连接就是合法的
+        let on_x = pressure_condition(&f, "x");
+        business_rules::update(
+            &pool,
+            f.kb,
+            rule,
+            None,
+            None,
+            None,
+            Some(&on_x),
+            Some(&attribute),
+        )
+        .await?;
+        assert_eq!(saved().await?, ("attribute".into(), None, "x".into()));
+
+        // 修复之前存下的非法规则仍然能改名、停用：只有动了条件或结论才校验
+        sqlx::query("UPDATE attribute_rule_conditions SET subject_side = 'y' WHERE rule_id = $1")
+            .bind(rule)
+            .execute(&pool)
+            .await?;
+        business_rules::update(
+            &pool,
+            f.kb,
+            rule,
+            Some("disabled"),
+            None,
+            Some(false),
+            None,
+            None,
+        )
+        .await?;
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+
+    sqlx::query("DELETE FROM organizations WHERE id = $1")
+        .bind(f.org)
+        .execute(&pool)
+        .await?;
+    run
 }
 
 #[tokio::test]

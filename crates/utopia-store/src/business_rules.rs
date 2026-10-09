@@ -303,6 +303,27 @@ pub async fn update(
             .await?;
         insert_conditions(&mut tx, rule_id, cs).await?;
     }
+    if conditions.is_some() || conclusion.is_some() {
+        // 在持有规则行锁的事务内校验最终条件，保留条件和并发更新都不能绕过。
+        let reads_y_without_join: bool = sqlx::query_scalar(
+            "SELECT EXISTS (
+                 SELECT 1 FROM attribute_rules r
+                 JOIN attribute_rule_conditions c ON c.rule_id = r.id
+                 WHERE r.kb_id = $1 AND r.id = $2
+                   AND r.join_predicate_id IS NULL AND c.subject_side = 'y'
+             )",
+        )
+        .bind(kb_id)
+        .bind(rule_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if reads_y_without_join {
+            return Err(AppError::invalid(
+                "condition_side_without_join",
+                "Only a joined rule can read the other side of an edge.",
+            ));
+        }
+    }
     // 定义变了才开新版本；改名、改描述、开关不算（0060）
     record_version(&mut tx, kb_id, rule_id).await?;
     tx.commit().await?;
