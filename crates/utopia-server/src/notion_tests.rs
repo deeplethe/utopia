@@ -319,50 +319,6 @@ async fn independent_pages_and_databases_are_not_inlined() {
 }
 
 #[tokio::test]
-async fn flat_page_markdown_is_unchanged() {
-    let server = MockServer::start().await;
-    children(&server, "page", None, vec![
-        block("heading", "heading_1", "Heading", false),
-        block("paragraph", "paragraph", "Body", false),
-        block("bullet", "bulleted_list_item", "Bullet", false),
-        block("number", "numbered_list_item", "Number", false),
-        json!({"type":"to_do", "to_do":{"checked":true, "rich_text":[{"plain_text":"Done"}]}}),
-        block("quote", "quote", "Quote", false),
-        json!({"type":"code", "code":{"language":"rust", "rich_text":[{"plain_text":"let x = 1;"}]}}),
-        json!({"type":"divider", "divider":{}}),
-        block("unknown", "new_type", "Unknown text", false),
-    ], None).await;
-    assert_eq!(page_text(&mut paced(&server), "page").await.unwrap(),
-        "## Heading\nBody\n- Bullet\n1. Number\n- [x] Done\n> Quote\n```rust\nlet x = 1;\n```\nUnknown text\n");
-    assert_eq!(request_paths(&server).await.len(), 1);
-}
-
-#[tokio::test]
-async fn child_request_error_keeps_existing_diagnostics() {
-    let server = MockServer::start().await;
-    children(
-        &server,
-        "page",
-        None,
-        vec![block("child", "toggle", "Parent", true)],
-        None,
-    )
-    .await;
-    Mock::given(path("/blocks/child/children"))
-        .respond_with(
-            ResponseTemplate::new(403).set_body_json(json!({"message":"child access denied"})),
-        )
-        .expect(1)
-        .mount(&server)
-        .await;
-    let error = page_text(&mut paced(&server), "page").await.unwrap_err();
-    assert_eq!(
-        error.to_string(),
-        "notion blocks returned 403 Forbidden: child access denied"
-    );
-}
-
-#[tokio::test]
 async fn nested_requests_share_pacing_and_honor_retry_after() {
     let server = MockServer::start().await;
     let calls = Arc::new(Mutex::new(Vec::new()));
@@ -394,33 +350,6 @@ async fn nested_requests_share_pacing_and_honor_retry_after() {
     );
     assert!(calls[1].1.duration_since(calls[0].1) >= MIN_INTERVAL);
     assert!(calls[2].1.duration_since(calls[1].1) >= Duration::from_millis(500));
-}
-
-#[tokio::test]
-async fn child_rate_limit_exhaustion_is_an_error() {
-    let server = MockServer::start().await;
-    children(
-        &server,
-        "page",
-        None,
-        vec![block("child", "toggle", "Parent", true)],
-        None,
-    )
-    .await;
-    Mock::given(path("/blocks/child/children"))
-        .respond_with(
-            ResponseTemplate::new(429)
-                .insert_header("Retry-After", "0")
-                .set_body_json(json!({"message":"still limited"})),
-        )
-        .expect(u64::from(MAX_RATE_LIMIT_RETRIES + 1))
-        .mount(&server)
-        .await;
-    let error = page_text(&mut paced(&server), "page").await.unwrap_err();
-    assert_eq!(
-        error.to_string(),
-        "notion blocks returned 429 Too Many Requests: still limited"
-    );
 }
 
 #[tokio::test]

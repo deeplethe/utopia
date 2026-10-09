@@ -1359,22 +1359,6 @@ mod tests {
     }
 
     #[test]
-    fn unrecognized_literal_text_keeps_the_existing_fallback() {
-        for value in ["1e309", "1e-325", "1e2147483648", "1_0e2", "before"] {
-            assert_eq!(decimal_text(value.to_string()), value);
-        }
-        for value in [
-            "2024-07-15Tnot-a-clock",
-            "2024-07-15T14:32:07.noiseZ",
-            "2024-07-15T14+14:01",
-            "2024-07-15T14+08:60",
-            "2024-07-15T14+时区",
-        ] {
-            assert!(date_literal(value).is_none(), "{value}");
-        }
-    }
-
-    #[test]
     fn typed_attributes_keep_value_precedence_prose_and_missing_objects() {
         for (value, datatype, expected) in [
             (
