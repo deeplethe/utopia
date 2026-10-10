@@ -136,7 +136,7 @@ export async function until(fn, everyMs, stallMs) {
   for (;;) {
     const r = await fn();
     if (r === true) return;
-    if (typeof r === "number" && r !== last) { last = r; deadline = Date.now() + stallMs; }
+    if (typeof r === "number" && Number.isFinite(r) && r !== last) { last = r; deadline = Date.now() + stallMs; }
     if (Date.now() > deadline) throw new Error(`等超时：${Math.round(stallMs / 60000)} 分钟没有任何进展`);
     await sleep(everyMs);
   }
