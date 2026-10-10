@@ -22,7 +22,8 @@ const text = fs.readFileSync(src, "utf8");
 const lines = text.split("\n");
 
 // 前缀块原样保留：切掉它文件就解析不了
-const prefixEnd = lines.findIndex((l) => l.startsWith("@prefix") === false && l.trim() && !l.startsWith("#"));
+const firstStatement = lines.findIndex((l) => l.startsWith("@prefix") === false && l.trim() && !l.startsWith("#"));
+const prefixEnd = firstStatement < 0 ? lines.length : firstStatement;
 const prefixes = lines.slice(0, prefixEnd).join("\n");
 
 // 按空行分块，但**必须知道自己在不在三引号字符串里**。
