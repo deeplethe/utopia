@@ -84,6 +84,40 @@ A bench before any change, `scripts/bench/timewords.mjs`: documents in Chinese a
 3. `as_of` from the context, `attested_by`, null attestation, reads that keep undated rows, the workbench line. Replaces #988.
 4. Events without a date as anchors, resolved when the event is dated (with 0045 cut 4).
 
+## Cut 4 · proposed 2026-10-04, not accepted
+
+This section is a proposal for review. Nothing in it is built.
+
+**What happens today.** "验厂后两个月开始试产" counts two months from an event the sentence names. The interpretation prompt tells the model that such a count anchors to the event's dated mention when the sentence gives one, and is `{"kind": "none"}` otherwise. So when the event has no date in reach, the mention is stored with no reference and grade C: the offset (two months, after) and the event (验厂) are both dropped. Nothing on the row says what it waits for, so nothing can resolve it later and no one can be asked. The bench has one such sentence and expects only that no start is written, which holds. `resolve_time` already reruns a whole document idempotently; it is queued after extraction and after a nod, and by nothing else.
+
+**Proposed decisions.**
+
+1. **An anchor may be an event the text names.** The interpretation gains `{"kind": "event", "words": "验厂"}` with its offset kept as today. The words are copied from the sentence and checked to occur in it, as date words are; the model does not compute. Such a mention is grade C and says what it waits for.
+2. **An event is dated by a named date of the same document, and the model does the matching.** The context already keeps every date the text gives a name to ("验厂完成 2026年3月1日", "生效日期"), and today they anchor nothing. The interpretation call lists them with numbers, and the model answers `{"kind": "named", "id": n}` when the words point at one. Code never matches "验厂" to "验厂完成" by string (0045 decision 8). An anchor resolved this way is grade B.
+3. **A waiting mention is asked again when its document's context changes.** A new version of the document, or a date a person gives, queues `resolve_time` for that document; only the mentions still waiting are sent to the model again, with the new context. Resolved mentions keep their interpretation.
+4. **A person can give the date.** The time-anchor queue #725 names lists waiting mentions by document and event words, with the sentences and the number of statements that depend on them. A person gives the date at the granularity they know, or says it is unknown. The date is stored as an entry of the document's time context with who gave it and when, and is audited; resolution reruns.
+5. **Not in this cut: an event dated by another document.** That needs to know that this "验厂" is that one, which is identity for events and not a time question. The queue is how a person bridges it until then.
+
+**Measured first.** The time bench gains three kinds of sentence, and today's numbers are taken before any change:
+
+| Number | Threshold |
+|---|---|
+| a waiting mention names its event (new) | 80% |
+| start right when the event is dated by a named date elsewhere in the document (new) | 85%, 0045's threshold for anchored starts |
+| no start written while the event is undated | 100%, as today |
+| the other rows of the bench | no lower than today |
+| tokens per chunk | no more than 5% higher |
+
+**Slices.** (a) The bench cases and today's numbers. (b) The two anchor kinds in the interpretation contract, stored on the mention; resolution against named dates; waiting mentions asked again when the context changes. (c) The person's date: the API, the queue card, the audit event. (d) Later, and only with a design of its own: another document's date.
+
+**What it costs.** One more anchor kind and the list of named dates in the interpretation prompt, about a hundred tokens a call. No new table for (a) and (b): the context lives in `documents.time_context` and the waiting state in `time_mentions.reference`. (c) adds a route and a card.
+
+**To decide.**
+
+- Whether a date a person gives counts as grade B, so that it may close a timeline (0045 decision 6). Proposed: yes, recorded as given by a person.
+- Whether (c) ships with the queue card or as the API alone first.
+- Whether "unknown" from a person is remembered, so the mention stops being asked about.
+
 ## Open questions
 
 - A section heading that is a period ("2025 年第三季度"): whether the statements under it are as of the period's end or hold during it. 0031's event bucket suggests the second for events and the first for states.
