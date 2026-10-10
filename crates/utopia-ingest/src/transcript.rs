@@ -35,6 +35,14 @@ pub fn reading(response: &Value, model: &str) -> anyhow::Result<Reading> {
             Value::Number(n) => n.to_string(),
             _ => return Err(NoSpeakers.into()),
         };
+        let start_ms = millis(&seg["start"]);
+        let end_ms = millis(&seg["end"]);
+        let (Some(start_ms), Some(end_ms)) = (start_ms, end_ms) else {
+            return Err(Unreadable("Transcription segment has an invalid timestamp".into()).into());
+        };
+        if end_ms < start_ms {
+            return Err(Unreadable("Transcription segment ends before it starts".into()).into());
+        }
         let start = text.len();
         if last_speaker.as_deref() == Some(speaker.as_str()) {
             text.push(' ');
@@ -48,8 +56,8 @@ pub fn reading(response: &Value, model: &str) -> anyhow::Result<Reading> {
         regions.push(Region {
             range: start..text.len(),
             place: Place::Time {
-                start_ms: millis(&seg["start"]),
-                end_ms: millis(&seg["end"]),
+                start_ms,
+                end_ms,
                 speaker: speaker.clone(),
             },
         });
@@ -92,8 +100,10 @@ pub fn reading(response: &Value, model: &str) -> anyhow::Result<Reading> {
     })
 }
 
-fn millis(v: &Value) -> u64 {
-    (v.as_f64().unwrap_or(0.0).max(0.0) * 1000.0).round() as u64
+fn millis(v: &Value) -> Option<u64> {
+    let seconds = v.as_f64()?;
+    let millis = (seconds * 1000.0).round();
+    (seconds >= 0.0 && millis.is_finite() && millis < u64::MAX as f64).then_some(millis as u64)
 }
 
 #[cfg(test)]
@@ -169,5 +179,37 @@ mod tests {
             .unwrap_err()
             .downcast_ref::<Unreadable>()
             .is_some());
+    }
+}
+
+#[cfg(test)]
+mod timestamp_regressions {
+    use super::*;
+
+    #[test]
+    fn malformed_times_do_not_become_plausible_zero_anchors() {
+        for (start, end) in [
+            (json!(null), json!(2)),
+            (json!(1), json!(null)),
+            (json!(-1), json!(2)),
+            (json!(2), json!(1)),
+            (json!("bad"), json!(2)),
+            (json!(0), json!(1e30)),
+        ] {
+            let response = json!({"segments": [{"speaker": "A", "text": "One statement.", "start": start, "end": end}]});
+            assert!(
+                reading(&response, "diarized-model").is_err(),
+                "accepted {response}"
+            );
+        }
+    }
+
+    #[test]
+    fn valid_fractional_seconds_keep_their_millisecond_anchor() {
+        let response = json!({"segments": [{"speaker":"A", "text":"One statement.", "start":0.001, "end":2.345}]});
+        let r = reading(&response, "diarized-model").unwrap();
+        let anchor = r.segments[0].provenance.anchor.as_ref().unwrap();
+        assert_eq!(anchor["start_ms"], 1);
+        assert_eq!(anchor["end_ms"], 2345);
     }
 }
