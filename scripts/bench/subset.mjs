@@ -13,7 +13,7 @@ import fs from "node:fs";
 
 const [, , src, nRaw] = process.argv;
 const N = Number(nRaw);
-if (!src || !Number.isFinite(N)) {
+if (!src || !nRaw?.trim() || !Number.isInteger(N) || N < 0) {
   console.error("用法: subset.mjs <schemaorg.ttl> <类数>");
   process.exit(2);
 }
