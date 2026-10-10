@@ -462,7 +462,7 @@ export function dsSpecs(): EngineSpec[] {
         { key: "password", label: D.fPassword, secret: true },
       ],
       build: (v) =>
-        `postgres://${auth(v.user, v.password)}${v.host}:${v.port || "5432"}/${v.database}`,
+        `postgres://${auth(v.user, v.password)}${v.host}:${v.port || "5432"}/${enc(v.database)}`,
     },
     {
       id: "mysql",
@@ -475,7 +475,7 @@ export function dsSpecs(): EngineSpec[] {
         { key: "password", label: D.fPassword, secret: true },
       ],
       build: (v) =>
-        `mysql://${auth(v.user, v.password)}${v.host}:${v.port || "3306"}/${v.database}`,
+        `mysql://${auth(v.user, v.password)}${v.host}:${v.port || "3306"}/${enc(v.database)}`,
     },
     {
       id: "clickhouse",
@@ -507,8 +507,8 @@ export function dsSpecs(): EngineSpec[] {
         { key: "password", label: D.fPassword, optional: true, secret: true },
       ],
       build: (v) =>
-        `trino://${auth(v.user, v.password)}${v.host}:${v.port || "8080"}/${v.catalog}` +
-        (v.schema ? `/${v.schema}` : ""),
+        `trino://${auth(v.user, v.password)}${v.host}:${v.port || "8080"}/${enc(v.catalog)}` +
+        (v.schema ? `/${enc(v.schema)}` : ""),
     },
     {
       id: "databricks",
@@ -538,7 +538,7 @@ export function dsSpecs(): EngineSpec[] {
         { key: "warehouse", label: D.fWarehouse },
       ],
       build: (v) =>
-        `snowflake://:${enc(v.token)}@${v.account}/${v.database}/${v.schema}` +
+        `snowflake://:${enc(v.token)}@${v.account}/${enc(v.database)}/${enc(v.schema)}` +
         `?warehouse=${enc(v.warehouse)}`,
     },
     {
