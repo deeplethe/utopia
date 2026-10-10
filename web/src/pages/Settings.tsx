@@ -186,7 +186,7 @@ function SourceGrants({ sourceId }: { sourceId: string }) {
 }
 
 /** 部署级配置：注册开关 + worker 并发。 */
-function DeploymentAdmin() {
+export function DeploymentAdmin() {
   const queryClient = useQueryClient();
   const dep = useQuery({
     queryKey: ["deployment"],
@@ -270,7 +270,7 @@ function DeploymentAdmin() {
               value={shown}
               disabled={dep.isPending}
               onChange={(e) =>
-                setWorkers(Math.max(1, Math.min(32, Number(e.target.value) || 1)))
+                setWorkers(Math.max(1, Math.min(32, Math.trunc(Number(e.target.value)) || 1)))
               }
             />
             <Button variant="secondary" size="sm"
@@ -303,7 +303,7 @@ function DeploymentAdmin() {
               disabled={dep.isPending}
               onChange={(e) =>
                 setModelDefault(
-                  Math.max(1, Math.min(256, Number(e.target.value) || 1)),
+                  Math.max(1, Math.min(256, Math.trunc(Number(e.target.value)) || 1)),
                 )
               }
             />
@@ -354,7 +354,7 @@ function DeploymentAdmin() {
                       onChange={(e) =>
                         setPerModel({
                           ...perModel,
-                          [key]: Math.max(1, Math.min(256, Number(e.target.value) || 1)),
+                          [key]: Math.max(1, Math.min(256, Math.trunc(Number(e.target.value)) || 1)),
                         })
                       }
                     />
