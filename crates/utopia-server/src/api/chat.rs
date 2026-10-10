@@ -217,7 +217,8 @@ pub(super) fn tools_schema(can_write: bool, data_source_names: &[String]) -> ser
                             "text": {
                                 "type": "string",
                                 "description": "The episode to remember, one self-contained \
-                                    statement (who/what, with names spelled out)."
+                                    statement (who/what, with names spelled out), at most \
+                                    4000 characters."
                             },
                             "occurred_at": {
                                 "type": "string",

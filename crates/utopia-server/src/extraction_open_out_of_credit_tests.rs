@@ -137,3 +137,95 @@ async fn an_empty_balance_stops_the_document_and_keeps_what_was_applied() -> any
     assert_eq!(status, "failed");
     Ok(())
 }
+
+/// #1187: one sentence of the memory log cannot be read. The attempt is still reported as
+/// incomplete, but the sentence after it gets what an extracted sentence gets: its pending
+/// statement and the time-resolution job. Before, the error returned ahead of both.
+#[tokio::test]
+async fn a_memory_that_cannot_be_extracted_does_not_hold_back_the_next() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = sqlx::PgPool::connect(&url).await?;
+    utopia_store::db::migrate(&pool).await?;
+    let [org, ws, kb] = [(); 3].map(|_| Uuid::now_v7());
+    sqlx::raw_sql(&format!(
+        "INSERT INTO organizations(id,name) VALUES ('{org}','memory-incomplete');
+         INSERT INTO workspaces(id,org_id,name) VALUES ('{ws}','{org}','memory-incomplete');
+         INSERT INTO knowledge_bases(id,workspace_id,name) VALUES ('{kb}','{ws}','memory-incomplete');"
+    ))
+    .execute(&pool)
+    .await?;
+    let now = chrono::Utc::now();
+    utopia_store::memory::append_episode(&pool, kb, "Something no model can read.", now).await?;
+    let (doc, second) =
+        utopia_store::memory::append_episode(&pool, kb, "Acme is based in London.", now).await?;
+    let good = json!({
+        "e": [["Acme", "organization", 1]],
+        "s": [["Acme is based in London.", "Acme", "based in", null, "London", null, null, null]],
+        "n": []
+    });
+    let script: Script = Arc::new(Mutex::new(vec![
+        Some("I cannot help with that.".to_string()),
+        Some(good.to_string()),
+    ]));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = format!("http://{}", listener.local_addr()?);
+    let router = Router::new()
+        .route("/chat/completions", post(reply))
+        .with_state(script.clone());
+    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    utopia_store::settings::upsert(
+        &pool,
+        ws,
+        Some(&endpoint),
+        None,
+        Some("scripted"),
+        None,
+        None,
+        None,
+        None,
+    )
+    .await?;
+    let dir = tempfile::tempdir()?;
+    let cfg = utopia_core::config::AppConfig {
+        data_dir: dir.path().to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let search = Arc::new(utopia_search::SearchIndex::open(
+        &dir.path().join("search"),
+    )?);
+    let state = AppState::new(pool.clone(), &cfg, search, "test-only".into());
+
+    let run = async {
+        let Err(err) = crate::extraction::extract_document(&state, doc, Proposer::default()).await
+        else {
+            anyhow::bail!("an attempt that left a sentence unread was reported as complete");
+        };
+        let (pending, resolving): (i64, i64) = sqlx::query_as(
+            "SELECT (SELECT count(*) FROM pending_facts WHERE chunk_id=$1),
+                    (SELECT count(*) FROM jobs WHERE kind='resolve_time'
+                        AND payload->>'document_id'=$2)",
+        )
+        .bind(second)
+        .bind(doc.to_string())
+        .fetch_one(&pool)
+        .await?;
+        Ok((format!("{err:#}"), pending, resolving))
+    }
+    .await;
+    sqlx::query("DELETE FROM jobs WHERE payload->>'document_id'=$1 OR payload->>'kb_id'=$2")
+        .bind(doc.to_string())
+        .bind(kb.to_string())
+        .execute(&pool)
+        .await?;
+    sqlx::query("DELETE FROM organizations WHERE id=$1")
+        .bind(org)
+        .execute(&pool)
+        .await?;
+    let (err, pending, resolving) = run?;
+    assert!(err.contains("1 of 2 chunks"), "{err}");
+    assert_eq!(pending, 1, "the second sentence awaits a nod");
+    assert_eq!(resolving, 1, "and its time words are queued for reading");
+    Ok(())
+}
