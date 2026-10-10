@@ -25,7 +25,15 @@ pub fn reading(response: &Value, model: &str) -> anyhow::Result<Reading> {
     let mut regions: Vec<Region> = Vec::new();
     let mut last_speaker: Option<String> = None;
     for seg in segments {
-        let said = crate::mineru::without_nul(seg["text"].as_str().unwrap_or_default());
+        if !seg.is_object() {
+            return Err(Unreadable("Invalid transcription segment object".into()).into());
+        }
+        let said = match seg.get("text") {
+            None | Some(Value::Null) => "",
+            Some(Value::String(text)) => text.as_str(),
+            _ => return Err(Unreadable("Invalid transcription segment text".into()).into()),
+        };
+        let said = crate::mineru::without_nul(said);
         let said = said.split_whitespace().collect::<Vec<_>>().join(" ");
         if said.is_empty() {
             continue;
@@ -169,5 +177,33 @@ mod tests {
             .unwrap_err()
             .downcast_ref::<Unreadable>()
             .is_some());
+    }
+}
+
+#[cfg(test)]
+mod segment_shape_regressions {
+    use super::*;
+    fn spoken() -> Value {
+        json!({"speaker":"A","start":0,"end":1,"text":"Spoken evidence."})
+    }
+    #[test]
+    fn malformed_segments_do_not_turn_into_a_partial_transcript() {
+        for malformed in [
+            json!(42),
+            json!(["not", "a", "segment"]),
+            json!({"text":true,"speaker":"B"}),
+            json!({"text":["words"],"speaker":"B"}),
+        ] {
+            let response = json!({"segments":[spoken(), malformed]});
+            assert!(reading(&response, "m").is_err(), "{response}");
+        }
+    }
+    #[test]
+    fn blank_segment_text_remains_ignorable() {
+        let response = json!({"segments":[spoken(), {"text":"   "}]});
+        assert_eq!(
+            reading(&response, "m").unwrap().text,
+            "Speaker A: Spoken evidence."
+        );
     }
 }
