@@ -1,13 +1,5 @@
-//! 问数语义映射的 Agentic 探索：读挂载源的 schema + KB 既有概念，让 LLM 提议
-//! "业务概念（Metric/Dimension 实体）→ 数据资产定义" 的映射。
-//!
-//! 提议写进 `concept_mappings`（status = proposed）→ Review 页自成一档，
-//! Confirm / Reject 之后 status 变 confirmed，问数只读确认过的那些。
-//!
-//! **从前它是一条 0.6 置信的 `mapped_to` 事实**,借「低置信事实」那一档露面。
-//! 搬出来的理由见 0011:它不是关于世界的断言,是配置——而「确认」这个动作
-//! 当时是 `UPDATE facts SET confidence = 1.0`,原地改一张不许原地改的表。
-//! agent 只提议，口径生效权在人——与消解"宁分勿合"同一哲学。
+//! Schema exploration records one table alignment for human adoption (0036).
+//! Manual SQL definitions still use concept_mappings until #556 renders them.
 
 use crate::llm_util;
 use crate::state::AppState;
@@ -52,19 +44,9 @@ fn column_line(c: &crate::query_engine::SchemaColumn) -> String {
     )
 }
 
-/// 一轮允许提几条口径。
-///
-/// **上限跟着 schema 的大小走。** 写死的 12 对一个三张表的小库绰绰有余，
-/// 对一张八十列的宽表就是覆盖率的天花板：实测 TPC-H 八张表、二十四条口径，
-/// 十二条上限之下覆盖率 25%，漏掉的包括那条出现在七条基准查询里的核心收入
-/// 口径（#501）。
-///
-/// 每张表三条是个估计而不是定律——一张事实表值得的口径远多于三条，一张
-/// 码表一条都不值。它只需要比常数强：**规模大的时候不至于一开始就封顶**。
-/// 下限仍是 12，小 schema 不该因此缩水；上限 60 挡住提示词与一轮人工审阅
-/// 的规模。
+/// At most one proposal per table; the schema budget bounds what is visible.
 fn proposal_cap(tables: i32) -> i32 {
-    (tables * 3).clamp(12, 60)
+    tables.clamp(1, 60)
 }
 
 /// 模型回的 JSON 常裹着代码栅栏；剥掉它。
@@ -220,7 +202,6 @@ async fn explore(state: &AppState, kb_id: Uuid, run: Uuid) -> anyhow::Result<()>
     if sources.is_empty() {
         anyhow::bail!("No data sources mounted");
     }
-    ensure_concept_types(&state.pool, kb_id).await?;
 
     // 各源 schema（引擎直读，保证新鲜；限量防 prompt 爆炸）
     //
@@ -231,6 +212,7 @@ async fn explore(state: &AppState, kb_id: Uuid, run: Uuid) -> anyhow::Result<()>
     let mut tables_scanned = 0i32;
     let mut columns_scanned = 0i32;
     let mut truncated = false;
+    let mut schemas = std::collections::HashMap::new();
     for ds in &sources {
         if truncated {
             break;
@@ -241,7 +223,7 @@ async fn explore(state: &AppState, kb_id: Uuid, run: Uuid) -> anyhow::Result<()>
             .await?;
         schema_txt.push_str(&format!("\n=== source: {} ===\n", ds.name));
         let mut current = String::new();
-        for c in cols {
+        for c in &cols {
             let key = format!("{}.{}", c.schema, c.table);
             if key != current {
                 current = key.clone();
@@ -249,13 +231,14 @@ async fn explore(state: &AppState, kb_id: Uuid, run: Uuid) -> anyhow::Result<()>
                 schema_txt.push_str(&format!("table {key}:\n"));
             }
             columns_scanned += 1;
-            schema_txt.push_str(&column_line(&c));
+            schema_txt.push_str(&column_line(c));
             if schema_txt.len() > MAX_SCHEMA_CHARS {
                 schema_txt.push_str("(truncated)\n");
                 truncated = true;
                 break;
             }
         }
+        schemas.insert(ds.id, cols);
     }
 
     let cap = proposal_cap(tables_scanned);
@@ -278,49 +261,8 @@ async fn explore(state: &AppState, kb_id: Uuid, run: Uuid) -> anyhow::Result<()>
         tracing::warn!(%kb_id, error = %e, "数据描述没写成，提议照常");
     }
 
-    // 既有概念（供归并复用，避免重复起名）
-    let existing: Vec<(String,)> = sqlx::query_as(
-        "SELECT e.canonical_name FROM entities e
-         JOIN entity_types t ON t.id = e.type_id
-         WHERE e.kb_id = $1 AND e.merged_into IS NULL AND t.key IN ('metric','dimension')
-         ORDER BY e.canonical_name LIMIT 100",
-    )
-    .bind(kb_id)
-    .fetch_all(&state.pool)
-    .await?;
-    let existing_names: Vec<String> = existing.into_iter().map(|(n,)| n).collect();
-
-    // 人写的约定进提议的提示词。schema 里没有「测试单不算数」这句话，探索在宽表上
-    // 0/18 正是因为它；有了这句，一条提议才可能长出 FILTER (WHERE is_test = 0)（#570）
-    let conventions = kb
-        .data_conventions
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or("(none stated)");
-    let prompt = format!(
-        "You are building the semantic layer of a BI system. Given database schemas, propose \
-         business concepts a user would ask about, each mapped to a concrete definition.\n\
-         Existing concepts (reuse these names when the meaning matches): {}\n\
-         Conventions stated by the owner of this base — apply them in every definition, as \
-         filters, unit conversions, or the choice of column: {conventions}\n\
-         Schemas:\n{}\n\
-         Reply with ONLY a JSON array, each item:\n\
-         {{\"name\": \"business concept name\", \"kind\": \"metric\"|\"dimension\", \
-         \"source\": \"data source name\", \
-         \"definition\": {{\"table\": \"schema.table\", \"expr\": \"SQL expression\", \
-         \"sql\": \"full SELECT if joins are needed (optional)\", \"unit\": \"optional\"}}, \
-         \"summary\": \"one line: source + expression, shown to reviewers\", \
-         \"rationale\": \"why this mapping, citing column comments\"}}\n\
-         Metrics are aggregatable quantities (use sum/count/avg in expr); dimensions are \
-         group-by columns. Propose at most {cap}, only well-grounded ones.",
-        if existing_names.is_empty() {
-            "(none)".into()
-        } else {
-            existing_names.join(", ")
-        },
-        schema_txt
-    );
+    let ontology = crate::table_exploration::ontology_context(&state.pool, kb_id).await?;
+    let prompt = crate::table_exploration::prompt(&schema_txt, &ontology, cap, &kb.ontology_lang);
 
     let _permit = llm_util::acquire_chat(state, &settings).await;
     let reply = client
@@ -348,111 +290,59 @@ async fn explore(state: &AppState, kb_id: Uuid, run: Uuid) -> anyhow::Result<()>
         e.0 += 1;
     };
     let mut covered: std::collections::BTreeSet<String> = Default::default();
+    let mut seen = std::collections::HashSet::new();
     for p in proposals.iter().take(cap as usize) {
-        let name = p["name"].as_str().map(str::trim).unwrap_or("");
-        let kind = p["kind"].as_str().unwrap_or("");
         let said = p["source"].as_str().map(str::trim).unwrap_or("");
-        if name.is_empty() || !matches!(kind, "metric" | "dimension") {
-            note(drop_reason::KIND, format!("name={name:?} kind={kind:?}"));
-            continue;
-        }
-        // **只挂了一个源时，模型说什么都算它。** 没有歧义可言，而对不上的代价是
-        // 整条提议消失：实测源叫 `tpch-2026-09-08-12-30`，模型照着 schema 回
-        // `tpch`，十二条一条不剩地被吞掉，任务照样 done（#501 跑第一轮时踩的）
         let source = if sources.len() == 1 {
-            source_names[0]
+            &sources[0]
+        } else if let Some(source) = sources.iter().find(|s| s.name.eq_ignore_ascii_case(said)) {
+            source
         } else {
-            match source_names
-                .iter()
-                .find(|s| s.eq_ignore_ascii_case(said))
-                .copied()
-            {
-                Some(s) => s,
-                None => {
-                    note(
-                        drop_reason::SOURCE,
-                        format!("model said {said:?}, mounted: {}", source_names.join(", ")),
-                    );
-                    continue;
-                }
-            }
-        };
-        let type_id: Option<(Uuid,)> =
-            sqlx::query_as("SELECT id FROM entity_types WHERE kb_id = $1 AND key = $2")
-                .bind(kb_id)
-                .bind(kind)
-                .fetch_optional(&state.pool)
-                .await?;
-        let Some((type_id,)) = type_id else {
             note(
-                drop_reason::TYPE,
-                format!("no entity type {kind:?} in this base"),
+                drop_reason::SOURCE,
+                format!("Unknown mounted source {said:?}"),
             );
             continue;
         };
-
-        // 概念实体：走消解（同名归并；无向量上下文按 v1 兼容归并）。
-        // 没有块原文可给——这些名字来自数据源的 schema 探索，不是从文档句子里抽的
-        let resolved = utopia_store::resolution::resolve_mention(
+        let Some(columns) = schemas.get(&source.id) else {
+            note(
+                drop_reason::SOURCE,
+                format!("Source {} was outside the schema budget", source.name),
+            );
+            continue;
+        };
+        let proposed = match crate::table_exploration::prepare(
             &state.pool,
             kb_id,
-            Some(type_id),
-            name,
-            None,
-            None,
-            None,
-            &[],
+            source.id,
+            &source.name,
+            p.clone(),
+            columns,
         )
-        .await?;
-
-        // 定义拆成列写进 concept_mappings（0011）。从前它是一份塞进
-        // `object_value` 的 JSON，宾语挂在一条叫 mapped_to 的关系上——
-        // 而那条关系是本体里的一行，跟 works_at 并列。**它不是关于世界的
-        // 断言，是配置**，所以搬去自己的表
-        let def = &p["definition"];
-        if !def.is_object() {
+        .await
+        {
+            Ok(proposed) => proposed,
+            Err(utopia_core::AppError::Invalid { message, .. }) => {
+                note(drop_reason::DEFINITION, message);
+                continue;
+            }
+            Err(e) => return Err(e.into()),
+        };
+        let key = utopia_store::table_alignments::key(source.id, &proposed.draft.table);
+        if !seen.insert(key) {
             note(
                 drop_reason::DEFINITION,
-                format!("{name:?} has no definition object"),
+                format!("Table {} was proposed twice", proposed.draft.table),
             );
             continue;
         }
-        let s = |k: &str| {
-            def[k]
-                .as_str()
-                .filter(|x| !x.is_empty())
-                .map(str::to_string)
-        };
-        // 覆盖率的分子。分母是这一轮扫见的表数——**十一条提议对着八十列的宽表，
-        // 与十一条刚好覆盖完一个小库，从 `concept_mappings` 里看长得一模一样**
-        if let Some(t) = s("table") {
-            covered.insert(t);
-        }
-        let (_, written) = utopia_store::mappings::propose(
-            &state.pool,
-            kb_id,
-            resolved.entity_id,
-            source,
-            s("table").as_deref(),
-            s("expr").as_deref(),
-            s("sql").as_deref(),
-            s("unit").as_deref(),
-            // summary 是给人看的那句：Review 列表与问数 prompt 都靠它
-            p["summary"].as_str().or(def["summary"].as_str()),
-            def["derived"].as_bool().unwrap_or(false),
-        )
-        .await?;
-        if written {
+        if utopia_store::table_alignments::save(&state.pool, kb_id, &proposed).await? {
             accepted += 1;
+            covered.insert(format!("{}:{}", source.name, proposed.draft.table));
         } else {
-            note(
-                drop_reason::DECIDED,
-                format!("{name:?} on {source}: already confirmed or rejected"),
-            );
+            note(drop_reason::DECIDED, proposed.draft.table.clone());
         }
     }
-    // 超过上限的那些一条没看，也得记：不然 returned 与 accepted + dropped 对不上，
-    // 而账本的用处正是让人看出「模型回了六十条、我们只看了三十六条」
     if proposals.len() > cap as usize {
         drops.insert(
             drop_reason::CAP,
@@ -535,7 +425,7 @@ async fn explore(state: &AppState, kb_id: Uuid, run: Uuid) -> anyhow::Result<()>
 
 #[cfg(test)]
 mod tests {
-    use super::{column_line, parse_description, proposal_cap};
+    use super::{column_line, parse_description};
     use crate::query_engine::SchemaColumn;
 
     fn column(pk: bool, fk: Option<&str>, comment: Option<&str>) -> SchemaColumn {
@@ -602,21 +492,5 @@ mod tests {
             parse_description("{\"description\": \"x\"}").unwrap().1,
             Vec::<String>::new()
         );
-    }
-
-    #[test]
-    fn a_bigger_schema_gets_a_bigger_cap() {
-        // 小库不缩水：从前写死的 12 在这一端是对的
-        assert_eq!(proposal_cap(1), 12);
-        assert_eq!(proposal_cap(4), 12);
-        // 八张表的 TPC-H：从前 12 条封顶，二十四条真值只覆盖了 6 条（#501）
-        assert_eq!(proposal_cap(8), 24);
-        // TPC-DS 二十四张表
-        assert_eq!(proposal_cap(24), 60);
-        // 再大也到此为止：提示词与一轮人工审阅都有自己的上限
-        assert_eq!(proposal_cap(300), 60);
-        // 一张表都没扫见（源连不上、schema 是空的）也不该是 0——
-        // **0 条上限会把「连不上」变成「模型什么都没提」**，两件事又混在一起了
-        assert_eq!(proposal_cap(0), 12);
     }
 }

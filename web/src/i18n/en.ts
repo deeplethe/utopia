@@ -1848,6 +1848,18 @@ export const en = {
     hint: "Which tables and columns each business concept points at, and how it is computed. Ask answers only from confirmed definitions.",
     tabDefinitions: "Definitions",
     tabSources: "Data sources",
+    tabAlignments: "Table alignments",
+    alignmentHint: "Review what each table represents, the owner of each column and its conversion. Adopt or reject the whole table. Alignments do not yet generate SQL definitions for Ask.",
+    alignmentEmpty: "No table alignments in this view. Explore your mounted data sources to propose alignments.",
+    alignmentAdopted: "Adopted",
+    alignmentColumn: "Column",
+    alignmentOwner: "Owner class",
+    alignmentProperty: "Property",
+    alignmentConversion: "Conversion / target",
+    alignmentOmitted: "Left out",
+    alignmentNewVocabulary: "Vocabulary created on adoption",
+    alignmentAdopt: "Adopt table",
+    alignmentReject: "Reject table",
     filterAll: "All",
     filterProposed: "Pending",
     filterConfirmed: "Confirmed",
@@ -1859,7 +1871,7 @@ export const en = {
     prev: "Previous",
     next: "Next",
     empty:
-      "No definitions yet. Mount a data source, then run Explore to have an agent propose a first batch.",
+      "No definitions yet. Write a definition using the data source's tables and columns.",
     emptyFiltered: "No definitions match.",
     rejectedHint:
       "Rejected ones are listed too — otherwise “why was this concept never mapped?” has no answer.",
@@ -1904,9 +1916,9 @@ export const en = {
       "This is in the alert centre; check the connection, then use Refresh schema.",
     explore: "Explore mappings",
     exploreHint:
-      "An agent reads these schemas and proposes metric and dimension definitions. Proposals land in Pending; Ask uses them only once confirmed.",
+      "An agent reads these schemas and proposes one alignment per table, reusing the ontology. Review the complete proposals under Table alignments.",
     exploreQueued:
-      "Exploration queued — proposals will appear under Pending. If nothing can be proposed, the alert bell will say so.",
+      "Exploration queued — proposals will appear under Table alignments. If nothing can be proposed, the alert bell will say so.",
     // **最近一轮探索的账**——单看列表答不了「漏了多少」（#503）：
     // 十二条提议对着八十列的宽表与刚好覆盖完一个小库长得一样。这条贴出来人
     // 才能从「等量提议」里看出覆盖范围。

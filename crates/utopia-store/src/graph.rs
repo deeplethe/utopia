@@ -56,7 +56,10 @@ pub async fn entity_types<'e>(
     )
 }
 
-pub async fn relation_types(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<RelationType>> {
+pub async fn relation_types<'e>(
+    pool: impl sqlx::Executor<'e, Database = sqlx::Postgres>,
+    kb_id: Uuid,
+) -> AppResult<Vec<RelationType>> {
     // 不用 SELECT *：domain/range 在关联表里，`*` 取不到，
     // 而且 sqlx 要到运行时才会说 "no column found" —— 编译器看不见 SQL 字符串
     Ok(sqlx::query_as(

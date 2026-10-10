@@ -296,5 +296,151 @@
       "as": "both",
       "why": "when the ETL ran, not when anything happened — a time axis built on it is meaningless"
     }
+  ],
+  "alignment": [
+    {
+      "table": "dw.dwd_ord_dtl",
+      "class": [
+        "order",
+        "order_line",
+        "order_item"
+      ],
+      "columns": [
+        {
+          "column": "amt_pay",
+          "class": [
+            "order",
+            "order_line",
+            "order_item"
+          ],
+          "property": [
+            "paid_amount",
+            "paid_price"
+          ]
+        },
+        {
+          "column": "qty",
+          "class": [
+            "order",
+            "order_line",
+            "order_item"
+          ],
+          "property": [
+            "quantity",
+            "qty",
+            "order_quantity"
+          ]
+        },
+        {
+          "column": "ord_st",
+          "class": [
+            "order",
+            "order_line",
+            "order_item"
+          ],
+          "property": [
+            "status",
+            "order_status"
+          ]
+        },
+        {
+          "column": "dt_crt",
+          "class": [
+            "order",
+            "order_line",
+            "order_item"
+          ],
+          "property": [
+            "created_at",
+            "order_date",
+            "date_created"
+          ]
+        },
+        {
+          "column": "buyer_id",
+          "class": [
+            "order",
+            "order_line",
+            "order_item"
+          ],
+          "property": [
+            "buyer",
+            "customer",
+            "ordered_by"
+          ],
+          "target_class": [
+            "customer",
+            "person"
+          ]
+        },
+        {
+          "column": "shop_id",
+          "class": [
+            "order",
+            "order_line",
+            "order_item"
+          ],
+          "property": [
+            "shop",
+            "seller",
+            "sold_by"
+          ],
+          "target_class": [
+            "shop",
+            "store"
+          ]
+        },
+        {
+          "column": "shop_nm",
+          "class": [
+            "shop",
+            "store"
+          ],
+          "property": [
+            "name",
+            "shop_name"
+          ]
+        },
+        {
+          "column": "prov",
+          "class": [
+            "address",
+            "postal_address"
+          ],
+          "property": [
+            "province",
+            "address_region"
+          ]
+        },
+        {
+          "column": "buyer_lvl",
+          "class": [
+            "customer",
+            "person"
+          ],
+          "property": [
+            "tier",
+            "customer_tier",
+            "buyer_level"
+          ]
+        },
+        {
+          "column": "ver",
+          "omitted": true
+        },
+        {
+          "column": "etl_dt",
+          "omitted": true
+        },
+        {
+          "column": "rmk",
+          "omitted": true
+        },
+        {
+          "column": "price_old",
+          "omitted": true
+        }
+      ]
+    }
   ]
 }

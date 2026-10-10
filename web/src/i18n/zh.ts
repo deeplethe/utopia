@@ -1604,6 +1604,18 @@ export const zh: Strings = {
     hint: "每个业务概念对应库里的哪张表、哪一列，以及怎么算。对话只用已确认的定义作答。",
     tabDefinitions: "口径",
     tabSources: "数据源",
+    tabAlignments: "表对齐",
+    alignmentHint: "审核表代表的类、每列所属的类及其转换，整表采纳或拒绝。表对齐目前还不会生成问数使用的 SQL 口径。",
+    alignmentEmpty: "当前视图没有表对齐提案。可在数据源中运行探索来生成提案。",
+    alignmentAdopted: "已采纳",
+    alignmentColumn: "列",
+    alignmentOwner: "所属类",
+    alignmentProperty: "属性或关系",
+    alignmentConversion: "转换或目标类",
+    alignmentOmitted: "不对齐的列",
+    alignmentNewVocabulary: "采纳时创建的本体元素",
+    alignmentAdopt: "采纳整表",
+    alignmentReject: "拒绝整表",
     filterAll: "全部",
     filterProposed: "待审批",
     filterConfirmed: "已确认",
@@ -1614,7 +1626,7 @@ export const zh: Strings = {
       `第 ${from}–${to} 条，共 ${total} 条`,
     prev: "上一页",
     next: "下一页",
-    empty: "还没有口径。挂上数据源后点「探查映射」，让智能体先提一批。",
+    empty: "还没有口径。可使用数据源中的表和列编写一条口径。",
     emptyFiltered: "没有符合条件的口径。",
     rejectedHint:
       "拒绝过的也列在这里——否则「这个概念为什么没被映射」永远答不上来。",
@@ -1658,8 +1670,8 @@ export const zh: Strings = {
       "检查连接串后点「刷新结构」重试。",
     explore: "探查映射",
     exploreHint:
-      "一个智能体读这些库表结构，提出指标／维度的口径。提出来的落在「待审批」，确认之后问数才会用。",
-    exploreQueued: "探索已排队，提议会出现在「待确认」里；一条都提不出来时，铃铛会告诉你。",
+      "智能体读取库表结构，复用已有本体，按整张表提出对齐方案。请在「表对齐」中审核完整提案。",
+    exploreQueued: "探索已排队，提案会出现在「表对齐」里；一条都提不出来时，铃铛会告诉你。",
     // **最近一轮探索的账**——光看列表答不了「漏了多少」（#503）：
     // 十二条提议对着八十列的宽表与刚好覆盖完一个小库长得一样。这条贴出来人
     // 才能从「等量提议」里看出覆盖范围。

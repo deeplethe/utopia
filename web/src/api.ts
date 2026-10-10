@@ -726,6 +726,51 @@ export interface MappingRevision {
   changed_by_name: string | null;
   changed_at: string;
 }
+export interface TableAlignmentProposal {
+  id: string;
+  key: string;
+  status: "open" | "adopted" | "rejected";
+  payload: {
+    version: string;
+    source_id: string;
+    source: string;
+    attribute_ids: Record<string, string>;
+    draft: {
+      table: string;
+      class: string;
+      summary: string;
+      entity_types: { key: string; label: string; description: string; parents: string[] }[];
+      attribute_types: AlignmentProperty[];
+      relation_types: AlignmentProperty[];
+      columns: { column: string; class: string; property: string; target_class: string | null; expression: unknown }[];
+      omitted: { column: string; reason: string }[];
+    };
+  };
+}
+export interface AlignmentProperty {
+  key: string;
+  label: string;
+  description: string;
+  domains: string[];
+  ranges: string[];
+  datatype: string | null;
+  unit: string | null;
+}
+export interface ExplorationRun {
+  id: string;
+  started_at: string;
+  finished_at: string | null;
+  sources: string[];
+  tables_scanned: number;
+  columns_scanned: number;
+  schema_truncated: boolean;
+  cap: number;
+  returned: number;
+  accepted: number;
+  dropped: Record<string, { n: number; example: string }>;
+  tables_covered: string[];
+  error: string | null;
+}
 /** 一处公理违规（0002 R0）。判据来自本体自己声明的公理，没声明就不报 */
 /** derived_contradiction 独有（0017）：推出来的那条三元组——它没有落库，
  *  只能在这里写出来。其它种类是 `{}` */
@@ -1932,6 +1977,12 @@ export const api = {
   exploreMappings: (kbId: string) =>
     request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/data-sources/explore`, {
       method: "POST",
+    }),
+  tableAlignments: (kbId: string) =>
+    request<{ items: TableAlignmentProposal[]; last_run: ExplorationRun | null }>(`/api/v1/kbs/${kbId}/table-alignments`),
+  decideTableAlignment: (kbId: string, proposal: TableAlignmentProposal, status: "adopted" | "rejected") =>
+    request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/table-alignments/decision`, {
+      method: "POST", body: JSON.stringify({ key: proposal.key, version: proposal.payload.version, status }),
     }),
   syncDataSourceSchema: (kbId: string, dsId: string) =>
     request<{ ok: boolean; schema_tables: number }>(

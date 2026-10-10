@@ -156,6 +156,15 @@ node scripts/bench/govern.mjs --kb <id> --score --stuck   # 连留给人的那�
 
 ## 映射的测量台（#501）
 
+0036 / #554 之后，探索产物是表对齐提案。用 `node scripts/bench/mappings.mjs
+--fresh --corpus wide --alignments` 跑新库，或 `--kb <id> --corpus wide --alignments`
+读取已有提案：评分检查表的类、列所属的类与属性、外键的关系目标，以及技术列是否
+明确排除。`wide.mappings.json` 的 `alignment` 是结构真值；允许的 key 别名逐项列出，
+未列出的同义词要人工检查，分数不代表转换精度或真实模型质量。
+
+下面的数值评分仍用于既有或手写的 SQL 口径；省略 `--alignments` 可复测这些历史行，
+新探索不再生成它们。`--conventions` 仍可为问数写入业务约定，表对齐不据此发明业务规则。
+
 `mappings.mjs` 量的是探索从数据库 schema 提议的口径，对不对、漏了多少。
 
 ```

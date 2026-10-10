@@ -65,7 +65,7 @@ fn unsupported() -> AppError {
     invalid("Use attributes, literals, arithmetic, CAST AS DOUBLE PRECISION, a simple literal CASE, or date_trunc with year, month or day.")
 }
 
-fn compile(text: &str, names: &HashMap<String, Uuid>) -> AppResult<Value> {
+pub(crate) fn compile(text: &str, names: &HashMap<String, Uuid>) -> AppResult<Value> {
     if text.trim().is_empty() || text.len() > MAX_INPUT_BYTES {
         return Err(invalid(
             "An expression must contain between one and 8192 bytes.",

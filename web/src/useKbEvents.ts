@@ -66,7 +66,7 @@ export function useKbEvents(kbId: string | undefined) {
         document: () => push(["documents", kbId], ["graph"]),
         graph: () => push(["graph"]),
         // 映射探索跑完发的也是 review：Pending 那一栏得跟着刷新
-        review: () => push(["review", kbId], ["mappings", kbId]),
+        review: () => push(["review", kbId], ["mappings", kbId], ["table-alignments", kbId]),
         // 一句记忆抽出了等人点头的事实（0015）：对话里那张确认卡跟着长出来
         pending: () => push(["pending", kbId], ["review", kbId]),
         source: () => push(["sources", kbId], ["documents", kbId]),

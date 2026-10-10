@@ -31,6 +31,7 @@ import { fileURLToPath } from "node:url";
 // 迟早漂移，而一旦漂移，「提议对了几条」与「答案对了几条」就不是同一把尺子
 // 量出来的（#520）
 import { api, login, psql, onDb, num, value, same, log, until, sleep, parseArgs } from "./lib.mjs";
+import { scoreAlignments } from "./alignment-score.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const args = parseArgs(process.argv);
@@ -124,7 +125,8 @@ async function fresh() {
     // 而真正该看见的是「模型密钥解不开」——它第一次失败时就已经写在 last_error 里了
     if (err && err !== said) { said = err; log(`  第 ${attempts} 次失败：${err}`); }
     if (status === "done" || status === "failed") return true;
-    return num(`SELECT count(*) FROM concept_mappings WHERE kb_id='${kb}'`);
+    // Wait for the run to finish: an early table is not the complete result.
+    return false;
   }, 5000, 600000);
   return kb;
 }
@@ -240,6 +242,12 @@ function score(kb) {
 const main = async () => {
   await login();
   const kb = args.kb && args.kb !== true ? args.kb : await fresh();
-  score(kb);
+  if (args.alignments) {
+    if (!truth.alignment) throw new Error(`No alignment truth for ${corpusName}; use --corpus wide`);
+    const { items } = await api("GET", `/api/v1/kbs/${kb}/table-alignments`);
+    console.log(JSON.stringify({ kb, corpus: corpusName, ...scoreAlignments(items, truth.alignment) }, null, 2));
+  } else {
+    score(kb); // Historical SQL definitions still have the #501 numeric score.
+  }
 };
 main().catch((e) => { console.error(e); process.exit(1); });

@@ -44,6 +44,7 @@ pub mod rss_full_content;
 pub mod sealing;
 pub mod settings;
 pub mod sources;
+pub mod table_alignments;
 pub mod temporal;
 pub mod test_db;
 pub mod time_mentions;

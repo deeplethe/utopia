@@ -153,8 +153,8 @@ fn validate_key(key: &str) -> AppResult<()> {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub async fn create_entity_type(
-    pool: &PgPool,
+pub async fn create_entity_type<'a>(
+    pool: impl sqlx::Acquire<'a, Database = sqlx::Postgres>,
     kb_id: Uuid,
     key: &str,
     label: &str,
@@ -165,6 +165,7 @@ pub async fn create_entity_type(
 ) -> AppResult<Uuid> {
     validate_key(key)?;
     validate_shape(shape)?;
+    let mut tx = pool.begin().await?;
     let id = Uuid::now_v7();
     sqlx::query(
         "INSERT INTO entity_types (id, kb_id, key, label, color, shape, description)
@@ -177,7 +178,7 @@ pub async fn create_entity_type(
     .bind(color)
     .bind(shape)
     .bind(description)
-    .execute(pool)
+    .execute(&mut *tx)
     .await
     .map_err(|e| match &e {
         sqlx::Error::Database(db) if db.is_unique_violation() => {
@@ -185,7 +186,8 @@ pub async fn create_entity_type(
         }
         _ => AppError::Db(e),
     })?;
-    set_parents(&mut *pool.acquire().await?, kb_id, id, parents).await?;
+    set_parents(&mut tx, kb_id, id, parents).await?;
+    tx.commit().await?;
     Ok(id)
 }
 
@@ -304,6 +306,18 @@ async fn set_parents(
 
 pub async fn delete_entity_type(pool: &PgPool, kb_id: Uuid, id: Uuid) -> AppResult<()> {
     let mut tx = pool.begin().await?;
+    let aligned: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM table_alignments WHERE class_id=$1)
+            OR EXISTS(SELECT 1 FROM table_alignment_columns WHERE class_id=$1 OR target_class_id=$1)
+            OR EXISTS(SELECT 1 FROM table_alignment_columns c JOIN relation_type_domains d ON d.relation_type_id=c.property_id
+                WHERE d.entity_type_id=$1 AND NOT EXISTS(SELECT 1 FROM relation_type_domains other
+                    WHERE other.relation_type_id=d.relation_type_id AND other.entity_type_id<>$1))",
+    ).bind(id).fetch_one(&mut *tx).await?;
+    if aligned {
+        return Err(AppError::Conflict(
+            "Cannot delete a class used by a table alignment".into(),
+        ));
+    }
     let (usage,): (i64,) = sqlx::query_as("SELECT count(*) FROM entities WHERE type_id = $1")
         .bind(id)
         .fetch_one(&mut *tx)
@@ -455,8 +469,8 @@ async fn validate_property_links(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub async fn create_relation_type(
-    pool: &PgPool,
+pub async fn create_relation_type<'a>(
+    pool: impl sqlx::Acquire<'a, Database = sqlx::Postgres>,
     kb_id: Uuid,
     key: &str,
     label: &str,
@@ -476,9 +490,10 @@ pub async fn create_relation_type(
         ));
     }
     validate_attribute_fields(kind, domains, datatype)?;
+    let mut tx = pool.begin().await?;
     let label = &lower_camel(label);
     // 新建的行 id 还不存在，指向自己无从谈起——所以 self_id 传 None
-    validate_property_links(&mut *pool.acquire().await?, kb_id, None, kind, ax).await?;
+    validate_property_links(&mut tx, kb_id, None, kind, ax).await?;
     let is_attr = kind == "attribute";
     let id = Uuid::now_v7();
     sqlx::query(
@@ -509,7 +524,7 @@ pub async fn create_relation_type(
     // 属性不带这两条（上面已经拦了非空的情况，这里是兜底）
     .bind(if is_attr { None } else { ax.inverse_of })
     .bind(if is_attr { None } else { ax.sub_property_of })
-    .execute(pool)
+    .execute(&mut *tx)
     .await
     .map_err(|e| match &e {
         sqlx::Error::Database(db) if db.is_unique_violation() => {
@@ -518,13 +533,8 @@ pub async fn create_relation_type(
         _ => AppError::Db(e),
     })?;
     // attribute 不写 range：它的值域是字面量类型，落在 datatype 上
-    set_domains_ranges(
-        &mut *pool.acquire().await?,
-        id,
-        domains,
-        if is_attr { &[] } else { ranges },
-    )
-    .await?;
+    set_domains_ranges(&mut tx, id, domains, if is_attr { &[] } else { ranges }).await?;
+    tx.commit().await?;
     Ok(id)
 }
 
@@ -839,6 +849,17 @@ struct OldCriteria {
 
 pub async fn delete_relation_type(pool: &PgPool, kb_id: Uuid, id: Uuid) -> AppResult<()> {
     let mut tx = pool.begin().await?;
+    let aligned: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM table_alignment_columns WHERE property_id=$1)",
+    )
+    .bind(id)
+    .fetch_one(&mut *tx)
+    .await?;
+    if aligned {
+        return Err(AppError::Conflict(
+            "Cannot delete a property used by a table alignment".into(),
+        ));
+    }
     let (usage,): (i64,) = sqlx::query_as("SELECT count(*) FROM facts WHERE predicate_id = $1")
         .bind(id)
         .fetch_one(&mut *tx)
@@ -1758,7 +1779,7 @@ pub struct StoredProposal {
     pub section: String,
     pub key: String,
     pub payload: serde_json::Value,
-    /// suggest | agent
+    /// suggest | agent | exploration
     pub proposed_by: String,
     pub serves: Vec<Uuid>,
     pub signatures: serde_json::Value,

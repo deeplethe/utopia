@@ -14,6 +14,7 @@ import { api, type ConceptMapping } from "../api";
 import { S } from "../i18n";
 import { useKb } from "../kb";
 import { toast } from "../toast";
+import { TableAlignments } from "./TableAlignments";
 import {
   Button,
   Checkbox,
@@ -86,7 +87,7 @@ const statusLabel = (s: string) =>
 export function Mappings() {
   const { kb } = useKb();
   const queryClient = useQueryClient();
-  const [tab, setTab] = useState<"definitions" | "sources">("definitions");
+  const [tab, setTab] = useState<"alignments" | "definitions" | "sources">("alignments");
   const [status, setStatus] = useState<StatusFilter>("all");
   const [q, setQ] = useState("");
   const [page, setPage] = useState(0);
@@ -149,15 +150,15 @@ export function Mappings() {
        内容区也从设置页那套居中限宽（max-w-4xl）改成内容页的铺满（px-8 py-6）。 */
     <div className="flex h-full">
       <aside className={`${RAIL_CLS} u-rail-list px-2 py-3`}>
-        {(["definitions", "sources"] as const).map((t) => (
+        {(["alignments", "definitions", "sources"] as const).map((t) => (
           <Row
             key={t}
             density="nav"
             active={tab === t}
-            icon={t === "definitions" ? <Database size={14} /> : <Plug size={14} />}
+            icon={t === "sources" ? <Plug size={14} /> : <Database size={14} />}
             onClick={() => setTab(t)}
           >
-            {t === "definitions" ? S.mapping.tabDefinitions : S.mapping.tabSources}
+            {t === "alignments" ? S.mapping.tabAlignments : t === "definitions" ? S.mapping.tabDefinitions : S.mapping.tabSources}
           </Row>
         ))}
       </aside>
@@ -169,7 +170,9 @@ export function Mappings() {
           className="mb-4"
         />
 
-      {tab === "sources" ? (
+      {tab === "alignments" ? (
+        <TableAlignments key={kb.id} kbId={kb.id} />
+      ) : tab === "sources" ? (
         <DataSources kbId={kb.id} onExplored={refresh} />
       ) : (
         <div className="space-y-4">

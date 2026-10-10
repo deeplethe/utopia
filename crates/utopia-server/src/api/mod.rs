@@ -19,13 +19,14 @@ pub(crate) mod ontology_routes;
 mod question_routes;
 mod review_routes;
 mod rig_model;
-mod rule_expression_input;
+pub(crate) mod rule_expression_input;
 pub(crate) mod rule_routes;
 mod search_routes;
 mod settings_routes;
 mod sources_routes;
 #[cfg(test)]
 mod static_files_tests;
+mod table_alignment_routes;
 mod token_routes;
 mod tools;
 mod tools_graph;
@@ -243,6 +244,14 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
         )
         // 静态段排在 `{mapping_id}` 前面：先跑一遍看数，不落库
         .route("/kbs/{id}/mappings/preview", post(mapping_routes::preview))
+        .route(
+            "/kbs/{id}/table-alignments",
+            get(table_alignment_routes::list),
+        )
+        .route(
+            "/kbs/{id}/table-alignments/decision",
+            post(table_alignment_routes::decide),
+        )
         // 跟一个问题有关的口径（问数用的同一条检索）
         .route("/kbs/{id}/mappings/relevant", get(mapping_routes::relevant))
         .route(

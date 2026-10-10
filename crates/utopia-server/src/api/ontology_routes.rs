@@ -560,6 +560,15 @@ pub async fn decide_proposal(
     if !matches!(req.status.as_str(), "adopted" | "rejected") {
         return Err(AppError::invalid("bad_status", "status 只能是 adopted 或 rejected").into());
     }
+    // A table cannot use the legacy status-only path: its declarations and
+    // bindings must commit together even when a client calls this endpoint.
+    if req.section == utopia_store::table_alignments::SECTION {
+        return Err(AppError::invalid(
+            "bad_table_alignment",
+            "Review the whole table through the table alignment endpoint, including its version",
+        )
+        .into());
+    }
     let reason = req
         .reason
         .as_deref()

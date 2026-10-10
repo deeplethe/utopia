@@ -34,6 +34,7 @@ mod readers;
 mod retrieval;
 mod rss_full_content;
 mod state;
+mod table_exploration;
 mod time_resolution;
 mod time_text;
 mod type_alignment;

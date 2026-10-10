@@ -34,6 +34,7 @@ export const STREAM_KEYS = [
   "pending",
   "sources",
   "mappings",
+  "table-alignments",
 ] as const;
 /** 一次会话内不变的键头；换人靠清空缓存 */
 export const SESSION_KEYS = ["me", "health", "deployment"] as const;
