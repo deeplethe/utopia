@@ -23,8 +23,14 @@ import { parseArgs } from "./lib.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const args = parseArgs(process.argv);
-const N = Number(args.n || 100);
-const SEED = Number(args.seed || 1);
+const N = Number(args.n ?? 100);
+const SEED = Number(args.seed ?? 1);
+if (args.n === true || !Number.isSafeInteger(N) || N <= 0) {
+  console.error("--n must be a positive safe integer"); process.exit(2);
+}
+if (args.seed === true || !Number.isInteger(SEED) || SEED < 0 || SEED > 0xffffffff) {
+  console.error("--seed must be an unsigned 32-bit integer"); process.exit(2);
+}
 // 第二批（温库的边际度量）：换个种子、排除第一批的条目、文件名带自己的前缀，本体文件不重写——
 // 第二批灌进的是第一批建好的库，属性就是那 95 条
 const NAME = args.name || `redocred-${N}`;
