@@ -21,6 +21,7 @@ pub struct Job {
     pub payload: serde_json::Value,
     pub attempts: i32,
     pub max_attempts: i32,
+    pub locked_at: DateTime<Utc>,
 }
 
 /// 同种任务、同样载荷已经排着就不再排：一批文档各自抽完都想触发同一个库级任务
@@ -352,25 +353,11 @@ async fn claim_one(pool: &PgPool) -> AppResult<Option<Job>> {
              FOR UPDATE SKIP LOCKED
              LIMIT 1
          )
-         RETURNING id, kind, payload, attempts, max_attempts",
+         RETURNING id, kind, payload, attempts, max_attempts, locked_at",
     )
     .fetch_optional(pool)
     .await?;
     Ok(job)
-}
-
-async fn mark_done(pool: &PgPool, id: i64) -> AppResult<()> {
-    // **成功要把上一次的错清掉。** 重试成功后 last_error 仍留着失败那次的原文，
-    // 于是任务表里出现 status='done' 配着一条错误信息——查问题的人读到的是
-    // 一个已经不成立的原因。实测就这么误导过一次：bootstrap 明明跑成了，
-    // 表上还挂着 "column relation_type does not exist"。
-    sqlx::query(
-        "UPDATE jobs SET status = 'done', last_error = NULL, updated_at = now() WHERE id = $1",
-    )
-    .bind(id)
-    .execute(pool)
-    .await?;
-    Ok(())
 }
 
 /// 下一次重试等多久；`None` = 到此为止。
@@ -413,79 +400,158 @@ fn deferred_retry_secs(retry_in: std::time::Duration) -> i64 {
     }
 }
 
-/// `pub` 给集成测试用——主流程仍然由 `run_worker` 内的私有 caller 调用，
-/// 不会从这里出。`#[doc(hidden)]` 是因为它属于内部契约，不进公开 API。
-#[doc(hidden)]
-pub async fn mark_failed(pool: &PgPool, job: &Job, err: &anyhow::Error) -> AppResult<()> {
-    let text = format!("{err:#}");
-    // `Terminal` 优先：处理器最后改主意说「这次不算了」就该走 `failed` 路径，
-    // 不该被 `Deferred` 覆盖。两个都挂时由调用方决定——`is_terminal` 写在前面。
-    if utopia_core::is_terminal(err) {
+enum JobOutcome {
+    Done,
+    Failed {
+        error: String,
+        backoff_secs: Option<i64>,
+        deferred_secs: Option<i64>,
+    },
+}
+
+impl JobOutcome {
+    fn failed(job: &Job, err: &anyhow::Error) -> Self {
+        let terminal = utopia_core::is_terminal(err);
+        // Terminal 优先；结果写回重试沿用同一分类和完整错误原文。
+        let deferred_secs = if terminal {
+            None
+        } else {
+            utopia_core::is_deferred(err).map(deferred_retry_secs)
+        };
+        Self::Failed {
+            error: format!("{err:#}"),
+            backoff_secs: retry_delay(job.attempts, job.max_attempts, terminal),
+            deferred_secs,
+        }
+    }
+}
+
+/// true = 本次写入；false = 已结束或领取失效。两者都结束这次写回。
+async fn persist_outcome(
+    pool: &PgPool,
+    job: &Job,
+    outcome: &JobOutcome,
+    completed_at: DateTime<Utc>,
+) -> AppResult<bool> {
+    let JobOutcome::Failed {
+        error,
+        backoff_secs,
+        deferred_secs,
+    } = outcome
+    else {
+        // 成功要清掉前一次错误，避免任务显示 done 却仍带着失败原因。
         let res = sqlx::query(
-            "UPDATE jobs SET status = 'failed', last_error = $2, updated_at = now() WHERE id = $1",
+            "UPDATE jobs SET status = 'done', last_error = NULL, updated_at = now()
+             WHERE id = $1 AND status = 'running' AND locked_at = $2",
         )
         .bind(job.id)
-        .bind(&text)
+        .bind(job.locked_at)
         .execute(pool)
         .await?;
-        let _ = res.rows_affected();
-        return Ok(());
-    }
-    // `Deferred`（#526）：把任务挂回 `queued`，把 `attempts` 退回去，不烧预算。
-    // 第一次走到这里时 `claim_one` 已经把 `attempts` 加 1，写回时要 -1，
-    // 否则同一次等待会让 `attempts` 慢慢爬到 `max_attempts`，最后那条
-    // `failed` 是我们最不想看见的——ontology 还差一秒就绪，文档却先死了。
-    //
-    // **等也有期限。** 从第一次挂回去算起（记在 payload 的 `deferred_since`，不用
-    // `created_at`：一批上传排队几小时是常态，那不算在等）超过 [`DEFER_WINDOW_SECS`]
-    // 还在等，就不再挂回去，落到下面的普通退避、烧预算。等的那件事（比如
-    // `embed_ontology`）自己一直失败时，不设期限这条任务会每 30 秒醒一次、永远排着，
-    // 却没有一次被记成失败
-    if let Some(retry_in) = utopia_core::is_deferred(err) {
-        let secs = deferred_retry_secs(retry_in);
+        return Ok(res.rows_affected() > 0);
+    };
+
+    if let Some(secs) = deferred_secs {
+        // Deferred 退回认领消耗的次数；等待窗口耗尽后才走普通失败预算。
+        // 等待窗口和下次运行时刻固定在 handler 完成时，不随写回重试滑动。
         let res = sqlx::query(
             "UPDATE jobs SET status = 'queued', last_error = $2,
                     attempts = GREATEST(0, attempts - 1),
-                    run_at = now() + make_interval(secs => $3::float8),
+                    run_at = $4::timestamptz + make_interval(secs => $5::float8),
                     payload = payload || jsonb_build_object('deferred_since',
-                        COALESCE(payload->>'deferred_since', now()::text)),
+                        COALESCE(payload->>'deferred_since', $4::timestamptz::text)),
                     updated_at = now()
-             WHERE id = $1
-               AND COALESCE((payload->>'deferred_since')::timestamptz, now())
-                   > now() - make_interval(secs => $4::float8)",
+             WHERE id = $1 AND status = 'running' AND locked_at = $3
+               AND COALESCE((payload->>'deferred_since')::timestamptz, $4)
+                   > $4 - make_interval(secs => $6::float8)",
         )
         .bind(job.id)
-        .bind(&text)
-        .bind(secs as f64)
+        .bind(error)
+        .bind(job.locked_at)
+        .bind(completed_at)
+        .bind(*secs as f64)
         .bind(DEFER_WINDOW_SECS as f64)
         .execute(pool)
         .await?;
         if res.rows_affected() > 0 {
-            return Ok(());
+            return Ok(true);
         }
+        // 0 行也可能是旧领取；普通失败分支保留相同保护，不能覆盖新执行。
     }
-    let Some(backoff_secs) = retry_delay(job.attempts, job.max_attempts, false) else {
-        sqlx::query(
-            "UPDATE jobs SET status = 'failed', last_error = $2, updated_at = now() WHERE id = $1",
-        )
-        .bind(job.id)
-        .bind(&text)
-        .execute(pool)
-        .await?;
-        return Ok(());
+
+    let status = if backoff_secs.is_some() {
+        "queued"
+    } else {
+        "failed"
     };
-    sqlx::query(
-        "UPDATE jobs SET status = 'queued', last_error = $2,
-                run_at = now() + make_interval(secs => $3::float8),
+    let res = sqlx::query(
+        "UPDATE jobs SET status = $3, last_error = $4,
+                run_at = CASE WHEN $5::float8 IS NULL THEN run_at
+                    ELSE $6::timestamptz + make_interval(secs => $5::float8) END,
                 updated_at = now()
-         WHERE id = $1",
+         WHERE id = $1 AND status = 'running' AND locked_at = $2",
     )
     .bind(job.id)
-    .bind(&text)
-    .bind(backoff_secs as f64)
+    .bind(job.locked_at)
+    .bind(status)
+    .bind(error)
+    .bind(backoff_secs.map(|secs| secs as f64))
+    .bind(completed_at)
     .execute(pool)
     .await?;
+    Ok(res.rows_affected() > 0)
+}
+
+/// 集成测试的单次写回入口；worker 保存结果后由 persist_with_retry 写回。
+#[doc(hidden)]
+pub async fn mark_failed(pool: &PgPool, job: &Job, err: &anyhow::Error) -> AppResult<()> {
+    persist_outcome(pool, job, &JobOutcome::failed(job, err), Utc::now()).await?;
     Ok(())
+}
+
+async fn persist_with_retry(
+    pool: &PgPool,
+    job: &Job,
+    outcome: &JobOutcome,
+    completed_at: DateTime<Utc>,
+) {
+    let mut delay = Duration::from_secs(1);
+    loop {
+        if pool.is_closed() {
+            tracing::warn!(
+                job_id = job.id,
+                "数据库连接池已关闭，未确认的任务留待启动回收"
+            );
+            return;
+        }
+        let result = tokio::select! {
+            _ = pool.close_event() => {
+                tracing::warn!(job_id = job.id, "数据库连接池已关闭，未确认的任务留待启动回收");
+                return;
+            }
+            result = persist_outcome(pool, job, outcome, completed_at) => result,
+        };
+        match result {
+            Ok(updated) => {
+                if !updated {
+                    tracing::debug!(
+                        job_id = job.id,
+                        claimed_at = %job.locked_at,
+                        "任务已结束或领取已失效，停止写回旧结果"
+                    );
+                }
+                return;
+            }
+            Err(e) => {
+                tracing::error!(job_id = job.id, error = %e, retry_in_secs = delay.as_secs(), "任务状态写回失败，将重试同一结果");
+            }
+        }
+        tokio::select! {
+            _ = pool.close_event() => {}
+            _ = tokio::time::sleep(delay) => {}
+        }
+        delay = (delay * 2).min(Duration::from_secs(30));
+    }
 }
 
 /// worker 调度循环：运行中任务数低于目标并发就继续认领（有活立即续派），
@@ -522,6 +588,9 @@ where
     );
     let mut listener = listen_for_jobs(&pool).await;
     loop {
+        if pool.is_closed() {
+            return;
+        }
         let cap = concurrency.load(Ordering::Relaxed).max(1);
         if running.load(Ordering::Relaxed) >= cap {
             tokio::time::sleep(Duration::from_millis(200)).await;
@@ -550,16 +619,15 @@ where
                             Err(anyhow::anyhow!("任务处理器 panic（详情见 stderr）：{join}"))
                         }
                     };
+                    let completed_at = Utc::now();
                     let outcome = match result {
-                        Ok(()) => mark_done(&pool, job.id).await,
+                        Ok(()) => JobOutcome::Done,
                         Err(e) => {
                             tracing::warn!(job_id = job.id, kind = %job.kind, error = %e, "任务执行失败");
-                            mark_failed(&pool, &job, &e).await
+                            JobOutcome::failed(&job, &e)
                         }
                     };
-                    if let Err(e) = outcome {
-                        tracing::error!(job_id = job.id, error = %e, "任务状态写回失败");
-                    }
+                    persist_with_retry(&pool, &job, &outcome, completed_at).await;
                     running.fetch_sub(1, Ordering::Relaxed);
                 });
             }
@@ -573,6 +641,10 @@ where
         }
     }
 }
+
+#[cfg(test)]
+#[path = "jobs_writeback_tests.rs"]
+mod writeback_tests;
 
 #[cfg(test)]
 mod tests {

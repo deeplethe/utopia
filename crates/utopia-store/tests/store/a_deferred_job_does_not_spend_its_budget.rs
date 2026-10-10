@@ -26,24 +26,18 @@ async fn a_deferred_job_does_not_spend_its_budget() -> anyhow::Result<()> {
 
     // 直接插一行「正在跑」的任务——attempts 已经由 `claim_one` 加过一次，
     // 这一关的语义是 `mark_failed(Deferred)` 写回时把它退回去。
-    let (id,): (i64,) = sqlx::query_as(
-        "INSERT INTO jobs (kind, payload, status, attempts, max_attempts)
+    let job: jobs::Job = sqlx::query_as(
+        "INSERT INTO jobs (kind, payload, status, attempts, max_attempts, locked_at)
          VALUES ('extract_document', '{\"document_id\":\"00000000-0000-0000-0000-000000000000\"}',
-                 'running', 2, 3)
-         RETURNING id",
+                 'running', 2, 3, now())
+         RETURNING id, kind, payload, attempts, max_attempts, locked_at",
     )
     .fetch_one(&pool)
     .await?;
+    let id = job.id;
 
     // 第一次等待：本体向量补齐，30s。
     let err = anyhow!("waiting on ontology index").context(Deferred::new(Duration::from_secs(30)));
-    let job = jobs::Job {
-        id,
-        kind: "extract_document".into(),
-        payload: serde_json::json!({}),
-        attempts: 2,
-        max_attempts: 3,
-    };
     jobs::mark_failed(&pool, &job, &err).await?;
 
     let (status, attempts, last_error): (String, i32, String) =
@@ -74,10 +68,14 @@ async fn a_deferred_job_does_not_spend_its_budget() -> anyhow::Result<()> {
     // 第二次等待：同一个任务、同一段等待。**预算不烧**——
     // 这是与「限流重试」的关键区别。
     let err2 = anyhow!("waiting on ontology index").context(Deferred::new(Duration::from_secs(30)));
-    let job2 = jobs::Job {
-        attempts: 1, // 第一次之后的状态
-        ..job.clone()
-    };
+    let job2: jobs::Job = sqlx::query_as(
+        "UPDATE jobs SET status='running', attempts=attempts+1, locked_at=now()
+         WHERE id=$1 AND status='queued'
+         RETURNING id, kind, payload, attempts, max_attempts, locked_at",
+    )
+    .bind(id)
+    .fetch_one(&pool)
+    .await?;
     jobs::mark_failed(&pool, &job2, &err2).await?;
     let (status2, attempts2, _): (String, i32, String) =
         sqlx::query_as("SELECT status, attempts, last_error FROM jobs WHERE id = $1")
@@ -85,7 +83,7 @@ async fn a_deferred_job_does_not_spend_its_budget() -> anyhow::Result<()> {
             .fetch_one(&pool)
             .await?;
     assert_eq!(status2, "queued");
-    assert_eq!(attempts2, 0, "两次 Deferred 之后 attempts 应该退到 0");
+    assert_eq!(attempts2, 1, "第二次认领再 Deferred 不应消耗重试预算");
 
     // 收尾：避免污染下一次跑（其它测试共享同一个库）
     sqlx::query("DELETE FROM jobs WHERE id = $1")
@@ -104,25 +102,19 @@ async fn terminal_wins_over_deferred_when_both_attached() -> anyhow::Result<()> 
     };
     let pool = PgPool::connect(&url).await?;
 
-    let (id,): (i64,) = sqlx::query_as(
-        "INSERT INTO jobs (kind, payload, status, attempts, max_attempts)
+    let job: jobs::Job = sqlx::query_as(
+        "INSERT INTO jobs (kind, payload, status, attempts, max_attempts, locked_at)
          VALUES ('extract_document', '{\"document_id\":\"00000000-0000-0000-0000-000000000000\"}',
-                 'running', 1, 3)
-         RETURNING id",
+                 'running', 1, 3, now())
+         RETURNING id, kind, payload, attempts, max_attempts, locked_at",
     )
     .fetch_one(&pool)
     .await?;
+    let id = job.id;
 
     // 先挂 Deferred，再挂 Terminal。Terminal 是「最后一次改主意」的那一个。
     let err = anyhow!("balance gone after waiting").context(Deferred::new(Duration::from_secs(30)));
     let err = err.context(utopia_core::Terminal);
-    let job = jobs::Job {
-        id,
-        kind: "extract_document".into(),
-        payload: serde_json::json!({}),
-        attempts: 1,
-        max_attempts: 3,
-    };
     jobs::mark_failed(&pool, &job, &err).await?;
 
     let (status, attempts): (String, i32) =
@@ -151,20 +143,15 @@ async fn a_wait_past_its_window_is_a_failure() -> anyhow::Result<()> {
     let pool = PgPool::connect(&url).await?;
 
     // 第一次挂回去时记下开始等的时刻
-    let (fresh,): (i64,) = sqlx::query_as(
-        "INSERT INTO jobs (kind, payload, status, attempts, max_attempts)
-         VALUES ('extract_document', '{}', 'running', 1, 3) RETURNING id",
+    let job: jobs::Job = sqlx::query_as(
+        "INSERT INTO jobs (kind, payload, status, attempts, max_attempts, locked_at)
+         VALUES ('extract_document', '{}', 'running', 1, 3, now())
+         RETURNING id, kind, payload, attempts, max_attempts, locked_at",
     )
     .fetch_one(&pool)
     .await?;
+    let fresh = job.id;
     let err = anyhow!("waiting on ontology index").context(Deferred::new(Duration::from_secs(30)));
-    let job = jobs::Job {
-        id: fresh,
-        kind: "extract_document".into(),
-        payload: serde_json::json!({}),
-        attempts: 1,
-        max_attempts: 3,
-    };
     jobs::mark_failed(&pool, &job, &err).await?;
     let since: Option<String> =
         sqlx::query_scalar("SELECT payload->>'deferred_since' FROM jobs WHERE id = $1")
@@ -174,17 +161,17 @@ async fn a_wait_past_its_window_is_a_failure() -> anyhow::Result<()> {
     assert!(since.is_some(), "第一次等待应当记下 deferred_since");
 
     // 已经等过了期限：不再退回 attempts，走普通退避
-    let (stale,): (i64,) = sqlx::query_as(
-        "INSERT INTO jobs (kind, payload, status, attempts, max_attempts)
+    let job: jobs::Job = sqlx::query_as(
+        "INSERT INTO jobs (kind, payload, status, attempts, max_attempts, locked_at)
          VALUES ('extract_document',
                  jsonb_build_object('deferred_since', (now() - make_interval(secs => $1::float8))::text),
-                 'running', 1, 3)
-         RETURNING id",
+                 'running', 1, 3, now())
+         RETURNING id, kind, payload, attempts, max_attempts, locked_at",
     )
     .bind((jobs::DEFER_WINDOW_SECS + 60) as f64)
     .fetch_one(&pool)
     .await?;
-    let job = jobs::Job { id: stale, ..job };
+    let stale = job.id;
     jobs::mark_failed(&pool, &job, &err).await?;
     let (status, attempts): (String, i32) =
         sqlx::query_as("SELECT status, attempts FROM jobs WHERE id = $1")

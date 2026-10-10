@@ -1,6 +1,6 @@
 # 0051 · A human phrase decision carries its materialization work
 
-- **Status**: Implemented 2026-09-23 (#876)
+- **Status**: Implemented · 2026-09-23 (#876) · revised 2026-10-10 ([#1137](https://github.com/deeplethe/utopia/pull/1137))
 - **Written**: 2026-09-21
 - **Related**: [0044](0044-the-ontology-is-a-view-over-what-documents-say.md); [PR #841](https://github.com/deeplethe/utopia/pull/841).
 
@@ -80,6 +80,63 @@ kill inside a partly written materialization transaction, failed ack persistence
 notification-loss polling, old-aligner/new-handler overlap, and production route
 permissions/status reads/UI E2E remain explicit acceptance work. Existing temporal
 and evidence tests must pass after any extraction; the experiment is not a substitute.
+
+**Revision 2026-10-10 (job result writeback).** This revision supersedes the
+failed-ack limitation above while the worker remains live, addressing
+[#1106](https://github.com/deeplethe/utopia/issues/1106). Following
+[the review of #1130](https://github.com/deeplethe/utopia/pull/1130#issuecomment-6091927152),
+reuse the existing `locked_at` returned by `claim_one` as the claim identity.
+Every worker outcome update requires its ID, `status = 'running'`, and that exact
+database-written timestamp, including the ordinary failure fallback after an
+expired Deferred window. A new claim follows a committed requeue in the current
+queue. Attempt counts can be returned by Deferred or reset by manual requeue;
+they cannot identify an execution. No new column or migration is needed.
+
+Freeze the handler's success or complete formatted error, Terminal/Deferred
+classification, business retry decision, and completion time once. Terminal keeps
+precedence. Use that completion time for `run_at`, the first `deferred_since`,
+and the deferral-window check, so failed writes cannot move the schedule or extend
+the window. Business retry budgets remain finite and success clears `last_error`.
+
+Retry persistence in the original worker task after 1, 2, 4, 8, 16, then 30 seconds,
+keeping the cap at 30 seconds. These writes neither rerun the handler nor spend
+another business attempt. Keep the concurrency slot while releasing database
+connections before waiting. A finite writeback budget would strand the running
+job again; a separate retry queue could accumulate unbounded pending outcomes.
+Pool closure ends local persistence retry.
+
+A guarded update affecting no rows normally means the claim is settled or
+replaced, including a committed write whose acknowledgement was lost or a handler
+that already marked its job done. Deferred can also affect no rows because its
+waiting window expired: try its ordinary failure fallback with the same guard
+before stopping. Neither path may change a later execution.
+
+Pending outcomes remain in process memory. Process exit can still cause startup
+recovery to rerun business work; this does not establish exactly-once execution,
+safe multi-instance ownership, or protection of handler side effects. Persistent
+write failures retain slots and can stop new claims. The handler signature and
+HTTP `JobStatus` shape stay the same; Rust `Job` constructors and synthetic claim
+queries must supply `locked_at`.
+
+Acceptance uses a dedicated, otherwise idle test database. Inject write failures
+for success, ordinary failure, Terminal and Deferred, then restore writes and
+verify one handler execution, complete errors, budgets, fixed schedules and the
+bounded deferral window. Cover repeated acknowledgement after commit, replaced
+claims with equal attempt counts, expired-window fallback, retained and released
+slots, handlers that settle their own jobs, and pool closure while waiting. These
+checks must report their own head and results rather than reuse historical counts.
+
+Validation at `5e60e2702d37dbffeccd0551c8895222c9b85d29` on Windows / PostgreSQL
+16.15 passed the eight module-local writeback tests and the opt-in real-worker
+writeback regression, including failed UPDATEs followed by recovery, all outcome
+classes, stale claims, slot backpressure, connection release and pool closure.
+Repeated acknowledgement retries an already committed result; it does not inject
+a network acknowledgement failure. The two retained delivery parents, three
+actual killed subprocesses and Busy-lock test passed separately on an idle
+database. The database-required workspace suite passed 1,485 tests; fmt, Clippy,
+web build and 235 web tests also passed. This evidence belongs to
+[the writeback implementation](https://github.com/deeplethe/utopia/pull/1137), not
+the historical experiment above.
 
 After contract approval, wire the route's existing authorization and binding lookup
 to a same-transaction decision+job function; register the pure handler in main;
