@@ -84,6 +84,19 @@ import { NextStep, nextStep, useReadiness } from "./NextStep";
 const lastKey = (kbId: string) => `chat:last:${kbId}`;
 const DRAFT_KEY = "chat:draft";
 
+// Draft persistence is optional: denied browser storage must not break chat.
+const chatStorage = {
+  getItem(key: string): string | null {
+    try { return sessionStorage.getItem(key); } catch { return null; }
+  },
+  setItem(key: string, value: string): void {
+    try { sessionStorage.setItem(key, value); } catch { /* keep the in-memory draft */ }
+  },
+  removeItem(key: string): void {
+    try { sessionStorage.removeItem(key); } catch { /* persistence is unavailable */ }
+  },
+};
+
 /** 还没有来源的那一轮共用这一个空数组：新建一个会让 context 每次渲染都变，
  *  正文里每个角标跟着重画 */
 const NO_SOURCES: Source[] = [];
@@ -177,7 +190,7 @@ export function Chat() {
     viewRequest.current = { ...viewRequest.current };
     activeIdRef.current = null; // StrictMode's next setup must issue its own read.
   }, []);
-  const [input, setInput] = useState(() => sessionStorage.getItem(DRAFT_KEY) ?? "");
+  const [input, setInput] = useState(() => chatStorage.getItem(DRAFT_KEY) ?? "");
   /* **按 URL 认领，不按 state。** 这个文件开头就写着「URL 是当前会话的唯一
      事实来源」，而这里一度用了 `activeId`——它是 state，切走再回来时更新得
      比第一次渲染晚，于是那一帧认不出自己，屏幕空着。用地址栏里的那个 id
@@ -279,7 +292,7 @@ export function Chat() {
   useEffect(() => {
     if (!kb || kb.id !== kbId) return;
     if (!routeConvId) {
-      const last = sessionStorage.getItem(lastKey(kb.id));
+      const last = chatStorage.getItem(lastKey(kb.id));
       if (last) {
         navigate({
           to: "/kb/$kbId/chat/$conversationId",
@@ -397,7 +410,7 @@ export function Chat() {
     try {
       const { messages } = await conversationsApi.detail(owner.kbId, id);
       if (!ownsView(owner)) return;
-      sessionStorage.setItem(lastKey(owner.kbId), id);
+      chatStorage.setItem(lastKey(owner.kbId), id);
       const history = historyTurns(messages);
       setTurns(history);
       setLoadedKey(viewKey(owner.kbId, id));
@@ -416,7 +429,7 @@ export function Chat() {
         return;
       }
       // 失效链接（会话已删 / 属于别的库）：安静回到新对话
-      sessionStorage.removeItem(lastKey(kb!.id));
+      chatStorage.removeItem(lastKey(kb!.id));
       activeIdRef.current = null;
       setActiveId(null);
       setTurns([]);
@@ -432,7 +445,7 @@ export function Chat() {
     setLoadingHistory(false);
     setLoadedKey(null);
     // 同样不 abort：开一场新的不等于放弃上一场
-    if (kb) sessionStorage.removeItem(lastKey(kb.id));
+    if (kb) chatStorage.removeItem(lastKey(kb.id));
     activeIdRef.current = null;
     following.current = true;
     setActiveId(null);
@@ -452,8 +465,8 @@ export function Chat() {
     }
     // 记号跟着会话走，否则这个 id 会一直留在浏览器的那张表里
     convMarks.forget(id);
-    if (sessionStorage.getItem(lastKey(kb!.id)) === id) {
-      sessionStorage.removeItem(lastKey(kb!.id));
+    if (chatStorage.getItem(lastKey(kb!.id)) === id) {
+      chatStorage.removeItem(lastKey(kb!.id));
     }
     invalidateList();
     if (ownsView(owner) && id === activeIdRef.current) newChat();
@@ -467,7 +480,7 @@ export function Chat() {
     following.current = true;
     setIdleHistoryKey(null);
     setInput("");
-    sessionStorage.removeItem(DRAFT_KEY);
+    chatStorage.removeItem(DRAFT_KEY);
     if (inputRef.current) inputRef.current.style.height = "auto";
 
     answer(
@@ -518,7 +531,7 @@ export function Chat() {
         // 先 identify 生成句柄再换 URL；layout effect 重置视图后，loadConversation 会认领该句柄。
         activeIdRef.current = id;
         setActiveId(id);
-        sessionStorage.setItem(lastKey(kbNow), id);
+        chatStorage.setItem(lastKey(kbNow), id);
         navigate({
           to: "/kb/$kbId/chat/$conversationId",
           params: { kbId, conversationId: id },
@@ -539,8 +552,8 @@ export function Chat() {
           handle.discard();
           if (!ownsView(owner)) return;
           if (!body.retry_message_id) {
-            const draft = [body.message, inputRef.current?.value ?? sessionStorage.getItem(DRAFT_KEY)].filter(Boolean).join("\n");
-            sessionStorage.setItem(DRAFT_KEY, draft);
+            const draft = [body.message, inputRef.current?.value ?? chatStorage.getItem(DRAFT_KEY)].filter(Boolean).join("\n");
+            chatStorage.setItem(DRAFT_KEY, draft);
             setInput(draft);
           }
           void loadConversation(body.conversation_id);
@@ -566,7 +579,7 @@ export function Chat() {
         value={input}
         onChange={(e) => {
           setInput(e.target.value);
-          sessionStorage.setItem(DRAFT_KEY, e.target.value);
+          chatStorage.setItem(DRAFT_KEY, e.target.value);
           const el = e.currentTarget;
           el.style.height = "auto";
           el.style.height = `${Math.min(el.scrollHeight, 192)}px`;
