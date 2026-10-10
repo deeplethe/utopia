@@ -77,7 +77,7 @@ async function stargazerDates() {
     if (!conn.pageInfo.hasNextPage) return dates;
     cursor = conn.pageInfo.endCursor;
   }
-  return dates;
+  throw new Error("stargazer timeline exceeds the 400-page safety limit; chart was not generated");
 }
 
 const dates = (await stargazerDates()).sort((a, b) => a - b);
