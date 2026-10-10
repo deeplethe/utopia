@@ -31,6 +31,7 @@ pub mod model_limits;
 pub mod name_vectors;
 pub mod names;
 pub mod ontology;
+pub mod ontology_regressions;
 pub mod palette;
 pub mod paths;
 pub mod pending;

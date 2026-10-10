@@ -63,6 +63,8 @@ Candidates for a mention come from:
 
 Recall only proposes. `recall_keys`, `GENERIC_SUFFIXES_CJK` and `GENERIC_WORDS_EN` leave once the bench shows channel 2 finds what they found.
 
+**Revised 2026-10-10 (#1104).** Channel 2 and containment do not pair two names that both carry numbers when the numbers differ (`names::numbers_differ`): `migration 394` and `migration 395` sit at cosine 0.94 and are never the same thing. A name without a number still pairs with one that has it. On a deployment's 1,663 decided pairs of this kind, 3 were merges.
+
 ### 4. Evidence decides, read from the ontology and both clocks
 
 For each candidate, evidence is read from the chunk's resolved facts against the candidate's current facts:
