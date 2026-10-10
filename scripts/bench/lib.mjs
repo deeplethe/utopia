@@ -160,9 +160,11 @@ export async function askChat(kb, message) {
     if (done) break;
     buf += dec.decode(chunk, { stream: true });
     let i;
-    while ((i = buf.indexOf("\n\n")) >= 0) {
-      const frame = buf.slice(0, i);
-      buf = buf.slice(i + 2);
+    let delimiter;
+    while ((delimiter = /\r?\n\r?\n|\r\r/.exec(buf)) !== null) {
+      i = delimiter.index;
+      const frame = buf.slice(0, i).replace(/\r\n|\r/g, "\n");
+      buf = buf.slice(i + delimiter[0].length);
       const ev = /^event: ?(.*)$/m.exec(frame)?.[1];
       const data = frame.split("\n").filter((l) => l.startsWith("data:")).map((l) => l.slice(5).replace(/^ /, "")).join("\n");
       try {
@@ -173,8 +175,14 @@ export async function askChat(kb, message) {
       } catch {
         /* 半帧或非 JSON：下一帧再说 */
       }
+      if (ev === "done" || ev === "error") {
+        await reader.cancel().catch(() => {});
+        reader.releaseLock();
+        return { conversation, text, steps, error };
+      }
     }
   }
+  reader.releaseLock();
   return { conversation, text, steps, error };
 }
 
