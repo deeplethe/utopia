@@ -333,6 +333,8 @@ pub struct ChunkFactView {
     /// 本体没认下这条关系时回落到原文说法；两者都拿不出时为 None（更早的历史数据长这样）
     pub predicate: Option<String>,
     pub inferred: bool,
+    /// A live open statement can supply a human-confirmed regression expectation.
+    pub is_open_statement: bool,
     pub object_id: Option<Uuid>,
     pub object: Option<String>,
     pub valid_from: Option<DateTime<Utc>>,

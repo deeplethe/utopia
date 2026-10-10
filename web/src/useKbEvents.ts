@@ -64,9 +64,9 @@ export function useKbEvents(kbId: string | undefined) {
       `/api/v1/kbs/${kbId}/events`,
       {
         document: () => push(["documents", kbId], ["graph"]),
-        graph: () => push(["graph"]),
+        graph: () => push(["graph"], ["ontologyRegressions", kbId]),
         // 映射探索跑完发的也是 review：Pending 那一栏得跟着刷新
-        review: () => push(["review", kbId], ["mappings", kbId]),
+        review: () => push(["review", kbId], ["mappings", kbId], ["ontologyRegressions", kbId]),
         // 一句记忆抽出了等人点头的事实（0015）：对话里那张确认卡跟着长出来
         pending: () => push(["pending", kbId], ["review", kbId]),
         source: () => push(["sources", kbId], ["documents", kbId]),
