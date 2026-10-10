@@ -21,8 +21,10 @@ export const citeRe = () => /\[(\d+(?:\s*[,，]\s*\d+)*)\]/g;
 export function citeNumbers(spec: string): number[] {
   return spec
     .split(/[,，]/)
-    .map((s) => Number(s.trim()))
-    .filter((n) => Number.isInteger(n) && n > 0);
+    .map((s) => s.trim())
+    .filter((s) => /^\d+$/.test(s))
+    .map(Number)
+    .filter((n) => Number.isSafeInteger(n) && n > 0);
 }
 
 export type CitePiece = { text: string } | { cite: number[] };
