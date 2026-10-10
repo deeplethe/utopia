@@ -236,7 +236,7 @@ ${xTickIdx.map((i) => `<text x="${x(i).toFixed(1)}" y="${H - 16}" fill="${ink}" 
 }
 
 mkdirSync(dirname(out), { recursive: true });
-const lightOut = out.replace(/\.svg$/, "-light.svg");
+const lightOut = /\.svg$/i.test(out) ? out.replace(/\.svg$/i, "-light.svg") : `${out}-light.svg`;
 writeFileSync(out, render(THEMES.dark));
 writeFileSync(lightOut, render(THEMES.light));
 console.log(`${series.length} days, ${maxV} stars → ${out} + ${lightOut}`);
