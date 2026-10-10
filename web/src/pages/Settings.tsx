@@ -186,14 +186,14 @@ function SourceGrants({ sourceId }: { sourceId: string }) {
 }
 
 /** 部署级配置：注册开关 + worker 并发。 */
-function DeploymentAdmin() {
+export function DeploymentAdmin() {
   const queryClient = useQueryClient();
   const dep = useQuery({
     queryKey: ["deployment"],
     queryFn: api.adminDeployment,
   });
   const [workers, setWorkers] = useState<number | null>(null);
-  const shown = workers ?? dep.data?.worker_concurrency ?? 32;
+  const shown = workers ?? dep.data?.worker_concurrency ?? 64;
   // 按模型的并发：缺省值 + 每个在用模型的覆盖
   const [modelDefault, setModelDefault] = useState<number | null>(null);
   const shownDefault =
@@ -266,11 +266,11 @@ function DeploymentAdmin() {
             <Input size="sm" className="u-input-plain w-16 u-num text-center"
               type="number"
               min={1}
-              max={32}
+              max={256}
               value={shown}
               disabled={dep.isPending}
               onChange={(e) =>
-                setWorkers(Math.max(1, Math.min(32, Number(e.target.value) || 1)))
+                setWorkers(Math.max(1, Math.min(256, Number(e.target.value) || 1)))
               }
             />
             <Button variant="secondary" size="sm"
