@@ -881,10 +881,6 @@ pub async fn query_data(ctx: &ToolCtx<'_>, args: &serde_json::Value) -> ToolResu
     ToolResult::new(text, step.json())
 }
 
-/// 一条记忆最长多少个字符。记忆是人在对话里说的一句话，不是一篇文档；这个数远在常见
-/// 嵌入模型的输入上限（八千来个 token）之内，中文一字按两个 token 算也够
-pub(crate) const REMEMBER_MAX_CHARS: usize = 4000;
-
 pub async fn remember(ctx: &ToolCtx<'_>, args: &serde_json::Value) -> ToolResult {
     // NUL 在入口就剥（#665）：`append_episode` 自己也剥，但这里拼的回复与卡片详情
     // 用的是同一份文本——对话里它们要落进会话记录，Postgres 的 TEXT 与 JSONB 一样
@@ -921,22 +917,6 @@ pub async fn remember(ctx: &ToolCtx<'_>, args: &serde_json::Value) -> ToolResult
             "remember requires non-empty text.".to_string(),
             Step::new("tool", "remember", "empty")
                 .missing("text")
-                .json(),
-        )
-        .error();
-    }
-    // 一句话一块，整块送去嵌入、送去抽取：长过模型读得下的，记下来也嵌不了、抽不了，
-    // 还曾经把它后面的每一句都堵在队列里（#1187）。在入口说清楚，不收下再默默失败
-    let length = text.chars().count();
-    if length > REMEMBER_MAX_CHARS {
-        return ToolResult::new(
-            format!(
-                "remember takes one statement of at most {REMEMBER_MAX_CHARS} characters; \
-                 this text has {length}. Record the statements that matter one at a time, \
-                 or tell the user to upload the text as a document."
-            ),
-            Step::new("tool", "remember", "too long")
-                .invalid("text")
                 .json(),
         )
         .error();

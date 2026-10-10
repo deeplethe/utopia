@@ -2041,7 +2041,7 @@ async fn failed_memory_writes_are_tool_errors() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
-async fn memory_text_that_is_empty_or_too_long_is_a_tool_error() -> anyhow::Result<()> {
+async fn memory_text_empty_after_nul_removal_is_a_tool_error() -> anyhow::Result<()> {
     let Some(mut f) = Fixture::new().await? else {
         return Ok(());
     };
@@ -2062,10 +2062,6 @@ async fn memory_text_that_is_empty_or_too_long_is_a_tool_error() -> anyhow::Resu
     .await?
     .1;
     let result = f.call("remember", json!({"text":"\u{0} \u{0}"})).await?;
-    // #1187: a text no model can read is refused at the door, not recorded and left to fail
-    let too_long = f
-        .call("remember", json!({"text": "字".repeat(4001)}))
-        .await?;
     let count: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM documents WHERE kb_id=$1 AND external_key='memory:log'",
     )
@@ -2079,13 +2075,6 @@ async fn memory_text_that_is_empty_or_too_long_is_a_tool_error() -> anyhow::Resu
         "remember requires non-empty text."
     );
     assert_eq!(result["isError"], true);
-    assert_eq!(too_long["isError"], true);
-    assert!(
-        too_long["content"][0]["text"]
-            .as_str()
-            .is_some_and(|t| t.contains("at most 4000 characters; this text has 4001")),
-        "{too_long}"
-    );
     Ok(())
 }
 
