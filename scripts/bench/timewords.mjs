@@ -19,7 +19,10 @@ import { BASE, api, login, cookieHeader, parseArgs, log, onDb, sleep } from "./l
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const args = parseArgs(process.argv);
 const DB = args.db;
-const RUNS = Number(args.runs || 3);
+const RUNS = Number(args.runs ?? 3);
+if (args.runs === true || !Number.isSafeInteger(RUNS) || RUNS <= 0) {
+  console.error("--runs must be a positive safe integer"); process.exit(2);
+}
 const LOG = process.env.BENCH_SERVER_LOG;
 if (!DB) { console.error("--db <bench database> 是必须的"); process.exit(2); }
 const corpus = JSON.parse(fs.readFileSync(path.join(HERE, "truth", "timewords.json"), "utf8"));
