@@ -359,6 +359,8 @@ export interface SyncRun {
 export interface ChunkFact {
   chunk_id: string;
   fact_id: string;
+  /** A live open-layer statement with a usable phrase, eligible for a regression case. */
+  is_open_statement: boolean;
   subject_id: string;
   subject: string;
   /** 本体没认下这条关系时是原文说法；两者都拿不出时为 null */
@@ -1172,6 +1174,38 @@ export interface EntityHistoryEvent {
   /** 改类事件的两端。起点为 null = 从「未分类」改过来（0009 之后最常见的一种） */
   from_type_label: string | null;
   to_type_label: string | null;
+}
+
+/** Stored comparisons against the regular phrase-alignment decisions. */
+export interface OntologyRegressionCase {
+  id: string;
+  kb_id: string;
+  statement_id: string;
+  expected_property_id: string;
+  expected_direction: "forward" | "reverse";
+  created_by: string | null;
+  created_at: string;
+  origin: "adoption" | "person";
+  last_checked_at: string | null;
+  last_result: {
+    passed: boolean;
+    human_bound: boolean;
+    actual_property_id: string | null;
+    actual_direction: "forward" | "reverse" | null;
+    status: "bound" | "none" | "undecided";
+    decided_at: string | null;
+  } | null;
+  subject_id: string;
+  subject_label: string;
+  phrase: string;
+  object_id: string | null;
+  object_label: string | null;
+  object_value: Record<string, unknown> | null;
+  expected_property_label: string;
+  expected_property_key: string;
+  actual_property_label: string | null;
+  actual_property_key: string | null;
+  created_by_label: string | null;
 }
 
 export interface Evidence {
@@ -2207,6 +2241,22 @@ export const api = {
       entity_types: EntityTypeView[];
       relation_types: RelationTypeView[];
     }>(`/api/v1/kbs/${kbId}/ontology`),
+  ontologyRegressions: (kbId: string) =>
+    request<{ cases: OntologyRegressionCase[] }>(
+      `/api/v1/kbs/${kbId}/ontology/regressions`,
+    ),
+  addOntologyRegression: (
+    kbId: string,
+    body: {
+      statement_id: string;
+      relation_type_id: string;
+      direction: "forward" | "reverse";
+    },
+  ) =>
+    request<{ id: string }>(`/api/v1/kbs/${kbId}/ontology/regressions`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
   createEntityType: (kbId: string, body: Record<string, unknown>) =>
     request<{ id: string }>(`/api/v1/kbs/${kbId}/ontology/entity-types`, {
       method: "POST",

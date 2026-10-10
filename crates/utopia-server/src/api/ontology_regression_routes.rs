@@ -18,6 +18,15 @@ pub struct Create {
     pub direction: String,
 }
 
+pub async fn list(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(kb): Path<Uuid>,
+) -> ApiResult<Json<Value>> {
+    require_kb(&state.pool, &user, kb, Role::Viewer).await?;
+    Ok(Json(json!({"cases": cases::views(&state.pool, kb).await?})))
+}
+
 pub async fn create(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
@@ -37,6 +46,7 @@ pub async fn create(
         },
     )
     .await?;
+    state.emit_review(kb);
     Ok((StatusCode::CREATED, Json(json!({"id": id}))))
 }
 

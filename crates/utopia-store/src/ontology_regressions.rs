@@ -29,6 +29,48 @@ pub struct NewCase<'a> {
     pub origin: &'a str,
 }
 
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct CaseView {
+    #[serde(flatten)]
+    #[sqlx(flatten)]
+    pub case: Case,
+    pub subject_id: Uuid,
+    pub subject_label: String,
+    pub phrase: String,
+    pub object_id: Option<Uuid>,
+    pub object_label: Option<String>,
+    pub object_value: Option<serde_json::Value>,
+    pub expected_property_label: String,
+    pub expected_property_key: String,
+    pub actual_property_label: Option<String>,
+    pub actual_property_key: Option<String>,
+    pub created_by_label: Option<String>,
+}
+
+/// The workbench reads saved results and live source labels without evaluating or writing.
+pub async fn views(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<CaseView>> {
+    Ok(sqlx::query_as(
+        "SELECT c.*, f.subject_id, s.canonical_name AS subject_label, f.phrase,
+                f.object_id, o.canonical_name AS object_label, f.object_value,
+                expected.label AS expected_property_label, expected.key AS expected_property_key,
+                actual.label AS actual_property_label, actual.key AS actual_property_key,
+                u.display_name AS created_by_label
+         FROM ontology_regression_cases c
+         JOIN facts f ON f.kb_id=c.kb_id AND f.id=c.statement_id
+         JOIN entities s ON s.kb_id=f.kb_id AND s.id=f.subject_id
+         LEFT JOIN entities o ON o.kb_id=f.kb_id AND o.id=f.object_id
+         JOIN relation_types expected ON expected.kb_id=c.kb_id AND expected.id=c.expected_property_id
+         LEFT JOIN relation_types actual ON actual.kb_id=c.kb_id
+           AND actual.id=(c.last_result->>'actual_property_id')::uuid
+         LEFT JOIN users u ON u.id=c.created_by
+         WHERE c.kb_id=$1 AND f.layer='open' AND f.invalidated_at IS NULL
+         ORDER BY c.created_at DESC,c.id",
+    )
+    .bind(kb_id)
+    .fetch_all(pool)
+    .await?)
+}
+
 pub async fn list(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<Case>> {
     Ok(sqlx::query_as(
         "SELECT c.* FROM ontology_regression_cases c WHERE c.kb_id=$1
