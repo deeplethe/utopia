@@ -94,10 +94,11 @@ function operandText(op: string, operand: unknown, attributes: RelationTypeView[
 }
 
 /** 输入框文本 → 操作数。**解析不出来就返回 undefined**，由调用方拦在保存之前 */
-function parseOperand(op: string, text: string): unknown | undefined {
+export function parseOperand(op: string, text: string): unknown | undefined {
   const kind = operandKind(op);
   if (kind === "none") return undefined;
   const t = text.trim();
+  if (!t) return undefined;
   if (kind === "set") {
     const set = t
       .split(",")
