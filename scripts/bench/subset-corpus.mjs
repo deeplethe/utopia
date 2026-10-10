@@ -83,7 +83,12 @@ const docs = corpus.docs
   .filter(([filename]) => wanted.has(titleOf(filename)))
   // 按 doc_time 升序。第三个元素缺席时（当前版语料）退回文件名排序，
   // 至少是确定的
-  .sort((a, b) => String(a[2] ?? a[0]).localeCompare(String(b[2] ?? b[0])));
+  .sort((a, b) => {
+    const ta = a[2] == null ? NaN : Date.parse(a[2]);
+    const tb = b[2] == null ? NaN : Date.parse(b[2]);
+    if (Number.isFinite(ta) && Number.isFinite(tb)) return ta - tb;
+    return String(a[2] ?? a[0]).localeCompare(String(b[2] ?? b[0]));
+  });
 
 const chars = docs.reduce((s, d) => s + d[1].length, 0);
 
