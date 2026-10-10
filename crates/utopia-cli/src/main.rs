@@ -131,17 +131,27 @@ fn print_help() {
     );
 }
 
+fn option_value<'a, I: Iterator<Item = &'a String>>(
+    flag: &str,
+    iter: &mut I,
+) -> anyhow::Result<&'a String> {
+    match iter.next() {
+        Some(value) if !value.is_empty() && !value.starts_with('-') => Ok(value),
+        _ => anyhow::bail!("{flag} requires a value"),
+    }
+}
+
 fn parse_backup<'a, I: Iterator<Item = &'a String>>(iter: &mut I) -> anyhow::Result<BackupArgs> {
     let mut a = BackupArgs::default();
     while let Some(flag) = iter.next() {
         match flag.as_str() {
-            "--output" => a.output = iter.next().map(PathBuf::from),
+            "--output" => a.output = Some(PathBuf::from(option_value(flag, iter)?)),
             "--include-data-dir" => a.include_data_dir = true,
             "--include-secret-key" => a.include_secret_key = true,
             "--dry-run" => a.dry_run = true,
-            "--pg-dump" => a.pg_dump = iter.next().map(PathBuf::from),
-            "--tar" => a.tar = iter.next().map(PathBuf::from),
-            "--migration-url" => a.migration_url = iter.next().cloned(),
+            "--pg-dump" => a.pg_dump = Some(PathBuf::from(option_value(flag, iter)?)),
+            "--tar" => a.tar = Some(PathBuf::from(option_value(flag, iter)?)),
+            "--migration-url" => a.migration_url = Some(option_value(flag, iter)?.clone()),
             "--help" | "-h" => {
                 eprintln!(
                     "utopia backup — snapshot the database (and optionally the data dir)\n\
@@ -166,9 +176,11 @@ fn parse_restore<'a, I: Iterator<Item = &'a String>>(iter: &mut I) -> anyhow::Re
     let mut a = RestoreArgs::default();
     while let Some(flag) = iter.next() {
         match flag.as_str() {
-            "--from" => a.from = iter.next().map(PathBuf::from),
-            "--target-data-dir" => a.target_data_dir = iter.next().map(PathBuf::from),
-            "--pg-restore" => a.pg_restore = iter.next().map(PathBuf::from),
+            "--from" => a.from = Some(PathBuf::from(option_value(flag, iter)?)),
+            "--target-data-dir" => {
+                a.target_data_dir = Some(PathBuf::from(option_value(flag, iter)?))
+            }
+            "--pg-restore" => a.pg_restore = Some(PathBuf::from(option_value(flag, iter)?)),
             "--dry-run" => a.dry_run = true,
             "--force" => a.force = true,
             "--yes" => a.yes = true,
@@ -1072,5 +1084,34 @@ mod tests {
         let p = std::env::current_dir().unwrap().join(name);
         std::fs::create_dir_all(&p).unwrap();
         p
+    }
+}
+
+#[cfg(test)]
+mod option_value_regressions {
+    use super::*;
+
+    #[test]
+    fn backup_value_options_do_not_fall_back_when_missing() {
+        for flag in ["--output", "--pg-dump", "--tar", "--migration-url"] {
+            for suffix in [vec![], vec!["--dry-run"], vec![""]] {
+                let mut args = vec!["backup", flag];
+                args.extend(suffix);
+                let args: Vec<String> = args.into_iter().map(str::to_string).collect();
+                assert!(parse(&args).is_err(), "accepted {args:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn restore_value_options_do_not_consume_other_flags() {
+        for flag in ["--from", "--target-data-dir", "--pg-restore"] {
+            for suffix in [vec![], vec!["--dry-run"], vec![""]] {
+                let mut args = vec!["restore", "--from", "archive.tar.gz", flag];
+                args.extend(suffix);
+                let args: Vec<String> = args.into_iter().map(str::to_string).collect();
+                assert!(parse(&args).is_err(), "accepted {args:?}");
+            }
+        }
     }
 }

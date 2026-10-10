@@ -39,7 +39,7 @@ const DOCS = [
 // **走 curl，不走 fetch**：与 fetch-ai-timeline.mjs 同一个理由——
 // 这台机器上 HTTP(S)_PROXY 指向本地代理，Node 20 的 undici 不读它。
 function get(url) {
-  return execFileSync("curl", ["-sSL", "--max-time", "90", "-H", `User-Agent: ${UA}`, url], {
+  return execFileSync("curl", ["-sSL", "--fail", "--max-time", "90", "-H", `User-Agent: ${UA}`, url], {
     encoding: "buffer",
     maxBuffer: 64 * 1024 * 1024,
   });
