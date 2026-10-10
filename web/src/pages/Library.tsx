@@ -79,7 +79,9 @@ function scheduleLabel(s: SourceView): string {
 type ScheduleMode = "manual" | "interval" | "daily" | "weekly" | "advanced";
 
 /** 已存日程 → 选择器初始状态（编辑模式回显；识别不了的 cron 落到 Advanced）。 */
-function scheduleToPickerState(initial?: ScheduleValue) {
+const CRON_WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
+
+export function scheduleToPickerState(initial?: ScheduleValue) {
   const base = {
     mode: "manual" as ScheduleMode,
     every: 30,
@@ -97,7 +99,7 @@ function scheduleToPickerState(initial?: ScheduleValue) {
     if (weekly) {
       const idx = weekly[3]
         .split(",")
-        .map((n) => (S.library.schedule.daysShort as readonly string[]).indexOf(n))
+        .map((n) => (CRON_WEEKDAYS as readonly string[]).indexOf(n))
         .filter((i) => i >= 0);
       if (idx.length)
         return {
@@ -119,7 +121,7 @@ function scheduleToPickerState(initial?: ScheduleValue) {
 }
 
 /** 可视化同步日程选择器：Manual / Interval / Daily / Weekly 构建，Advanced 才暴露 cron。 */
-function SchedulePicker({
+export function SchedulePicker({
   onChange,
   initial,
 }: {
@@ -159,7 +161,7 @@ function SchedulePicker({
         return onChange({ sync_interval_minutes: null, sync_cron: `${mm} ${hh} * * *` });
       case "weekly": {
         const ds = [...(v.days ?? days)].sort();
-        const names = ds.map((i) => S.library.schedule.daysShort[i]).join(",");
+        const names = ds.map((i) => CRON_WEEKDAYS[i]).join(",");
         return onChange({
           sync_interval_minutes: null,
           sync_cron: ds.length ? `${mm} ${hh} * * ${names}` : null,
