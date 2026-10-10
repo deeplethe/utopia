@@ -63,6 +63,7 @@ async function main() {
     for (const q of JSON.parse(fs.readFileSync(args.seed, "utf8"))) {
       if (texts.has(q.question.trim().toLowerCase())) continue;
       await api("POST", `/api/v1/kbs/${KB}/questions`, { question: q.question, expected_answer: q.expected_answer ?? null, needs: q.needs ?? null });
+      texts.add(q.question.trim().toLowerCase());
       n++;
     }
     log(`seeded ${n} questions`);
