@@ -119,7 +119,7 @@ function scheduleToPickerState(initial?: ScheduleValue) {
 }
 
 /** 可视化同步日程选择器：Manual / Interval / Daily / Weekly 构建，Advanced 才暴露 cron。 */
-function SchedulePicker({
+export function SchedulePicker({
   onChange,
   initial,
 }: {
@@ -151,7 +151,7 @@ function SchedulePicker({
         const n = Math.max(1, v.every ?? every);
         const u = v.unit ?? unit;
         return onChange({
-          sync_interval_minutes: u === "hours" ? n * 60 : n,
+          sync_interval_minutes: Math.max(1, Math.trunc(u === "hours" ? n * 60 : n)),
           sync_cron: null,
         });
       }
