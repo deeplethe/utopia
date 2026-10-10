@@ -215,11 +215,24 @@ fn first_line(text: &str, r: &Range<usize>) -> Range<usize> {
 
 fn cell_count(line: &str) -> usize {
     let t = line.trim();
-    if t.starts_with('|') && t.ends_with('|') && t.len() > 1 {
-        t[1..t.len() - 1].split('|').count()
-    } else {
-        0
+    if t.is_empty() {
+        return 0;
     }
+    // Outer pipes are optional in Markdown; escaped pipes are text inside a cell.
+    let mut separators = 0usize;
+    let mut escaped = false;
+    let mut trailing_separator = false;
+    for c in t.chars() {
+        trailing_separator = !escaped && c == '|';
+        if escaped {
+            escaped = false;
+        } else if c == '\\' {
+            escaped = true;
+        } else if c == '|' {
+            separators += 1;
+        }
+    }
+    separators + 1 - usize::from(t.starts_with('|')) - usize::from(trailing_separator)
 }
 
 fn first_cell(line: &str) -> &str {
@@ -293,5 +306,28 @@ mod tests {
         let b = blocks(text);
         assert_eq!(&text[b[0].range.clone()], "# Title");
         assert_eq!(&text[b[2].range.clone()], "- a\n- b");
+    }
+}
+
+#[cfg(test)]
+mod continuation_width_regressions {
+    use super::*;
+
+    #[test]
+    fn tables_without_outer_pipes_still_require_equal_widths() {
+        let text = "Name | Q1 | Q2\n--- | --- | ---\nNumber of shares For | 10 | 20\n\n---\n\nNumber of shares Against | Q1\n--- | ---\n30 | 40\n";
+        let tables = blocks(text)
+            .into_iter()
+            .filter(|b| matches!(b.kind, Kind::Table { .. }))
+            .count();
+        assert_eq!(tables, 2);
+    }
+
+    #[test]
+    fn width_counts_markdown_cells_instead_of_raw_pipes() {
+        assert_eq!(cell_count("Name | Q1 | Q2"), 3);
+        assert_eq!(cell_count("| Name | Q1 | Q2 |"), 3);
+        assert_eq!(cell_count(r"| Name\|detail | Q1 |"), 2);
+        assert_eq!(cell_count(r"Name | Q1\|detail"), 2);
     }
 }
