@@ -97,7 +97,7 @@ async function main() {
           ]);
           const m = /\{[\s\S]*\}/.exec(verdict);
           const j = m ? JSON.parse(m[0]) : { correct: false, why: "judge gave no JSON" };
-          answered = !!j.correct; detail.why = j.why;
+          answered = j.correct === true; detail.why = j.why;
         } else {
           // 没有期望答案：查它需要的形状——类都在、属性都在并且各有类型化事实
           judged_by = "shape";
