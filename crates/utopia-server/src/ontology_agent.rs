@@ -226,6 +226,16 @@ async fn propose_locked(
     open.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.phrase.cmp(&b.phrase)));
     open.truncate(SIGNATURES_PER_ROUND);
 
+    // Capture source identities before a model call can outlive its examples.
+    let mut example_ids = HashMap::new();
+    for signature in &open {
+        let shape = shape_of(signature);
+        example_ids.insert(
+            shape_key(&shape),
+            example_statements(pool, kb_id, &shape, None).await?,
+        );
+    }
+
     // 没归类的类别词同理
     let words = type_bindings::signatures(pool, kb_id).await?;
     let word_bindings: HashMap<String, _> = type_bindings::bindings(pool, kb_id)
@@ -659,6 +669,22 @@ async fn propose_locked(
         .collect();
     // 同一个目标上一轮已经答过一批形状：并起来，不是盖掉（第一次真跑第三轮盖掉了第二轮的）
     let mut items = items;
+    // Preserve the statement that supplied each proposed shape's first example.
+    // Looking up a shape again at adoption could select a different document.
+    for item in &mut items {
+        if let Some(shapes) = item
+            .signatures
+            .get_mut("phrases")
+            .and_then(Value::as_array_mut)
+        {
+            for shape in shapes {
+                shape["example_statement_ids"] = json!(example_ids
+                    .get(&shape_key(shape))
+                    .cloned()
+                    .unwrap_or_default());
+            }
+        }
+    }
     // 每条新元素带上本体里离它最近的两个已有元素（按向量，不问模型）。裁过的词表下模型看不到
     // 大部分属性的定义，受控对比里重复或反向已有属性的提案从 1% 升到 5%（awardReceived、
     // performer 这几条）；审的人要在采纳前看见"它最像谁"
@@ -1000,7 +1026,7 @@ pub async fn adopt(
             tracing::warn!(%kb_id, error = %e, "采纳后本体向量没补上，对齐的短名单看不见新元素");
         }
     }
-    utopia_store::ontology::decide_proposal(pool, kb_id, section, key, "adopted", actor).await?;
+    finish_adoption(pool, kb_id, &p, id, actor).await?;
     if edited {
         utopia_store::ontology::mark_proposal_edited(pool, kb_id, section, key).await?;
     }
@@ -1016,6 +1042,129 @@ pub async fn adopt(
     .await;
     state.emit_graph(kb_id);
     Ok(id)
+}
+
+/// Resolve an exemplar using the same order as the examples sent to the agent.
+/// Legacy proposals have quotes instead of IDs; those must still match their source.
+async fn example_statements(
+    pool: &sqlx::PgPool,
+    kb_id: Uuid,
+    shape: &Value,
+    quotes: Option<&[String]>,
+) -> Result<Vec<Uuid>, AppError> {
+    let phrase = shape.get("phrase").and_then(Value::as_str).unwrap_or("");
+    let subject = shape.get("subject").and_then(Value::as_str);
+    let object = shape.get("object").and_then(Value::as_str);
+    let value = shape.get("value").and_then(Value::as_bool).unwrap_or(false);
+    Ok(sqlx::query_scalar(
+        r#"
+        SELECT f.id FROM facts f
+        JOIN entities s ON s.id=f.subject_id AND s.kb_id=f.kb_id
+        LEFT JOIN entities o ON o.id=f.object_id AND o.kb_id=f.kb_id
+        LEFT JOIN entity_types st ON st.id=s.type_id
+        LEFT JOIN entity_types ot ON ot.id=o.type_id
+        WHERE f.kb_id=$1 AND f.layer='open' AND f.invalidated_at IS NULL
+          AND lower(btrim(regexp_replace(f.phrase, '\s+', ' ', 'g')))=$2
+          AND st.key IS NOT DISTINCT FROM $3 AND ot.key IS NOT DISTINCT FROM $4
+          AND (f.object_id IS NULL)=$5
+          AND ($6::text[] IS NULL OR EXISTS (
+              SELECT 1 FROM fact_evidence fe JOIN chunks c ON c.id=fe.chunk_id AND c.kb_id=f.kb_id
+              WHERE fe.fact_id=f.id AND (fe.quote=ANY($6) OR
+                CASE WHEN fe.quote_start>=0 AND fe.quote_end>fe.quote_start
+                          AND fe.quote_end<=length(c.text)
+                     THEN substr(c.text,fe.quote_start+1,fe.quote_end-fe.quote_start)
+                END=ANY($6))))
+        ORDER BY f.recorded_at,f.id LIMIT 1
+    "#,
+    )
+    .bind(kb_id)
+    .bind(phrase_bindings::normalize(phrase))
+    .bind(subject)
+    .bind(object)
+    .bind(value)
+    .bind(quotes)
+    .fetch_all(pool)
+    .await?)
+}
+
+async fn finish_adoption(
+    pool: &sqlx::PgPool,
+    kb_id: Uuid,
+    proposal: &utopia_store::ontology::StoredProposal,
+    property_id: Uuid,
+    actor: Uuid,
+) -> Result<(), AppError> {
+    let mut examples = Vec::new();
+    let property = matches!(
+        proposal.section.as_str(),
+        "relation_types" | "attribute_types"
+    ) || (proposal.section == "map_to"
+        && proposal.payload.get("kind").and_then(Value::as_str) != Some("class"));
+    if property {
+        for shape in proposal
+            .signatures
+            .get("phrases")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let ids = match shape.get("example_statement_ids") {
+                Some(ids) => serde_json::from_value::<Vec<Uuid>>(ids.clone()).map_err(|_| {
+                    AppError::invalid("invalid_examples", "Invalid proposal statement identities.")
+                })?,
+                None => {
+                    example_statements(
+                        pool,
+                        kb_id,
+                        shape,
+                        Some(&strings(proposal.payload.get("examples"))),
+                    )
+                    .await?
+                }
+            };
+            let direction = match shape.get("direction").and_then(Value::as_str) {
+                Some("reverse") => "reverse",
+                _ => "forward",
+            };
+            examples.extend(ids.into_iter().map(|statement| (statement, direction)));
+        }
+    }
+    let mut tx = pool.begin().await?;
+    let open: Option<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM ontology_proposals WHERE kb_id=$1 AND section=$2 AND key=$3 AND status='open' FOR UPDATE"
+    ).bind(kb_id).bind(&proposal.section).bind(&proposal.key).fetch_optional(&mut *tx).await?;
+    if open.is_none() {
+        return Err(AppError::NotFound);
+    }
+    for (statement_id, direction) in examples {
+        // Removed examples cannot be checked; never substitute another statement.
+        let live: Option<Uuid> = sqlx::query_scalar("SELECT id FROM facts WHERE kb_id=$1 AND id=$2 AND layer='open' AND invalidated_at IS NULL FOR SHARE")
+            .bind(kb_id).bind(statement_id).fetch_optional(&mut *tx).await?;
+        if live.is_none() {
+            continue;
+        }
+        utopia_store::ontology_regressions::add_on(
+            &mut tx,
+            kb_id,
+            utopia_store::ontology_regressions::NewCase {
+                statement_id,
+                expected_property_id: property_id,
+                expected_direction: direction,
+                created_by: actor,
+                origin: "adoption",
+            },
+        )
+        .await?;
+    }
+    sqlx::query(
+        "UPDATE ontology_proposals SET status='adopted',decided_by=$2,decided_at=now() WHERE id=$1",
+    )
+    .bind(open)
+    .bind(actor)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(())
 }
 
 /// map_to 的采纳：目标是属性，提案里的每条形状写成人的绑定（属性 + 方向），投影跟着

@@ -50,6 +50,16 @@ The open graph holds statements with their phrases, quotes, kind words and names
 - Proposals against an imported pack: a proposed property that a pack already has under another name should become a `map_to`, and the agent needs the pack's definitions to see it.
 - Whether a rejected proposal's reason should suppress the element for a time or until the signatures behind it change.
 
+## Cut 2 implementation boundary
+
+The [first slice agreed in #1103](https://github.com/deeplethe/utopia/issues/1103#issuecomment-6063201562)
+keeps property cases on adoption and lets a person add an expectation from a statement.
+It compares the existing alignment outcome with the expected property and direction.
+A signature bound by a person always passes, explicitly marked as a human binding.
+There is no separate evaluator or evaluation job; the workbench view follows in a
+second PR. [The implementation contract](../design/ontology-regression-cases.md) describes
+source selection, attribution, and comparison timestamps.
+
 ## Status history
 
 The status line as it stood on 2026-09-27, before status lines were cut to one line:

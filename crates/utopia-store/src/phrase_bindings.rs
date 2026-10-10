@@ -293,8 +293,12 @@ pub async fn decide(
     d: Decision<'_>,
 ) -> AppResult<bool> {
     validate_decision(sig, &d)?;
-    let mut connection = pool.acquire().await?;
-    decide_on(&mut connection, kb_id, sig, d).await
+    // The observed regression outcome belongs to this decision, not to a later read that
+    // could see a different person's binding. Commit both together, as delivery already does.
+    let mut tx = pool.begin().await?;
+    let changed = decide_on(&mut tx, kb_id, sig, d).await?;
+    tx.commit().await?;
+    Ok(changed)
 }
 
 fn validate_decision(sig: &PhraseSignature, d: &Decision<'_>) -> AppResult<String> {
@@ -385,7 +389,7 @@ async fn decide_with_delivery_budget(
     Ok(Some(id))
 }
 
-/// Write on the caller's connection, so related durable work can share its transaction.
+/// Write on the caller's transaction connection, so related durable work shares its commit.
 pub async fn decide_on(
     connection: &mut sqlx::PgConnection,
     kb_id: Uuid,
@@ -434,9 +438,13 @@ pub async fn decide_on(
     .bind(d.basis)
     .bind(d.marks)
     .bind(d.marks_asked)
-    .execute(connection)
+    .execute(&mut *connection)
     .await?;
-    Ok(res.rows_affected() > 0)
+    let changed = res.rows_affected() > 0;
+    if changed {
+        crate::ontology_regressions::record_for_signature(connection, kb_id, sig).await?;
+    }
+    Ok(changed)
 }
 
 /// 给这一列之前绑上的签名补问 marks 的结果（0053 修订 2026-09-27）。这一问只问一刻标哪一端，

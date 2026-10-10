@@ -136,6 +136,7 @@ mod merge_direction_counts_live_facts_in_each_base;
 mod migration_0070_runs_under_any_search_path;
 mod negative_binding_definition_edit;
 mod no_predicate_still_shows;
+mod ontology_regressions;
 mod phrase_signature_evidence;
 mod review_stages;
 mod rss_full_content;
