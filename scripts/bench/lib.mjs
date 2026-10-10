@@ -29,7 +29,16 @@ export async function api(method, url, body) {
   if (cookie) init.headers.cookie = cookie;
   if (body !== undefined) { init.headers["content-type"] = "application/json"; init.body = JSON.stringify(body); }
   const r = await fetch(BASE + url, init);
-  for (const c of r.headers.getSetCookie?.() ?? []) cookie = c.split(";")[0];
+  const cookies = new Map(cookie.split("; ").filter(Boolean).map((c) => {
+    const i = c.indexOf("=");
+    return [c.slice(0, i), c.slice(i + 1)];
+  }));
+  for (const c of r.headers.getSetCookie?.() ?? []) {
+    const pair = c.split(";")[0];
+    const i = pair.indexOf("=");
+    if (i > 0) cookies.set(pair.slice(0, i), pair.slice(i + 1));
+  }
+  cookie = [...cookies].map(([name, value]) => `${name}=${value}`).join("; ");
   const text = await r.text();
   if (!r.ok) throw new Error(`${method} ${url} -> ${r.status} ${text.slice(0, 200)}`);
   return text ? JSON.parse(text) : null;
