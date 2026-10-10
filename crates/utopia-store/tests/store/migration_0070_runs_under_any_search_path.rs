@@ -634,7 +634,7 @@ impl Coverage {
         dump("SURFACE_DRIFT", &self.surface_drift);
         dump("PREFLIGHT_MISSING", &self.preflight_missing);
         dump("STALE_PREFLIGHT", &self.stale_preflight);
-        // 0107 adds the statement and expected-property references on regression cases.
+        // 0109 adds the statement and expected-property references on regression cases.
         if self.declarative.len() != 44 {
             problems.push_str(&format!(
                 "  DECLARATIVE_EDGES = {} (expected 44)\n",

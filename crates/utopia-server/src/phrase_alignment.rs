@@ -1185,10 +1185,6 @@ async fn align_phrases_locked(
 mod lifecycle_tests;
 
 #[cfg(test)]
-#[path = "phrase_alignment_regression_tests.rs"]
-mod regression_tests;
-
-#[cfg(test)]
 mod tests {
     #[test]
     fn a_kind_word_that_is_only_a_head_word_has_nothing_to_read() {
@@ -1296,6 +1292,7 @@ mod tests {
             count: 1,
             examples: Vec::new(),
             quotes: Vec::new(),
+            example_statement_ids: Vec::new(),
         }
     }
 

@@ -51,6 +51,8 @@ fn shape_of(sig: &PhraseSignature) -> Value {
         "subject": sig.subject_type_key,
         "object": sig.object_type_key,
         "value": sig.object_is_value,
+        // Proposals show the first example; keep its identity from the same read.
+        "example_statement_ids": sig.example_statement_ids.first().into_iter().collect::<Vec<_>>(),
     })
 }
 
@@ -225,16 +227,6 @@ async fn propose_locked(
         .collect();
     open.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.phrase.cmp(&b.phrase)));
     open.truncate(SIGNATURES_PER_ROUND);
-
-    // Capture source identities before a model call can outlive its examples.
-    let mut example_ids = HashMap::new();
-    for signature in &open {
-        let shape = shape_of(signature);
-        example_ids.insert(
-            shape_key(&shape),
-            example_statements(pool, kb_id, &shape, None).await?,
-        );
-    }
 
     // 没归类的类别词同理
     let words = type_bindings::signatures(pool, kb_id).await?;
@@ -669,22 +661,6 @@ async fn propose_locked(
         .collect();
     // 同一个目标上一轮已经答过一批形状：并起来，不是盖掉（第一次真跑第三轮盖掉了第二轮的）
     let mut items = items;
-    // Preserve the statement that supplied each proposed shape's first example.
-    // Looking up a shape again at adoption could select a different document.
-    for item in &mut items {
-        if let Some(shapes) = item
-            .signatures
-            .get_mut("phrases")
-            .and_then(Value::as_array_mut)
-        {
-            for shape in shapes {
-                shape["example_statement_ids"] = json!(example_ids
-                    .get(&shape_key(shape))
-                    .cloned()
-                    .unwrap_or_default());
-            }
-        }
-    }
     // 每条新元素带上本体里离它最近的两个已有元素（按向量，不问模型）。裁过的词表下模型看不到
     // 大部分属性的定义，受控对比里重复或反向已有属性的提案从 1% 升到 5%（awardReceived、
     // performer 这几条）；审的人要在采纳前看见"它最像谁"
@@ -1044,49 +1020,6 @@ pub async fn adopt(
     Ok(id)
 }
 
-/// Resolve an exemplar using the same order as the examples sent to the agent.
-/// Legacy proposals have quotes instead of IDs; those must still match their source.
-async fn example_statements(
-    pool: &sqlx::PgPool,
-    kb_id: Uuid,
-    shape: &Value,
-    quotes: Option<&[String]>,
-) -> Result<Vec<Uuid>, AppError> {
-    let phrase = shape.get("phrase").and_then(Value::as_str).unwrap_or("");
-    let subject = shape.get("subject").and_then(Value::as_str);
-    let object = shape.get("object").and_then(Value::as_str);
-    let value = shape.get("value").and_then(Value::as_bool).unwrap_or(false);
-    Ok(sqlx::query_scalar(
-        r#"
-        SELECT f.id FROM facts f
-        JOIN entities s ON s.id=f.subject_id AND s.kb_id=f.kb_id
-        LEFT JOIN entities o ON o.id=f.object_id AND o.kb_id=f.kb_id
-        LEFT JOIN entity_types st ON st.id=s.type_id
-        LEFT JOIN entity_types ot ON ot.id=o.type_id
-        WHERE f.kb_id=$1 AND f.layer='open' AND f.invalidated_at IS NULL
-          AND lower(btrim(regexp_replace(f.phrase, '\s+', ' ', 'g')))=$2
-          AND st.key IS NOT DISTINCT FROM $3 AND ot.key IS NOT DISTINCT FROM $4
-          AND (f.object_id IS NULL)=$5
-          AND ($6::text[] IS NULL OR EXISTS (
-              SELECT 1 FROM fact_evidence fe JOIN chunks c ON c.id=fe.chunk_id AND c.kb_id=f.kb_id
-              WHERE fe.fact_id=f.id AND (fe.quote=ANY($6) OR
-                CASE WHEN fe.quote_start>=0 AND fe.quote_end>fe.quote_start
-                          AND fe.quote_end<=length(c.text)
-                     THEN substr(c.text,fe.quote_start+1,fe.quote_end-fe.quote_start)
-                END=ANY($6))))
-        ORDER BY f.recorded_at,f.id LIMIT 1
-    "#,
-    )
-    .bind(kb_id)
-    .bind(phrase_bindings::normalize(phrase))
-    .bind(subject)
-    .bind(object)
-    .bind(value)
-    .bind(quotes)
-    .fetch_all(pool)
-    .await?)
-}
-
 async fn finish_adoption(
     pool: &sqlx::PgPool,
     kb_id: Uuid,
@@ -1112,15 +1045,7 @@ async fn finish_adoption(
                 Some(ids) => serde_json::from_value::<Vec<Uuid>>(ids.clone()).map_err(|_| {
                     AppError::invalid("invalid_examples", "Invalid proposal statement identities.")
                 })?,
-                None => {
-                    example_statements(
-                        pool,
-                        kb_id,
-                        shape,
-                        Some(&strings(proposal.payload.get("examples"))),
-                    )
-                    .await?
-                }
+                None => Vec::new(),
             };
             let direction = match shape.get("direction").and_then(Value::as_str) {
                 Some("reverse") => "reverse",

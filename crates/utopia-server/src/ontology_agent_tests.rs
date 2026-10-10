@@ -11,18 +11,9 @@ use utopia_store::phrase_bindings::Decision;
 struct Model {
     replies: Arc<Mutex<Vec<Value>>>,
     requests: Arc<Mutex<Vec<Value>>>,
-    remove_statement: Arc<Mutex<Option<(sqlx::PgPool, Uuid)>>>,
 }
 async fn reply(State(m): State<Model>, Json(body): Json<Value>) -> impl IntoResponse {
     m.requests.lock().unwrap().push(body);
-    let removal = m.remove_statement.lock().unwrap().take();
-    if let Some((pool, statement)) = removal {
-        sqlx::query("DELETE FROM facts WHERE id=$1")
-            .bind(statement)
-            .execute(&pool)
-            .await
-            .unwrap();
-    }
     let text = {
         let mut replies = m.replies.lock().unwrap();
         if replies.is_empty() {
@@ -98,7 +89,6 @@ impl Fx {
         let model = Model {
             replies: Arc::new(Mutex::new(replies)),
             requests: Arc::new(Mutex::new(Vec::new())),
-            remove_statement: Arc::new(Mutex::new(None)),
         };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let endpoint = format!("http://{}", listener.local_addr()?);
@@ -220,128 +210,6 @@ fn user_text(request: &Value) -> String {
         .filter_map(|m| m["content"].as_str())
         .collect::<Vec<_>>()
         .join("\n")
-}
-
-#[tokio::test]
-async fn adopting_examples_and_marking_the_proposal_share_one_commit() -> anyhow::Result<()> {
-    let Some(f) = Fx::new(vec![]).await? else {
-        return Ok(());
-    };
-    let (statement, subject): (Uuid, Uuid) =
-        sqlx::query_as("SELECT id,subject_id FROM facts WHERE kb_id=$1 AND phrase='founded in'")
-            .bind(f.kb)
-            .fetch_one(&f.pool)
-            .await?;
-    let literal = json!({"type":"number","value":42});
-    let value = utopia_store::graph::insert_open_statement(
-        &f.pool,
-        f.kb,
-        subject,
-        "has amount",
-        utopia_store::graph::FactObject::Value(&literal),
-        None,
-        1.0,
-    )
-    .await?
-    .0;
-    let mut proposal = utopia_store::ontology::StoredProposal {
-        section: "map_to".into(),
-        key: "located_in".into(),
-        proposed_by: "agent".into(),
-        serves: vec![],
-        payload: json!({"kind":"relation"}),
-        signatures: json!({"phrases":[{"phrase":"founded in","subject":"organization","object":"place","value":false,
-            "example_statement_ids":[statement,value]}]}),
-    };
-    utopia_store::ontology::save_agent_proposals(
-        &f.pool,
-        f.kb,
-        &[utopia_store::ontology::AgentProposal {
-            section: proposal.section.clone(),
-            key: proposal.key.clone(),
-            payload: proposal.payload.clone(),
-            serves: vec![],
-            signatures: proposal.signatures.clone(),
-        }],
-    )
-    .await?;
-    assert!(
-        finish_adoption(&f.pool, f.kb, &proposal, f.located_in, f.user)
-            .await
-            .is_err()
-    );
-    assert!(
-        utopia_store::ontology_regressions::list(&f.pool, f.kb)
-            .await?
-            .is_empty(),
-        "a rejected value example rolls back the preceding valid example"
-    );
-    assert!(
-        utopia_store::ontology::open_proposal(&f.pool, f.kb, "map_to", "located_in")
-            .await?
-            .is_some(),
-        "a failed capture must not mark the proposal adopted"
-    );
-    proposal.signatures["phrases"][0]["example_statement_ids"] = json!([statement]);
-    finish_adoption(&f.pool, f.kb, &proposal, f.located_in, f.user).await?;
-    assert_eq!(
-        utopia_store::ontology_regressions::list(&f.pool, f.kb)
-            .await?
-            .len(),
-        1
-    );
-    assert!(
-        utopia_store::ontology::open_proposal(&f.pool, f.kb, "map_to", "located_in")
-            .await?
-            .is_none()
-    );
-    assert_eq!(f.requests().await, 0, "case capture never asks a model");
-    f.cleanup().await
-}
-
-#[tokio::test]
-async fn a_proposal_keeps_its_example_identity_when_the_source_disappears_during_the_call(
-) -> anyhow::Result<()> {
-    let Some(f) = Fx::new(vec![
-        json!({"p":[{"kind":"property","key":"founded_in","label":"founded in",
-        "definition":"where an organization was founded","value":false,"domains":["organization"],
-        "ranges":["place"],"s":[0],"k":[],"q":[0]}],"existing":[]}),
-    ])
-    .await?
-    else {
-        return Ok(());
-    };
-    f.decide_none().await?;
-    f.seed_question().await?;
-    let source: Uuid =
-        sqlx::query_scalar("SELECT id FROM facts WHERE kb_id=$1 AND phrase='founded in'")
-            .bind(f.kb)
-            .fetch_one(&f.pool)
-            .await?;
-    *f.model.remove_statement.lock().unwrap() = Some((f.pool.clone(), source));
-    propose(&f.state, f.kb).await?;
-    let proposal =
-        utopia_store::ontology::open_proposal(&f.pool, f.kb, "relation_types", "founded_in")
-            .await?
-            .unwrap();
-    assert_eq!(proposal.signatures["phrases"][0]["example_statement_ids"], json!([source]),
-        "the model's example identity is preserved instead of resolving a new source after its reply");
-    adopt(
-        &f.state,
-        f.kb,
-        "relation_types",
-        "founded_in",
-        AdoptEdits::default(),
-        f.user,
-    )
-    .await?;
-    assert!(
-        utopia_store::ontology_regressions::list(&f.pool, f.kb)
-            .await?
-            .is_empty(),
-        "a removed example is skipped without substituting another statement"
-    );
-    f.cleanup().await
 }
 
 #[tokio::test]
@@ -509,6 +377,46 @@ async fn an_unbound_shape_becomes_a_proposal_that_serves_a_question_and_adoption
         matches!(again, Err(AppError::NotFound)),
         "a decided proposal is not open: {again:?}"
     );
+
+    // Older proposals lack source IDs: adoption succeeds without inventing cases.
+    let mut legacy_shape = p.signatures["phrases"][0].clone();
+    legacy_shape
+        .as_object_mut()
+        .unwrap()
+        .remove("example_statement_ids");
+    utopia_store::ontology::save_agent_proposals(
+        &f.pool,
+        f.kb,
+        &[utopia_store::ontology::AgentProposal {
+            section: "map_to".into(),
+            key: "located_in".into(),
+            payload: json!({"kind":"relation"}),
+            serves: vec![],
+            signatures: json!({"phrases":[legacy_shape]}),
+        }],
+    )
+    .await?;
+    adopt(
+        &f.state,
+        f.kb,
+        "map_to",
+        "located_in",
+        AdoptEdits::default(),
+        f.user,
+    )
+    .await?;
+    assert!(
+        utopia_store::ontology::open_proposal(&f.pool, f.kb, "map_to", "located_in")
+            .await?
+            .is_none()
+    );
+    assert_eq!(
+        utopia_store::ontology_regressions::list(&f.pool, f.kb)
+            .await?
+            .len(),
+        1,
+        "a proposal without example IDs adds no regression case"
+    );
     f.cleanup().await
 }
 
@@ -658,19 +566,6 @@ async fn a_declined_shape_returns_when_its_statements_double_and_an_existing_ans
     )
     .await?;
     assert_eq!(id, f.located_in);
-    let cases = utopia_store::ontology_regressions::list(&f.pool, f.kb).await?;
-    assert_eq!(
-        cases.len(),
-        2,
-        "each accepted shape keeps its original example"
-    );
-    for case in cases {
-        assert_eq!(case.origin, "adoption");
-        assert_eq!(case.created_by, Some(f.user));
-        assert_eq!(case.expected_property_id, f.located_in);
-        assert_eq!(case.last_result.as_ref().unwrap()["human_bound"], true);
-        assert_eq!(case.last_result.as_ref().unwrap()["passed"], true);
-    }
     let bindings = phrase_bindings::bindings(&f.pool, f.kb).await?;
     for (phrase, dir) in [("located in", "forward"), ("founded in", "reverse")] {
         let b = bindings

@@ -47,6 +47,8 @@ pub struct PhraseSignature {
     /// 例句：最多 3 条「主语 —短语→ 宾语」，每条跟着它自己的引文
     pub examples: Vec<String>,
     pub quotes: Vec<String>,
+    /// Statement identities in the same order as the live examples and quotes.
+    pub example_statement_ids: Vec<Uuid>,
 }
 
 /// 库里每条 distinct 的签名：活着的开放陈述，按短语、两端的类、宾语是不是字面值分组。
@@ -88,14 +90,16 @@ pub async fn signatures(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<PhraseSigna
                     array_agg(r.subject_name || ' —' || r.spelling || '→ ' || r.object_name ORDER BY r.rn)
                         FILTER (WHERE r.rn <= 3) AS examples,
                     array_agg(coalesce(substr(c.text, r.quote_start + 1, r.quote_end - r.quote_start), '') ORDER BY r.rn)
-                        FILTER (WHERE r.rn <= 3) AS quotes
+                        FILTER (WHERE r.rn <= 3) AS quotes,
+                    array_agg(r.id ORDER BY r.rn) FILTER (WHERE r.rn <= 3) AS example_statement_ids
              FROM ranked r
              LEFT JOIN chunks c ON c.id = r.chunk_id AND r.rn <= 3
              GROUP BY r.phrase, r.subject_type_id, r.object_type_id, r.object_is_value
          )
          SELECT g.phrase, g.subject_type_id, st.key AS subject_type_key,
                 g.object_type_id, ot.key AS object_type_key, g.object_is_value, g.count,
-                coalesce(g.examples, '{{}}') AS examples, coalesce(g.quotes, '{{}}') AS quotes
+                coalesce(g.examples, '{{}}') AS examples, coalesce(g.quotes, '{{}}') AS quotes,
+                coalesce(g.example_statement_ids, '{{}}'::uuid[]) AS example_statement_ids
          FROM grouped g
          LEFT JOIN entity_types st ON st.id = g.subject_type_id
          LEFT JOIN entity_types ot ON ot.id = g.object_type_id
@@ -116,7 +120,8 @@ pub async fn signature_of(
     Ok(sqlx::query_as(
         "SELECT b.phrase, b.subject_type_id, st.key AS subject_type_key,
                 b.object_type_id, ot.key AS object_type_key, b.object_is_value,
-                b.statement_count::bigint AS count, b.examples, '{}'::text[] AS quotes
+                b.statement_count::bigint AS count, b.examples, '{}'::text[] AS quotes,
+                '{}'::uuid[] AS example_statement_ids
            FROM phrase_bindings b
       LEFT JOIN entity_types st ON st.id = b.subject_type_id
       LEFT JOIN entity_types ot ON ot.id = b.object_type_id
