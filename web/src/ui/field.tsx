@@ -1,7 +1,7 @@
 /* 表单项：标签 + 控件 + 一句提示或一句错误。间距在这里定一次，
    页面里不再有 mb-3 / mt-1 各写各的。 */
-import type { ReactNode } from "react";
-import { cn } from "./index";
+import { cloneElement, isValidElement, useId, type ReactNode } from "react";
+import { cn, Input, Textarea } from "./index";
 
 export function Field({
   label,
@@ -20,12 +20,18 @@ export function Field({
   className?: string;
   children: ReactNode;
 }) {
+  const generatedId = useId();
+  const textControl = isValidElement<{ id?: string }>(children) &&
+    (children.type === Input || children.type === Textarea || children.type === "input" || children.type === "textarea");
+  // Most callers omit htmlFor; keep the visible label usable for their text control.
+  const controlId = textControl ? children.props.id ?? htmlFor ?? generatedId : undefined;
+  const control = textControl && !children.props.id ? cloneElement(children, { id: controlId }) : children;
   return (
     <div className={cn("mb-4", className)}>
-      <label htmlFor={htmlFor} className="mb-1 block text-small font-medium text-ink-2">
+      <label htmlFor={htmlFor ?? controlId} className="mb-1 block text-small font-medium text-ink-2">
         {label}
       </label>
-      {children}
+      {control}
       {(error || hint) && (
         <p className={cn("mt-1 text-fine", error ? "text-danger" : "text-ink-2")}>
           {error ?? hint}
