@@ -59,7 +59,7 @@ export function parseDateInput(
   }
   // 钟点（0024）：没有时区就不是一个时刻——不猜，让人补上 Z 或 +08:00；
   // 有了时区换成 UTC，值截到写出来的那一位
-  if (!d || !zone) return null;
+  if (!d || !zone || Number(hh) > 23 || Number(mi ?? "0") > 59 || Number(ss ?? "0") > 59) return null;
   const parsed = new Date(`${y}-${m}-${d}T${hh}:${mi ?? "00"}:${ss ?? "00"}${zone}`);
   if (Number.isNaN(parsed.getTime())) return null;
   return {
