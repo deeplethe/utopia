@@ -137,7 +137,7 @@ function revisions(title) {
     cont = j.continue?.rvcontinue;
     if (!cont) return { real: pg.title, revs: out };
   }
-  return { real: title, revs: out };
+  throw new Error(`${title}: incomplete revision history after the 40-page pagination limit`);
 }
 
 const day = (ts) => ts.slice(0, 10);
@@ -260,6 +260,7 @@ function plaintext(revid) {
 
 const docs = [];
 let plan = [];
+const failures = [];
 
 if (FROM_MANIFEST) {
   // 按钉住的修订号精确重建。不碰采样逻辑，也不看条目当下的历史
@@ -287,9 +288,15 @@ if (FROM_MANIFEST) {
           `  ${Math.round(picked[0].size / 1024)}KB → ${Math.round(picked[picked.length - 1].size / 1024)}KB\n`,
       );
     } catch (e) {
+      failures.push(spec.title);
       process.stderr.write(`ERR ${spec.title}: ${e.message}\n`);
     }
   }
+
+if (failures.length) {
+  console.error(`Refusing incomplete history corpus: ${failures.length} titles failed`);
+  process.exit(1);
+}
 
 const snapshots = plan.reduce((n, p) => n + p.picked.length, 0);
 const rawBytes = plan.reduce(
