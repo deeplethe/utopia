@@ -319,6 +319,7 @@ const LEDGER_TABLES: &[&str] = &[
     "facts",
     "implication_rules",
     "name_vectors",
+    "ontology_regression_cases",
     "phrase_bindings",
     "phrase_readings",
     "relation_types",
@@ -618,7 +619,7 @@ struct Coverage {
 impl Coverage {
     /// 完备 = 没有未归类的边、没有腐掉的登记、面与机制互证得上,
     /// 每条受保护边都进了导出体检、体检里没有腐掉的分支,
-    /// 且两类已覆盖边的数量与迁移记录的 26/13 一致。
+    /// 且两类已覆盖边的数量与当前迁移链的 44/16 一致。
     fn assert_complete(&self) -> anyhow::Result<()> {
         let mut problems = String::new();
         let mut dump = |name: &str, xs: &[String]| {
@@ -633,9 +634,10 @@ impl Coverage {
         dump("SURFACE_DRIFT", &self.surface_drift);
         dump("PREFLIGHT_MISSING", &self.preflight_missing);
         dump("STALE_PREFLIGHT", &self.stale_preflight);
-        if self.declarative.len() != 42 {
+        // 0109 adds the statement and expected-property references on regression cases.
+        if self.declarative.len() != 44 {
             problems.push_str(&format!(
-                "  DECLARATIVE_EDGES = {} (expected 42)\n",
+                "  DECLARATIVE_EDGES = {} (expected 44)\n",
                 self.declarative.len()
             ));
         }
@@ -1060,8 +1062,8 @@ async fn a_protected_edge_missing_from_preflight_fails_the_guard() -> anyhow::Re
 #[test]
 fn the_preflight_check_notices_a_dropped_or_stray_edge() -> anyhow::Result<()> {
     let surface = preflight_surface()?;
-    // 同一份文件两个方向各数一次:58 条结构边 + 5 条 merged 过滤检查
-    assert_eq!(surface.edges.len(), 58, "preflight 必须覆盖全部保护边");
+    // 同一份文件两个方向各数一次:60 条结构边 + 5 条 merged 过滤检查
+    assert_eq!(surface.edges.len(), 60, "preflight 必须覆盖全部保护边");
     assert_eq!(
         surface.filters,
         [

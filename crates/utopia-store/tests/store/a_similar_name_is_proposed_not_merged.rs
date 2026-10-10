@@ -406,3 +406,73 @@ async fn a_pair_kept_apart_is_not_proposed_again() -> anyhow::Result<()> {
     teardown(&pool, &f).await?;
     run
 }
+
+/// 只差一个数的名字不配对（#1104）：向量上几乎重合、字面上互相包含，却不是同一个东西。
+/// 两条通道各守一次；一边没有数字的简称照常提议
+#[tokio::test]
+async fn names_that_carry_different_numbers_are_not_proposed() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let f = seed(&pool, "name-vector-numbers").await?;
+    let run = async {
+        let resolve = |name: &'static str, vector: Option<&'static [f32]>| {
+            utopia_store::resolution::resolve_mention(
+                &pool,
+                f.kb,
+                Some(f.device),
+                name,
+                None,
+                vector,
+                None,
+                &[],
+            )
+        };
+        // 名字向量：2号 的向量跟 1号 一模一样，照样不提议；没有数字的 队长 不受影响
+        let second = resolve("海洋探测器2号", Some(&[1.0, 0.0, 0.0])).await?;
+        let proposed: Vec<Uuid> = vector_reviews(&second)
+            .into_iter()
+            .map(|(id, _)| id)
+            .collect();
+        assert!(
+            !proposed.contains(&f.probe),
+            "1号 与 2号 不该配对：{:?}",
+            second.reviews
+        );
+        assert!(
+            proposed.contains(&f.captain),
+            "没有数字的名字照常提议：{:?}",
+            second.reviews
+        );
+
+        // 包含关系：`migration 39` 是 `migration 395` 的子串，但不是它的简称
+        let contained = |r: &utopia_store::resolution::Resolution| {
+            r.reviews
+                .iter()
+                .filter(|v| v.reason.starts_with("contains|"))
+                .map(|v| v.other_id)
+                .collect::<Vec<_>>()
+        };
+        let long = resolve("migration 395", None).await?;
+        let short = resolve("migration 39", None).await?;
+        assert!(short.created);
+        assert!(
+            !contained(&short).contains(&long.entity_id),
+            "数字不同的包含不配对：{:?}",
+            short.reviews
+        );
+        // 一边没有数字：简称对全称，正是这条通道要接住的
+        let full = resolve("星云推理平台 2.0", None).await?;
+        let brief = resolve("星云推理平台", None).await?;
+        assert!(
+            contained(&brief).contains(&full.entity_id),
+            "简称照常配到带版本号的全称上：{:?}",
+            brief.reviews
+        );
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    teardown(&pool, &f).await?;
+    run
+}

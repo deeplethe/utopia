@@ -1065,38 +1065,7 @@ impl LlmClient {
         let data = body["data"]
             .as_array()
             .ok_or_else(|| anyhow::anyhow!("Unexpected embedding response shape"))?;
-        // 调用方把这些向量和输入的文本按位置配对。响应里写了 index，那它才是配对的
-        // 依据——网关把条目打乱了顺序也认得回来。
-        //
-        // **看值，不看键**：`get("index")` 对 `"index": null` 也返回 Some，而兼容端点
-        // 写个空值、写成字符串的都有。按键判断会把它们送进索引分支，再在 `as_u64` 上
-        // 报错，于是今天能用的响应明天整批失败。取不出数就当它没有索引，照旧按位置配。
-        let items: Vec<&serde_json::Value> = if data.iter().any(|item| {
-            item.get("index")
-                .and_then(serde_json::Value::as_u64)
-                .is_some()
-        }) {
-            let mut ordered = vec![None; texts.len()];
-            for item in data {
-                let index = item["index"]
-                    .as_u64()
-                    .and_then(|i| usize::try_from(i).ok())
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("Embedding response has a missing or invalid index")
-                    })?;
-                let slot = ordered
-                    .get_mut(index)
-                    .ok_or_else(|| anyhow::anyhow!("Embedding response index is out of range"))?;
-                anyhow::ensure!(slot.is_none(), "Embedding response has a duplicate index");
-                *slot = Some(item);
-            }
-            ordered
-                .into_iter()
-                .collect::<Option<Vec<_>>>()
-                .ok_or_else(|| anyhow::anyhow!("Embedding response is missing an input index"))?
-        } else {
-            data.iter().collect()
-        };
+        let items = ordered_by_index(data, texts.len())?;
         let mut out = Vec::with_capacity(items.len());
         for item in items {
             let v = item["embedding"]
@@ -1109,6 +1078,43 @@ impl LlmClient {
         }
         Ok(out)
     }
+}
+
+/// 把返回的向量和输入的文本配对。响应里写了数字 `index` 的条目归到那个输入；
+/// 取不出数的（没写、`null`、字符串、浮点、负数）按它到达的位置配——网关打乱了
+/// 顺序也认得回来，不写索引的端点也照旧能用。
+///
+/// **两种形状可以混在一批里。** Gemini 的 OpenAI 兼容端点只在第一条上省掉 `index`
+/// （零是它的默认值，默认值不写），三条输入回来是 `[{embedding}, {index: 1},
+/// {index: 2}]`。混合不是矛盾：每条要么说了自己是谁，要么站在自己的位置上。真正的
+/// 矛盾是两条认领同一个输入、索引超出这一批、或条数和输入对不上——那是端点在说谎，
+/// 拒绝，不猜。
+fn ordered_by_index(
+    data: &[serde_json::Value],
+    expected: usize,
+) -> anyhow::Result<Vec<&serde_json::Value>> {
+    anyhow::ensure!(
+        data.len() == expected,
+        "Embedding response has {} items for {expected} inputs",
+        data.len()
+    );
+    let mut ordered = vec![None; expected];
+    for (position, item) in data.iter().enumerate() {
+        let index = item
+            .get("index")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|i| usize::try_from(i).ok())
+            .unwrap_or(position);
+        let slot = ordered
+            .get_mut(index)
+            .ok_or_else(|| anyhow::anyhow!("Embedding response index {index} is out of range"))?;
+        anyhow::ensure!(
+            slot.is_none(),
+            "Embedding response has a duplicate index {index}"
+        );
+        *slot = Some(item);
+    }
+    Ok(ordered.into_iter().flatten().collect())
 }
 
 /// 记一次调用的 token 开销。**缓存命中数是这里最重要的一列**：抽取靠
@@ -2888,14 +2894,44 @@ data: [DONE]
         assert_eq!(out, vec![vec![1.0, 10.0], vec![2.0, 20.0]]);
     }
 
+    /// Gemini 的兼容端点只省掉第一条的 `index`（零是默认值）：三条输入回来是
+    /// `[{embedding}, {index: 1}, {index: 2}]`。没写索引的那条站在自己的位置上
+    #[tokio::test]
+    async fn an_item_without_an_index_takes_its_position_beside_indexed_ones() {
+        let body = json!({ "data": [
+            {"embedding": [1.0]},
+            {"index": 1, "embedding": [2.0]},
+            {"index": 2, "embedding": [3.0]}
+        ]})
+        .to_string();
+        let (addr, server) = an_http_response("200 OK", "application/json", &body).await;
+        let out = client_at(addr)
+            .embed(&["one".into(), "two".into(), "three".into()])
+            .await
+            .unwrap();
+        server.await.unwrap();
+        assert_eq!(out, vec![vec![1.0], vec![2.0], vec![3.0]]);
+    }
+
+    /// 负数取不出 `u64`，和 `null`、字符串一样按位置算——哪怕同一批里别的条目写了索引
+    #[tokio::test]
+    async fn a_negative_index_falls_back_to_position_beside_indexed_ones() {
+        let out = embeddings_from(json!([
+            {"index": 0, "embedding": [1.0]}, {"index": -1, "embedding": [2.0]}
+        ]))
+        .await
+        .unwrap();
+        assert_eq!(out, vec![vec![1.0], vec![2.0]]);
+    }
+
     #[tokio::test]
     async fn ambiguous_embedding_indices_are_rejected() {
         for data in [
             json!([{"index": 0, "embedding": [1.0]}, {"index": 0, "embedding": [2.0]}]),
             json!([{"index": 0, "embedding": [1.0]}, {"index": 2, "embedding": [2.0]}]),
-            json!([{"index": 0, "embedding": [1.0]}, {"embedding": [2.0]}]),
-            json!([{"index": 0, "embedding": [1.0]}, {"index": -1, "embedding": [2.0]}]),
+            json!([{"index": 1, "embedding": [1.0]}, {"embedding": [2.0]}]),
             json!([{"index": 0, "embedding": [1.0]}]),
+            json!([{"embedding": [1.0]}, {"embedding": [2.0]}, {"embedding": [3.0]}]),
         ] {
             assert!(
                 embeddings_from(data.clone()).await.is_err(),

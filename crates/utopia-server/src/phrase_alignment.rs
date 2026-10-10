@@ -463,6 +463,9 @@ pub async fn align_phrases_reasking(
     reask: u32,
 ) -> anyhow::Result<()> {
     let pool = &state.pool;
+    // Human interpretations are deliberately preserved by alignment. Report that preservation
+    // explicitly even when no model is configured; it is not a fresh semantic judgment.
+    utopia_store::ontology_regressions::record_human(pool, kb_id).await?;
     let kb = utopia_store::kbs::get(pool, kb_id).await?;
     let settings = utopia_store::settings::get(pool, kb.workspace_id)
         .await?
@@ -1289,6 +1292,7 @@ mod tests {
             count: 1,
             examples: Vec::new(),
             quotes: Vec::new(),
+            example_statement_ids: Vec::new(),
         }
     }
 

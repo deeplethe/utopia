@@ -272,6 +272,17 @@ async fn an_unbound_shape_becomes_a_proposal_that_serves_a_question_and_adoption
     assert_eq!(p.payload["forms"][0], "founded in");
     assert_eq!(p.payload["domains"][0], "organization");
     assert_eq!(p.payload["ranges"][0], "place");
+    let example_id: Uuid =
+        serde_json::from_value(p.signatures["phrases"][0]["example_statement_ids"][0].clone())?;
+    let phrase: String = sqlx::query_scalar("SELECT phrase FROM facts WHERE id=$1 AND kb_id=$2")
+        .bind(example_id)
+        .bind(f.kb)
+        .fetch_one(&f.pool)
+        .await?;
+    assert_eq!(
+        phrase, "founded in",
+        "the proposed example has a stable source identity"
+    );
     assert_eq!(
         p.payload["description"],
         "the place where an organization was founded"
@@ -340,6 +351,13 @@ async fn an_unbound_shape_becomes_a_proposal_that_serves_a_question_and_adoption
     .fetch_one(&f.pool)
     .await?;
     assert_eq!(status, "adopted");
+    let cases = utopia_store::ontology_regressions::list(&f.pool, f.kb).await?;
+    assert_eq!(cases.len(), 1);
+    assert_eq!(cases[0].statement_id, example_id);
+    assert_eq!(cases[0].expected_property_id, id);
+    assert_eq!(cases[0].expected_direction, "forward");
+    assert_eq!(cases[0].created_by, Some(f.user));
+    assert_eq!(cases[0].origin, "adoption");
     assert!(
         utopia_store::jobs::pending_for_kb(&f.pool, "align_phrases", f.kb).await?,
         "adoption re-decides the shapes through alignment"
@@ -358,6 +376,46 @@ async fn an_unbound_shape_becomes_a_proposal_that_serves_a_question_and_adoption
     assert!(
         matches!(again, Err(AppError::NotFound)),
         "a decided proposal is not open: {again:?}"
+    );
+
+    // Older proposals lack source IDs: adoption succeeds without inventing cases.
+    let mut legacy_shape = p.signatures["phrases"][0].clone();
+    legacy_shape
+        .as_object_mut()
+        .unwrap()
+        .remove("example_statement_ids");
+    utopia_store::ontology::save_agent_proposals(
+        &f.pool,
+        f.kb,
+        &[utopia_store::ontology::AgentProposal {
+            section: "map_to".into(),
+            key: "located_in".into(),
+            payload: json!({"kind":"relation"}),
+            serves: vec![],
+            signatures: json!({"phrases":[legacy_shape]}),
+        }],
+    )
+    .await?;
+    adopt(
+        &f.state,
+        f.kb,
+        "map_to",
+        "located_in",
+        AdoptEdits::default(),
+        f.user,
+    )
+    .await?;
+    assert!(
+        utopia_store::ontology::open_proposal(&f.pool, f.kb, "map_to", "located_in")
+            .await?
+            .is_none()
+    );
+    assert_eq!(
+        utopia_store::ontology_regressions::list(&f.pool, f.kb)
+            .await?
+            .len(),
+        1,
+        "a proposal without example IDs adds no regression case"
     );
     f.cleanup().await
 }

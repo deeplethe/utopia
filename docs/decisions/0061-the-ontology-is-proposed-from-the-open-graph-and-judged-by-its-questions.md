@@ -50,6 +50,29 @@ The open graph holds statements with their phrases, quotes, kind words and names
 - Proposals against an imported pack: a proposed property that a pack already has under another name should become a `map_to`, and the agent needs the pack's definitions to see it.
 - Whether a rejected proposal's reason should suppress the element for a time or until the signatures behind it change.
 
+## Cut 2 implementation boundary — 2026-10-10
+
+The [first slice agreed in #1103](https://github.com/deeplethe/utopia/issues/1103#issuecomment-6063201562)
+keeps a statement's expected property and direction, actor, and `adoption` / `person`
+origin. An Editor adds a case with `POST /api/v1/kbs/{kb_id}/ontology/regressions`
+and `{statement_id, relation_type_id, direction}`; the statement and property must
+belong to that base. Literal objects use forward attribute bindings. Repeated
+confirmation retains the original attribution.
+
+The existing signatures query returns statement IDs alongside its examples and quotes.
+A proposal keeps the first example's ID with each shape, and adoption writes those
+cases and the proposal's adopted status in one transaction. Older proposals without
+IDs write no cases; removed examples are skipped rather than replaced, as requested
+in the [review of #1178](https://github.com/deeplethe/utopia/pull/1178#pullrequestreview-5477521283).
+
+A binding decision records the latest comparison in the same transaction: property
+and direction must match, except that a person's bound signature always passes and
+explicitly reports `human_bound`. Rejections do not pass. The result retains the actual
+binding and its decision time alongside the check time; an existing decision is initially
+reported at its original time. These cases observe alignment without another evaluator,
+model call, evaluation job, or version identity. They are not a semantic accuracy
+benchmark. The workbench view follows in a second PR.
+
 ## Status history
 
 The status line as it stood on 2026-09-27, before status lines were cut to one line:
