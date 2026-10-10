@@ -37,6 +37,22 @@ on one entity at one moment, that a live derivation rests on, or whose side an a
 named, is held for a person as `escalate_impact` whatever the confidence; keeps are not gated
 [0027]. Whatever does not clear the gates becomes a proposal.
 
+**Conflicts follow duplicates.** The same job reviews live typed-fact conflicts in batches of eight,
+with current source-statement evidence and human conflict decisions. Its actions are `close_old`,
+`retime_new`, `keep_both` and `reject_new`; the store checks the reviewed snapshot under timeline locks,
+dates against evidence, and downstream impact before applying. Uncertain or invalid verdicts become
+individual proposals. Changes to memory statements and rule-computed facts are held for people [0043].
+The conflict phase has a limit of 2,000 reviewed items per base per day. Turning governance off stops
+it at a batch boundary, and a result returning after that switch changes cannot write.
+
+**Conflict answers and undo.** Automatic changes and their undo records are atomic. Both the ordinary
+conflict card and the Agent queue call the human writer, which accepts/overrides the matching proposal
+and records the person's reason. Agent cards support editing a close/start date at its own precision.
+An applied decision can be reverted only while its affected facts, conflicts and source inputs match
+the recorded post-state; an unsuccessful undo is not counted as a revert. Rejection undo restores all
+affected conflicts. Fact lineages prevent a restored conflict being decided again against the person's
+revert, and reverts count toward the shared fuse [0043].
+
 **The second look.** A pair the batch cannot settle gets one conversation with tools: the full facts
 of a side, source passages, a substring search of the ledger, namesakes, and `consequences` (what a
 merge would touch, whether the types share a family); at most six lookups, then `decide` or `defer`
@@ -100,14 +116,10 @@ for 589 pairs [0025 d10].
 
 ## Proposed and not built
 
-- **Every queue is governed** [0043, PR #699]: the same governor walks low-confidence and stale
-  facts (batches of eight) and then conflicts after its duplicate rounds, each with its own actions
-  through the people's store paths (`confirm`, `reject`; `close_old`, `retime_new`, `keep_both`,
-  `reject_new`); a date must be in the evidence and a stale fact is confirmed only by a quote in the
-  current version; every action records its undo in `detail`; reverts of any kind count for the
-  fuse. #725 splits the PR: the temporal fixes merge first, the conflict actions become the
-  conflicts queue, the low-confidence handling is dropped. Cut 2 (violations, defects, mappings)
-  is open.
+- **The remaining queues** [0043, #725]: violations, ontology defects and mappings still need their
+  own actions and gates. The conflict cut is implemented above. Low-confidence/stale-fact dispatch
+  from the withdrawn #699 is not reintroduced; #725 retires those queues rather than automating
+  uncalibrated confidence or rejecting a fact merely because an old document stopped mentioning it.
 - **Queues organised by what a decision changes** [#725]: ontology proposals; alignment (a
   signature or rule the aligner cannot settle; the signature half is built, #754); time anchors (a missing or conflicting document
   date, an unanchored mention); identity (pairs evidence cannot settle, merges the gate held);

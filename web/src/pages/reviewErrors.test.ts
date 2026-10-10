@@ -3,6 +3,14 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 afterEach(() => { vi.unstubAllGlobals(); vi.resetModules(); });
 for (const lang of ["en", "zh"]) {
   describe(lang, () => {
+    it("identifies changed agent inputs by code without hiding unrelated failures", async () => {
+      vi.stubGlobal("localStorage", { getItem: () => lang });
+      const { ApiError } = await import("../api");
+      const { S } = await import("../i18n");
+      const { agentErrorMessage: message } = await import("./reviewErrors");
+      expect(message(new ApiError(409, "server wording", "agent_inputs_changed"))).toBe(S.review.agentInputsChanged);
+      expect(message(new ApiError(403, "not allowed"))).toBe("not allowed");
+    });
     it("uses the stable busy code and gives other conflicts a distinct fallback", async () => {
       vi.stubGlobal("localStorage", { getItem: () => lang });
       const { ApiError } = await import("../api");

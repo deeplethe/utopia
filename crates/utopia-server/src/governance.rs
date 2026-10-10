@@ -134,7 +134,12 @@ pub async fn govern(state: &AppState, kb_id: Uuid) -> anyhow::Result<()> {
 
     // 上一次任务半路留下的锁先放掉；跑完（不管怎么结束的）再放一次
     gov::release_locks(&state.pool, kb_id).await?;
-    let outcome = rounds(&ctx).await;
+    let outcome = async {
+        let duplicates = rounds(&ctx).await?;
+        let conflicts = crate::conflict_agent::run(state, kb_id, &client, &settings).await?;
+        Ok::<_, anyhow::Error>(duplicates || conflicts)
+    }
+    .await;
     if let Err(e) = gov::release_locks(&state.pool, kb_id).await {
         tracing::warn!(%kb_id, error = %e, "治理：放锁失败");
     }

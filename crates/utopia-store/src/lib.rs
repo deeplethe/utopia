@@ -9,6 +9,7 @@ pub mod alignment_queue;
 pub mod audit;
 pub mod business_rules;
 pub mod competency_questions;
+pub mod conflict_governance;
 pub mod conversations;
 pub mod datasources;
 pub mod db;

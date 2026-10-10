@@ -801,6 +801,92 @@ pub(crate) async fn reconcile_facts(
     Ok(report)
 }
 
+/// A reviewed correction and its decision share one transaction. Keep the same
+/// arrival/tidy rules as reconcile_facts, with all timeline locks taken first.
+pub(crate) async fn reconcile_in(
+    tx: &mut Transaction<'_, Postgres>,
+    kb_id: Uuid,
+    fact_ids: &[Uuid],
+) -> AppResult<ReconcileReport> {
+    let timelines = timelines_of(&mut **tx, kb_id, fact_ids, None).await?;
+    lock_timelines(tx, kb_id, &timelines).await?;
+    let batch: HashSet<Uuid> = fact_ids.iter().copied().collect();
+    let mut report = ReconcileReport::default();
+    for timeline in timelines {
+        let rows = load_timeline(tx, kb_id, timeline).await?;
+        let mut arriving: Vec<&Row> = rows.iter().filter(|r| batch.contains(&r.id)).collect();
+        arriving.sort_by_key(|r| (r.key().is_none(), r.key(), r.id));
+        let arriving: Vec<Uuid> = arriving.into_iter().map(|r| r.id).collect();
+        for (i, id) in arriving.iter().enumerate() {
+            arrive(tx, kb_id, timeline, *id, &arriving[..i], &mut report).await?;
+        }
+        tidy(tx, kb_id, timeline, &mut report).await?;
+    }
+    Ok(report)
+}
+
+/// These inverses are used only after the decision's post-state was checked.
+/// A later rewrite is not a successful undo: callers must keep the decision
+/// applied and report the conflict instead of counting a revert that did nothing.
+pub(crate) async fn restore_in(
+    tx: &mut Transaction<'_, Postgres>,
+    kb_id: Uuid,
+    fact_id: Uuid,
+) -> AppResult<()> {
+    let changed = sqlx::query(
+        "UPDATE facts SET invalidated_at = NULL
+         WHERE kb_id = $1 AND id = $2 AND invalidated_at IS NOT NULL",
+    )
+    .bind(kb_id)
+    .bind(fact_id)
+    .execute(&mut **tx)
+    .await?
+    .rows_affected();
+    if changed != 1 {
+        return Err(utopia_core::AppError::Conflict(
+            "the fact changed after this decision".into(),
+        ));
+    }
+    // The restored row is the original observation, not a newly arriving
+    // undated successor. Running arrive again can end a later value at an
+    // unknown date. Recompute the timelines; the caller restores saved conflicts.
+    let timelines = timelines_of(&mut **tx, kb_id, &[fact_id], None).await?;
+    tidy_timelines_tx(tx, kb_id, &timelines).await?;
+    Ok(())
+}
+
+pub(crate) async fn undo_rewrite_in(
+    tx: &mut Transaction<'_, Postgres>,
+    kb_id: Uuid,
+    original: Uuid,
+    corrected: Uuid,
+) -> AppResult<()> {
+    let still: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM facts f JOIN facts old ON old.id = f.supersedes
+         WHERE f.kb_id = $1 AND f.id = $2 AND old.id = $3
+           AND f.invalidated_at IS NULL AND old.invalidated_at IS NOT NULL)",
+    )
+    .bind(kb_id)
+    .bind(corrected)
+    .bind(original)
+    .fetch_one(&mut **tx)
+    .await?;
+    if !still {
+        return Err(utopia_core::AppError::Conflict(
+            "the corrected fact changed after this decision".into(),
+        ));
+    }
+    // Evidence supplied since the correction must survive returning to the old interval.
+    copy_evidence(tx, corrected, original).await?;
+    copy_qualifiers(tx, corrected, original).await?;
+    sqlx::query("UPDATE facts SET invalidated_at = now() WHERE kb_id = $1 AND id = $2")
+        .bind(kb_id)
+        .bind(corrected)
+        .execute(&mut **tx)
+        .await?;
+    restore_in(tx, kb_id, original).await
+}
+
 /// 声明来晚了：一条谓词上所有现存事实所在的时间线重算一遍（#341）。
 ///
 /// 本体自己长出来的库里没人声明过唯一性，接任不会闭合前任——三个人同时在管一个
@@ -851,7 +937,11 @@ pub async fn reconcile_predicate(
 
 /// 撤掉一条事实（人判它是抽取错误）：它从来不在，时间线按剩下的行重算——关在它开始时的
 /// 前任重新接上。先锁时间线再作废（见模块头）。返回有没有撤掉一行；已经作废的不算
-pub async fn retract(pool: &PgPool, kb_id: Uuid, fact_id: Uuid) -> AppResult<bool> {
+pub async fn retract<'a>(
+    pool: impl sqlx::Acquire<'a, Database = Postgres>,
+    kb_id: Uuid,
+    fact_id: Uuid,
+) -> AppResult<bool> {
     let mut tx = pool.begin().await?;
     let timelines = timelines_of(&mut *tx, kb_id, &[fact_id], None).await?;
     lock_timelines(&mut tx, kb_id, &timelines).await?;
@@ -1191,26 +1281,26 @@ async fn copy_evidence(
 /// 没改，仍是原文的
 ///
 /// 返回修正行 id；`None` 表示这条已被并发改写或作废，本次没有动手。
-pub async fn correct_interval(
-    pool: &PgPool,
+pub async fn correct_interval<'a>(
+    pool: impl sqlx::Acquire<'a, Database = Postgres>,
     fact_id: Uuid,
     validity: crate::graph::Validity<'_>,
 ) -> AppResult<Option<Uuid>> {
+    let mut tx = pool.begin().await?;
     // 人改区间也按谓词的时间语义归一（0031）：给一个事件填了一段，落下的仍是它的那一刻
     let predicate: Option<Option<Uuid>> =
         sqlx::query_scalar("SELECT predicate_id FROM facts WHERE id = $1")
             .bind(fact_id)
-            .fetch_optional(pool)
+            .fetch_optional(&mut *tx)
             .await?;
     let predicate = predicate.flatten();
-    let temporal = crate::graph::predicate_temporal(pool, predicate).await?;
+    let temporal = crate::graph::predicate_temporal(&mut *tx, predicate).await?;
     // 两端相等的状态只对声明成状态的属性拒（#966）：开放陈述与空谓词的行按状态读只是
     // 读法，「那天」照旧写成两端同值
     let validity = match predicate {
         Some(_) => validity.truncated().under(temporal)?,
         None => validity.truncated(),
     };
-    let mut tx = pool.begin().await?;
     let corrected = Uuid::now_v7();
     let inserted: Option<(Uuid,)> = sqlx::query_as(
         "INSERT INTO facts (id, kb_id, subject_id, predicate_id, object_id, object_value,
@@ -1306,7 +1396,11 @@ async fn record_conflict_tx(
     .bind(reason)
     .execute(&mut **tx)
     .await?;
-    Ok(inserted.rows_affected() > 0)
+    let created = inserted.rows_affected() > 0;
+    if created {
+        crate::conflict_governance::enqueue_in(tx, kb_id).await?;
+    }
+    Ok(created)
 }
 
 /// Review 页的冲突列表（双方事实带名字与区间）。
@@ -1362,6 +1456,72 @@ pub async fn resolve_conflict(
     close_at: Option<DateTime<Utc>>,
     close_at_precision: &str,
 ) -> AppResult<()> {
+    let mut tx = pool.begin().await?;
+    lock_conflict(&mut tx, kb_id, conflict_id).await?;
+    resolve_conflict_in(
+        &mut tx,
+        kb_id,
+        conflict_id,
+        resolution,
+        close_at,
+        close_at_precision,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Use the engine's lock order for human answers too. Holding a conflict row
+/// while waiting for its timeline would deadlock a concurrent reconciliation.
+pub(crate) async fn lock_conflict(
+    tx: &mut Transaction<'_, Postgres>,
+    kb_id: Uuid,
+    conflict_id: Uuid,
+) -> AppResult<()> {
+    let ids: Option<(Uuid, Uuid)> = sqlx::query_as(
+        "SELECT old_fact_id, new_fact_id FROM fact_conflicts
+         WHERE kb_id = $1 AND id = $2 AND status = 'open'",
+    )
+    .bind(kb_id)
+    .bind(conflict_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    let (old, new) = ids.ok_or(utopia_core::AppError::NotFound)?;
+    let timelines = timelines_of(&mut **tx, kb_id, &[old, new], None).await?;
+    lock_timelines(tx, kb_id, &timelines).await?;
+    sqlx::query("SELECT id FROM facts WHERE kb_id = $1 AND id = ANY($2) ORDER BY id FOR UPDATE")
+        .bind(kb_id)
+        .bind([old, new])
+        .fetch_all(&mut **tx)
+        .await?;
+    let current: Option<(Uuid, Uuid)> = sqlx::query_as(
+        "SELECT c.old_fact_id, c.new_fact_id FROM fact_conflicts c
+         JOIN facts a ON a.id = c.old_fact_id JOIN facts b ON b.id = c.new_fact_id
+         WHERE c.kb_id = $1 AND c.id = $2 AND c.status = 'open'
+           AND a.invalidated_at IS NULL AND b.invalidated_at IS NULL FOR UPDATE OF c",
+    )
+    .bind(kb_id)
+    .bind(conflict_id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    if current != Some((old, new)) {
+        return Err(utopia_core::AppError::Conflict(
+            "the conflict changed before it could be decided".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Caller holds lock_conflict. Return the rewritten row so an automatic action
+/// can record its inverse in the same transaction as the graph change.
+pub(crate) async fn resolve_conflict_in(
+    tx: &mut Transaction<'_, Postgres>,
+    kb_id: Uuid,
+    conflict_id: Uuid,
+    resolution: &str,
+    close_at: Option<DateTime<Utc>>,
+    close_at_precision: &str,
+) -> AppResult<Option<Uuid>> {
     let row: Option<ConflictRow> = sqlx::query_as(
         "SELECT c.old_fact_id, c.new_fact_id, fn_.valid_from, fn_.valid_from_precision
          FROM fact_conflicts c JOIN facts fn_ ON fn_.id = c.new_fact_id
@@ -1369,12 +1529,13 @@ pub async fn resolve_conflict(
     )
     .bind(conflict_id)
     .bind(kb_id)
-    .fetch_optional(pool)
+    .fetch_optional(&mut **tx)
     .await?;
     let Some((old_fact_id, new_fact_id, new_from, new_from_precision)) = row else {
         return Err(utopia_core::AppError::NotFound);
     };
 
+    let mut corrected = None;
     let stored = match resolution {
         "close" => {
             // 闭合点带着它的精度走：人给了日期就用人给的精度，没给就闭合在新事实的
@@ -1392,21 +1553,36 @@ pub async fn resolve_conflict(
                     new_from_precision.as_deref().unwrap_or("day"),
                 ),
             };
-            close_superseded(pool, old_fact_id, at, precision).await?;
+            corrected = close_superseded(&mut **tx, old_fact_id, at, precision).await?;
+            if corrected.is_none() {
+                return Err(utopia_core::AppError::Conflict(
+                    "the old fact changed before it could be closed".into(),
+                ));
+            }
             "closed"
         }
         "keep" => "kept_both",
         "reject_new" => {
-            retract(pool, kb_id, new_fact_id).await?;
+            // Invalidation withdraws open conflicts through 0051's trigger.
+            // Remember the siblings first, so those answered by this rejection
+            // are recorded as such and the decision can restore all of them.
+            let siblings: Vec<Uuid> = sqlx::query_scalar(
+                "SELECT id FROM fact_conflicts WHERE kb_id = $1 AND new_fact_id = $2 AND status = 'open'")
+                .bind(kb_id).bind(new_fact_id).fetch_all(&mut **tx).await?;
+            if !retract(&mut **tx, kb_id, new_fact_id).await? {
+                return Err(utopia_core::AppError::Conflict(
+                    "the new fact changed before it could be rejected".into(),
+                ));
+            }
             // 波及：同一新事实撞出的其他 open 冲突一并出队（新事实已死，无从裁起）
             sqlx::query(
                 "UPDATE fact_conflicts
                  SET status = 'resolved', resolution = 'rejected_new', resolved_at = now()
-                 WHERE new_fact_id = $1 AND status = 'open' AND id <> $2",
+                 WHERE kb_id = $1 AND id = ANY($2) AND status IN ('open', 'withdrawn')",
             )
-            .bind(new_fact_id)
-            .bind(conflict_id)
-            .execute(pool)
+            .bind(kb_id)
+            .bind(siblings)
+            .execute(&mut **tx)
             .await?;
             "rejected_new"
         }
@@ -1423,9 +1599,9 @@ pub async fn resolve_conflict(
     .bind(conflict_id)
     .bind(kb_id)
     .bind(stored)
-    .execute(pool)
+    .execute(&mut **tx)
     .await?;
-    Ok(())
+    Ok(corrected)
 }
 
 /// 一条谓词的一端挂着**两个以上开放值**的持有者——唯一性没声明（或声明来晚了）

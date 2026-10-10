@@ -278,7 +278,7 @@ export const zh: Strings = {
       },
       "governance.tripped": {
         title: "agent 停止自动裁决了",
-        hint: "七天内它的合并被撤回了两次，开关已自动关掉。到「审核 > Agent」看看它做了什么，想让它接着跑就在库设置里再打开。",
+        hint: "七天内它的裁决被撤回了两次，开关已自动关掉。到「审核 > Agent」看看它做了什么，想让它接着跑就在库设置里再打开。",
       },
       "llm.unreachable": {
         title: "模型端点没有给出可用的回答",
@@ -1708,8 +1708,11 @@ export const zh: Strings = {
     agentTitle: "Agent",
     agentHint:
       "agent 依据这个库里人以前的决定，提议或裁决了什么。在这里回答就是你的决定，也会成为它下一次的先例。",
-    agentEmpty: "agent 还没看过任何一对。",
-    agentActions: { merge: "合并", keep: "分开", unsure: "说不准" } as Record<string, string>,
+    agentEmpty: "agent 还没看过任何审核项。",
+    agentActions: { merge: "合并", keep: "分开", unsure: "说不准", close_old: "结束旧事实",
+      retime_new: "修正新事实起点", keep_both: "两者都保留", reject_new: "驳回新事实" } as Record<string, string>,
+    agentConflictDate: "旧事实结束日期或新事实的正确起点",
+    agentInputsChanged: "裁决后的事实已经变化，请查看当前内容后再决定。",
     agentStatus: {
       proposed: "建议",
       applied: "已裁",
@@ -1737,8 +1740,8 @@ export const zh: Strings = {
     overviewAgentAccepted: "你接受的建议",
     overviewAgentOverridden: (n) => `改判 ${n}，近 30 天`,
     overviewAgentReverted: "你撤回的",
-    overviewAgentRunning: (n) => (n === 0 ? "agent 在处理最后一簇" : `agent 处理中 · 还有 ${n} 对没看`),
-    overviewAgentQueue: (n) => `${n} 对等 agent 看`,
+    overviewAgentRunning: (n) => (n === 0 ? "agent 在完成这一轮" : `agent 处理中 · 还有 ${n} 项没看`),
+    overviewAgentQueue: (n) => `${n} 项等 agent 看`,
     agentDeciding: "agent 正在裁这一对",
     overviewTitle: "总览",
     overviewHint: "这个库要你做什么：有多少在等、等了多久、办过什么、还有多少是暂定的。",
@@ -1773,6 +1776,8 @@ export const zh: Strings = {
       "conflict.close_old": "闭合旧的",
       "conflict.keep_both": "两条都留",
       "conflict.reject_new": "驳回新的",
+      "conflict.retime_new": "修正了新事实起点",
+      "conflict.revert": "撤回了冲突裁决",
       "merge.revert": "撤销合并",
       "merge.manual": "手动合并",
       "fact.time_corrected": "改了时间",
@@ -2025,9 +2030,9 @@ export const zh: Strings = {
     autoResolveTypes: "抽取后自动消解实体类型",
     autoResolveTypesNote:
       "每篇文档抽完，对引擎还没看过的实体跑一轮类型消解。只有在现类子树里精化的才自动落地，跨轴的改判仍留在本体页等你。每一批都列在本体页，随时可以撤回。",
-    governance: "让 agent 处理重复项队列",
+    governance: "让 agent 审核重复实体和事实冲突",
     governanceNote:
-      "先进先出。裁一对之前，agent 先读这个库里的人对同样的名字、同样的类型对做过什么决定：有先例撑着才合并，有把握就分开，其余的写成建议留给你。每一笔都列在审核页的 Agent 里，可以撤回。关掉，队列就停。",
+      "agent 先读原文证据和人的历史决定，依次审核重复实体和事实冲突。没通过检查的会作为建议留给你；自动裁决列在审核页的 Agent 中，相关事实未被后续修改时可以撤回。关掉，队列就停。",
     inferEvery: "每隔",
     minutes: "分钟重推",
     lastInference: (when: string) => `上次 ${when}`,

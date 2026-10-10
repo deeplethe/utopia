@@ -1,6 +1,6 @@
 # 0043 · Every review queue is governed
 
-- **Status**: Accepted 2026-09-14 · no code on `dev` (#699 closed) · open: re-land on the open graph
+- **Status**: In progress · conflict cut on the typed graph (migration 0108) · open: violations, defects, mappings
 - **Restored to `dev` 2026-09-20.** The file left `dev` with PR #699 and its number stayed allocated and cited — [0044](0044-the-ontology-is-a-view-over-what-documents-say.md) links to it, `docs/design/governance.md` and `docs/design/time.md` reason from its decisions 5 and 1, and `docs/design/README.md` has carried it as `proposed` throughout. A record is the reasoning, and the reasoning was never withdrawn, so the file belongs here whatever happened to the branch. The status line above is the only thing rewritten.
 - **Written**: 2026-09-14 (conventions in the [README](README.md))
 - **Related**: [0025](0025-governance-reads-the-ledger-before-it-decides.md) (the governor this extends; its open question "Other queues"), [0026](0026-a-decision-records-why.md) (a person's why becomes a precedent), [0027](0027-an-automatic-merge-is-gated-by-what-it-can-undo.md) (act on what can be undone), [0022](0022-an-unknown-date-is-not-an-open-one.md) (the temporal engine whose conflicts this settles), [0015](0015-recording-a-sentence-is-not-asserting-a-fact.md) (nods, which stay with people), #695
@@ -56,6 +56,18 @@ Confirming a fact changes whether it may take over, so `set_confidence` locks th
 ## What a reader sees
 
 Agent rows for facts and conflicts carry their summary in place of two names. A proposal is answered with that queue's own actions, and an applied decision offers Revert whatever it did. The ledger rows are the queue's own actions (`fact.confirm`, `conflict.close_old`, …) with no actor, like the duplicate governor's.
+
+## Conflict cut on the typed graph
+
+[#725](https://github.com/deeplethe/utopia/issues/725) splits the withdrawn implementation: conflict actions return on the typed graph, while the low-confidence/stale-fact dispatch stays out. The governor runs duplicate rounds and then batches of eight live conflicts. Evidence is read through the typed facts' source statements, using current, non-deleted source passages; model input uses local item numbers. New conflicts enqueue the same job in the transaction that records them, and the hourly sweep includes conflict backlog. At most 2,000 conflict items are reviewed per base per day; unsure and malformed items count too.
+
+Each item is parsed separately. Missing or duplicate item numbers, unknown actions, invalid dates and confidence outside 0–1 produce an unsure proposal for that item. A malformed item cannot block the rest of the batch or acquire confidence by clamping a percentage. The model's source snapshot, including the neighbouring facts it saw, is re-read after taking the timeline, fact and conflict locks. A changed snapshot or a disabled governance switch discards the old result.
+
+Automatic graph changes need current evidence on both sides, a supported date at its stated precision, and the existing fact-impact gate. Changes to memory statements and rule-computed facts remain proposals; keeping both facts leaves them untouched. Visual evidence always holds the conflict for a person. These provenance checks read all sources even when the model's excerpts are bounded. A closing date cannot leave the old/new overlap in place. Dates supplied by a person are their decision and still pass the ordinary interval validation. Human answers can edit dates and preserve year/month/day precision.
+
+An applied action and its undo record commit together. Undo verifies the post-state of the affected fact lineages, conflict rows, evidence, qualifiers and property definitions before changing anything. A later rewrite or changed source makes undo fail without marking the decision reverted or spending a fuse count. Undo restores every conflict affected by a rejection, following live successors where timeline rewrites changed row IDs. Each conflict changed by the action keeps its pair of fact lineages: after a revert, a sibling question cannot repeat the rejection through a different conflict card. Unchanged neighbouring conflicts remain eligible.
+
+The ordinary conflict card and the Agent queue share the same human writer: accepting or overriding a proposal settles it in the graph transaction, and the usual human audit row carries the full triples, date and rationale. Repointed, withdrawn or deleted conflicts retire their open proposals at the write. Automatic decisions carry no human actor and never become their own precedents. Public Agent lists omit the internal undo snapshot; the writer loads it by decision ID when needed.
 
 ## Dead ends
 

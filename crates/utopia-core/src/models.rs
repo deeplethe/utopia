@@ -1513,6 +1513,10 @@ pub struct AgentDecisionView {
     pub decided_by_name: Option<String>,
     pub left: Option<String>,
     pub right: Option<String>,
+    /// Fact/conflict rows can be rewritten; their decided appearance stays here.
+    pub summary: Option<String>,
+    /// Queue-specific parameters, reviewed inputs and the inverse of an applied action.
+    pub detail: serde_json::Value,
 }
 
 /// 批量裁决里一条的结果：`error` 为 None 就是成功。一条失败不拖累其余的，

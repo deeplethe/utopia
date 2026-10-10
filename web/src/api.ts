@@ -660,12 +660,15 @@ export interface ReviewItem {
 }
 
 /** agent 的一笔（0025）：看了哪一对、想怎么办、凭什么、人怎么答的 */
+export type ConflictAction = "close_old" | "retime_new" | "keep_both" | "reject_new";
+export type AgentAnswerAction = "merge" | "keep" | "revert" | ConflictAction;
+
 export interface AgentDecision {
   id: string;
   run_id: string;
-  target_kind: "review";
+  target_kind: "review" | "conflict";
   target_id: string;
-  action: "merge" | "keep" | "unsure";
+  action: "merge" | "keep" | "unsure" | ConflictAction;
   confidence: number;
   reason: string | null;
   /** 它被给看的先例：同对 / 同名 / 撤回各一条一条，类型对的习惯是一条汇总 */
@@ -683,9 +686,15 @@ export interface AgentDecision {
   decided_by_name: string | null;
   left: string | null;
   right: string | null;
+  summary?: string | null;
+  detail?: {
+    params?: { date?: string | null; precision?: string | null };
+    snapshot?: { new?: { valid_from?: string | null; valid_from_precision?: string | null } };
+  };
 }
 
 export type AgentPrecedent =
+  | { family: "conflict"; event_id: string; action: string; detail: Record<string, unknown>; at: string }
   | {
       family: "same_pair" | "same_name" | "revert";
       event_id: string;
@@ -2646,12 +2655,14 @@ export const api = {
   agentAnswer: (
     kbId: string,
     decisionId: string,
-    action: "merge" | "keep" | "revert",
+    action: AgentAnswerAction,
     rationale?: string,
+    date?: string,
+    datePrecision?: string,
   ) =>
     request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/review/agent/${decisionId}`, {
       method: "POST",
-      body: JSON.stringify({ action, rationale: rationale || null }),
+      body: JSON.stringify({ action, rationale: rationale || null, date, date_precision: datePrecision }),
     }),
   reviewHistory: (kbId: string, page: number, per = 20) =>
     request<{ events: ReviewHistoryEvent[]; total: number }>(

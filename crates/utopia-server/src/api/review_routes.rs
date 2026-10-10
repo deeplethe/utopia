@@ -19,9 +19,6 @@ mod phrase_tests;
 /// 一页多少条。**服务端的默认，不是上限**——前端可以要更少，多则被 clamp 挡住
 const REVIEW_PAGE: i64 = 10;
 
-/// 冲突双方的三元组快照：(旧主语, 旧宾语, 新主语, 新宾语, 谓词标签)。
-type ConflictSnapshot = (String, Option<String>, String, Option<String>, String);
-
 /// 事实快照（决策台账用）：reject 后事实从图里消失，台账必须自包含展示文本。
 /// 一律在动作执行前取。
 pub(crate) async fn fact_snapshot(
@@ -234,6 +231,8 @@ pub struct ConflictBody {
     /// `close_at` 的精度（year | month | day），不给按日
     #[serde(default)]
     pub close_at_precision: Option<String>,
+    #[serde(default)]
+    pub rationale: Option<String>,
 }
 
 /// 时态冲突裁决（S3：自动闭合拿不准的那些）。
@@ -244,59 +243,30 @@ pub async fn resolve_conflict(
     Json(body): Json<ConflictBody>,
 ) -> ApiResult<Json<serde_json::Value>> {
     require_kb(&state, &user, kb_id, Role::Editor).await?;
-    // 快照双方三元组：裁决会作废/改写事实，先抄后动
-    let snap: Option<ConflictSnapshot> = sqlx::query_as(
-        "SELECT os.canonical_name, oo.canonical_name, ns.canonical_name, no_.canonical_name,
-                r.label
-         FROM fact_conflicts c
-         JOIN facts fo ON fo.id = c.old_fact_id
-         JOIN facts fn_ ON fn_.id = c.new_fact_id
-         JOIN entities os ON os.id = fo.subject_id
-         LEFT JOIN entities oo ON oo.id = fo.object_id
-         JOIN entities ns ON ns.id = fn_.subject_id
-         LEFT JOIN entities no_ ON no_.id = fn_.object_id
-         JOIN relation_types r ON r.id = fo.predicate_id
-         WHERE c.id = $1 AND c.kb_id = $2",
-    )
-    .bind(conflict_id)
-    .bind(kb_id)
-    .fetch_optional(&state.pool)
-    .await
-    .ok()
-    .flatten();
     let close_precision = world_precision(body.close_at_precision.as_deref())?;
-    utopia_store::temporal::resolve_conflict(
+    let action = match body.action.as_str() {
+        "close" => "close_old",
+        "keep" => "keep_both",
+        "reject_new" => "reject_new",
+        _ => {
+            return Err(
+                utopia_core::AppError::invalid("agent_answer", "Unknown conflict action.").into(),
+            )
+        }
+    };
+    utopia_store::conflict_governance::resolve(
         &state.pool,
         kb_id,
         conflict_id,
-        &body.action,
-        body.close_at,
-        close_precision,
+        action,
+        utopia_store::conflict_governance::Parameters {
+            date: body.close_at,
+            precision: Some(close_precision.into()),
+        },
+        user.id,
+        body.rationale.as_deref(),
     )
     .await?;
-    if let Some((os, oo, ns, no, pred)) = snap {
-        let action = match body.action.as_str() {
-            "close" => "conflict.close_old",
-            "keep" => "conflict.keep_both",
-            _ => "conflict.reject_new",
-        };
-        let _ = utopia_store::audit::record(
-            &state.pool,
-            Some(kb_id),
-            user.id,
-            action,
-            "conflict",
-            Some(conflict_id),
-            json!({
-                "predicate": pred,
-                "old_subject": os, "old_object": oo,
-                "new_subject": ns, "new_object": no,
-                "close_at": body.close_at.map(|t| t.to_rfc3339()),
-                "close_at_precision": body.close_at.map(|_| close_precision),
-            }),
-        )
-        .await;
-    }
     state.emit_review(kb_id);
     Ok(Json(json!({ "ok": true })))
 }
@@ -376,6 +346,11 @@ pub struct AgentAnswerBody {
     /// 什么让你这么答（0026）。改判 agent 的时候尤其值得写：那一句就是下次的先例
     #[serde(default)]
     pub rationale: Option<String>,
+    /// A person's date edit for close_old or retime_new; other queues ignore it.
+    #[serde(default)]
+    pub date: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default)]
+    pub date_precision: Option<String>,
 }
 
 /// 人回答 agent 的一笔（0025）。回答走的是人的裁决路径：decided_by 是这个人，
@@ -388,6 +363,28 @@ pub async fn agent_answer(
 ) -> ApiResult<Json<serde_json::Value>> {
     require_kb(&state, &user, kb_id, Role::Editor).await?;
     let d = utopia_store::governance::get(&state.pool, kb_id, decision_id).await?;
+    if d.target_kind == "conflict" {
+        let precision = world_precision(body.date_precision.as_deref())?;
+        let result = utopia_store::conflict_governance::answer(
+            &state.pool,
+            kb_id,
+            decision_id,
+            &body.action,
+            utopia_store::conflict_governance::Parameters {
+                date: body.date,
+                precision: Some(precision.into()),
+            },
+            user.id,
+            body.rationale.as_deref(),
+        )
+        .await;
+        if result.is_ok() && body.action == "revert" {
+            crate::governance::fuse(&state, kb_id).await;
+        }
+        state.emit_review(kb_id);
+        result?;
+        return Ok(Json(json!({ "ok": true })));
+    }
     let (l, r) = (
         d.left.clone().unwrap_or_default(),
         d.right.clone().unwrap_or_default(),

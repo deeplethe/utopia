@@ -860,16 +860,26 @@ pub async fn namesakes(
     Ok(rows)
 }
 
-const VIEW: &str = "SELECT d.id, d.run_id, d.target_kind, d.target_id, d.action, d.confidence,
+fn view(include_undo: bool) -> String {
+    // Undo snapshots are internal to the writer and can be much larger than a card.
+    let detail = if include_undo {
+        "d.detail"
+    } else {
+        "d.detail - 'undo'"
+    };
+    format!(
+        "SELECT d.id, d.run_id, d.target_kind, d.target_id, d.action, d.confidence,
         d.reason, d.precedents, d.status, d.merge_id, d.question, d.trace, d.calls,
         d.created_at, d.decided_at,
         u.display_name AS decided_by_name,
-        a.canonical_name AS \"left\", b.canonical_name AS \"right\"
+        a.canonical_name AS \"left\", b.canonical_name AS \"right\", d.summary, {detail} AS detail
     FROM agent_decisions d
     LEFT JOIN users u ON u.id = d.decided_by
-    LEFT JOIN resolution_reviews rr ON rr.id = d.target_id
+    LEFT JOIN resolution_reviews rr ON rr.id = d.target_id AND d.target_kind = 'review'
     LEFT JOIN entities a ON a.id = rr.left_id
-    LEFT JOIN entities b ON b.id = rr.right_id";
+    LEFT JOIN entities b ON b.id = rr.right_id"
+    )
+}
 
 /// Agent 队列：最新的在前
 pub async fn list(
@@ -879,7 +889,8 @@ pub async fn list(
     offset: i64,
 ) -> AppResult<Vec<AgentDecisionView>> {
     let rows = sqlx::query_as(&format!(
-        "{VIEW} WHERE d.kb_id = $1 ORDER BY d.created_at DESC, d.id DESC LIMIT $2 OFFSET $3"
+        "{} WHERE d.kb_id = $1 ORDER BY d.created_at DESC, d.id DESC LIMIT $2 OFFSET $3",
+        view(false)
     ))
     .bind(kb_id)
     .bind(limit)
@@ -890,7 +901,7 @@ pub async fn list(
 }
 
 pub async fn get(pool: &PgPool, kb_id: Uuid, id: Uuid) -> AppResult<AgentDecisionView> {
-    sqlx::query_as(&format!("{VIEW} WHERE d.kb_id = $1 AND d.id = $2"))
+    sqlx::query_as(&format!("{} WHERE d.kb_id = $1 AND d.id = $2", view(true)))
         .bind(kb_id)
         .bind(id)
         .fetch_optional(pool)
@@ -913,8 +924,10 @@ pub async fn agent_running(pool: &PgPool, kb_id: Uuid) -> AppResult<bool> {
 /// 还没轮到 agent 看的对：等人的、还没有开着的建议的
 pub async fn queue_len(pool: &PgPool, kb_id: Uuid) -> AppResult<i64> {
     let n = sqlx::query_scalar(&format!(
-        "SELECT count(*) FROM resolution_reviews rr
-         WHERE rr.kb_id = $1 AND rr.status = 'pending' AND {OPEN_PROPOSAL}"
+        "SELECT (SELECT count(*) FROM resolution_reviews rr
+         WHERE rr.kb_id = $1 AND rr.status = 'pending' AND {OPEN_PROPOSAL})
+         + (SELECT count(*) FROM fact_conflicts c WHERE c.kb_id = $1 AND {})",
+        crate::conflict_governance::waiting_sql(),
     ))
     .bind(kb_id)
     .fetch_one(pool)
@@ -1111,9 +1124,11 @@ pub async fn settle_by_merge(
 pub async fn due(pool: &PgPool) -> AppResult<Vec<Uuid>> {
     let ids = sqlx::query_scalar(&format!(
         "SELECT kb.id FROM knowledge_bases kb
-         WHERE kb.governance AND EXISTS (
+         WHERE kb.governance AND (EXISTS (
              SELECT 1 FROM resolution_reviews rr
-             WHERE rr.kb_id = kb.id AND rr.status = 'pending' AND {OPEN_PROPOSAL})"
+             WHERE rr.kb_id = kb.id AND rr.status = 'pending' AND {OPEN_PROPOSAL})
+           OR EXISTS (SELECT 1 FROM fact_conflicts c WHERE c.kb_id = kb.id AND {}))",
+        crate::conflict_governance::waiting_sql(),
     ))
     .fetch_all(pool)
     .await?;

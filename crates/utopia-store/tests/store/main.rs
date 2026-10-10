@@ -29,6 +29,7 @@ mod a_batch_gathers_its_neighbours_in_order;
 mod a_bound_statement_becomes_a_typed_fact;
 mod a_chunk_says_where_its_words_came_from;
 mod a_clash_needs_both_at_once;
+mod a_conflict_decision_can_be_taken_back;
 mod a_contradiction_points_upstream;
 mod a_corrected_time_keeps_its_statements;
 mod a_cycle_holds_at_one_moment;

@@ -4,6 +4,9 @@ mod api;
 mod auth;
 mod blob;
 mod client_ctx;
+mod conflict_agent;
+#[cfg(test)]
+mod conflict_agent_tests;
 mod docs_corpus;
 mod errata;
 mod error;

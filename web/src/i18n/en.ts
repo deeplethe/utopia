@@ -322,7 +322,7 @@ export const en = {
       },
       "governance.tripped": {
         title: "The agent stopped deciding on its own",
-        hint: "Two of its merges were reverted within seven days, so the switch went off. Look at what it did under Review → Agent, then turn it back on in the base settings when you want it to resume.",
+        hint: "Two of its decisions were reverted within seven days, so the switch went off. Look at what it did under Review → Agent, then turn it back on in the base settings when you want it to resume.",
       },
     } as Record<string, { title: string; hint: string } | undefined>,
     // 没见过的 kind 也要能显示：新告警源上线时前端可能还没更新
@@ -1959,7 +1959,10 @@ export const en = {
     agentHint:
       "What the agent proposed or decided for this base, from the decisions people made here before. Answering here is your decision, and it becomes precedent for the next look.",
     agentEmpty: "The agent has not looked at anything yet.",
-    agentActions: { merge: "Merge", keep: "Keep apart", unsure: "Unsure" } as Record<string, string>,
+    agentActions: { merge: "Merge", keep: "Keep apart", unsure: "Unsure", close_old: "Close old",
+      retime_new: "Correct new start", keep_both: "Keep both", reject_new: "Reject new" } as Record<string, string>,
+    agentConflictDate: "Date for closing the old fact or correcting the new start",
+    agentInputsChanged: "The facts changed after this decision. Review their current state.",
     agentStatus: {
       proposed: "Proposed",
       applied: "Applied",
@@ -1989,8 +1992,8 @@ export const en = {
       n === 1 ? "1 overridden, last 30 days" : `${n} overridden, last 30 days`,
     overviewAgentReverted: "Reverted by you",
     overviewAgentRunning: (n: number) =>
-      n === 0 ? "The agent is working on its last cluster" : `The agent is working · ${n} pairs still to look at`,
-    overviewAgentQueue: (n: number) => (n === 1 ? "1 pair waiting for the agent" : `${n} pairs waiting for the agent`),
+      n === 0 ? "The agent is finishing this round" : `The agent is working · ${n} items still to look at`,
+    overviewAgentQueue: (n: number) => (n === 1 ? "1 item waiting for the agent" : `${n} items waiting for the agent`),
     agentDeciding: "The agent is deciding this pair",
     // 总览（#377）
     overviewTitle: "Overview",
@@ -2031,6 +2034,8 @@ export const en = {
       "conflict.close_old": "Closed old",
       "conflict.keep_both": "Kept both",
       "conflict.reject_new": "Rejected new",
+      "conflict.retime_new": "Corrected new start",
+      "conflict.revert": "Reverted conflict decision",
       "merge.revert": "Reverted merge",
       "merge.manual": "Merged manually",
       "fact.time_corrected": "Time corrected",
@@ -2319,9 +2324,9 @@ export const en = {
     autoResolveTypes: "Resolve entity types after extraction",
     autoResolveTypesNote:
       "After each document is extracted, run a round of type resolution on entities the engine has not looked at yet. Only refinements within the current class are applied on their own — a re-classification across the tree still waits for you on the Ontology page. Every batch is listed there and can be undone.",
-    governance: "Let the agent work the duplicates queue",
+    governance: "Let the agent review duplicates and conflicts",
     governanceNote:
-      "First in, first out. Before deciding a pair the agent reads what people in this base decided on the same names and the same kinds of pairs. It merges only where that history supports it, keeps apart on confidence, and leaves a proposal for everything else. Every decision is listed under Agent on the Review page and can be reverted. Turning this off stops the queue.",
+      "The agent reads source evidence and people's earlier decisions, reviews duplicates first and then factual conflicts. Decisions that cannot pass its checks wait for you as proposals. Automatic decisions are listed under Agent and can be reverted while their facts remain unchanged. Turning this off stops the queue.",
     inferEvery: "Re-derive every",
     minutes: "minutes",
     lastInference: (when: string) => `last run ${when}`,
