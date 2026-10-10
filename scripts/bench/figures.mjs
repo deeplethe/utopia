@@ -2,7 +2,8 @@
 // 陈述（宾语、字面值、限定词、时间词都算）。只看形状，不看词；年份不算数。表格行（以 | 起头）
 // 与散文分开数。用法：node scripts/bench/figures.mjs --kb <id>；库用 BENCH_PSQL 指定，同 judge_open。
 import { execFileSync } from "node:child_process";
-const KB = process.argv[process.argv.indexOf("--kb") + 1];
+const kbIndex = process.argv.indexOf("--kb");
+const KB = kbIndex >= 2 ? process.argv[kbIndex + 1] : undefined;
 if (!KB || KB.startsWith("--")) { console.error("要一个 --kb <id>"); process.exit(1); }
 function psql(sql) {
   const cmd = process.env.BENCH_PSQL || "docker exec -e PGPASSWORD=utopia landscapebi-db-1 psql -U utopia -d utopia -tAc";
