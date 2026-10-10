@@ -134,11 +134,39 @@ pub struct TimeEntry {
 pub fn headings_at(text: &str, char_pos: usize) -> Vec<String> {
     let mut stack: Vec<(usize, String)> = Vec::new();
     let mut seen = 0usize;
+    let mut fence: Option<(char, usize)> = None;
     for line in text.split_inclusive('\n') {
         if seen > char_pos {
             break;
         }
+        let indentation = line.chars().take_while(|c| *c == ' ').count();
         let trimmed = line.trim();
+        let marker = trimmed.chars().next();
+        let markers = marker.map_or(0, |c| trimmed.chars().take_while(|x| *x == c).count());
+        if let Some((kind, width)) = fence {
+            if indentation <= 3
+                && marker == Some(kind)
+                && markers >= width
+                && trimmed[markers..].trim().is_empty()
+            {
+                fence = None;
+            }
+            seen += line.chars().count();
+            continue;
+        }
+        if indentation <= 3
+            && matches!(marker, Some('`' | '~'))
+            && markers >= 3
+            && (marker != Some('`') || !trimmed[markers..].contains('`'))
+        {
+            fence = marker.map(|c| (c, markers));
+            seen += line.chars().count();
+            continue;
+        }
+        if indentation >= 4 || line.starts_with('\t') {
+            seen += line.chars().count();
+            continue;
+        }
         let level = trimmed.chars().take_while(|c| *c == '#').count();
         if (1..=6).contains(&level) {
             let title = trimmed[level..].trim();
@@ -1092,5 +1120,42 @@ mod tests {
         assert_eq!(json["reference"]["anchor"]["kind"], "document");
         assert_eq!(json["reference"]["offset"]["unit"], "year");
         assert_eq!(json["granularity"], "year");
+    }
+}
+
+#[cfg(test)]
+mod heading_code_regressions {
+    use super::headings_at;
+    #[test]
+    fn code_examples_do_not_replace_document_time_scopes() {
+        for code in [
+            "```markdown\n## Sample\n```",
+            "~~~\n## Sample\n~~~",
+            "    ## Sample",
+        ] {
+            let text = format!("# Report\n{code}\nActual date here");
+            assert_eq!(
+                headings_at(&text, text.chars().count()),
+                vec!["Report"],
+                "{code}"
+            );
+        }
+    }
+    #[test]
+    fn closing_fence_requires_the_same_marker_and_no_nonspace_tail() {
+        let text =
+            "# Report\n````\n```\n## Still code\n```` trailing\n## Also code\n````\n## Real\n";
+        assert_eq!(
+            headings_at(text, text.chars().count()),
+            vec!["Report", "Real"]
+        );
+    }
+    #[test]
+    fn unicode_offsets_and_nested_real_headings_remain_correct() {
+        let text = "# 周报\n## 数据\n日期";
+        assert_eq!(
+            headings_at(text, text.chars().count()),
+            vec!["周报", "数据"]
+        );
     }
 }
