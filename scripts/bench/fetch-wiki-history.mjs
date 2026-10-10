@@ -251,7 +251,11 @@ function plaintext(revid) {
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
-    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(+n))
+    .replace(/&#(x[0-9a-f]+|[0-9]+);/gi, (_, raw) => {
+      const n = /^x/i.test(raw) ? Number.parseInt(raw.slice(1), 16) : Number(raw);
+      return n > 0 && n <= 0x10ffff && !(n >= 0xd800 && n <= 0xdfff)
+        ? String.fromCodePoint(n) : "\ufffd";
+    })
     .replace(/\[edit\]/g, "")
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")

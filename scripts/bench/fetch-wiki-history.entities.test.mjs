@@ -1,0 +1,10 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import vm from "node:vm";
+const source=fs.readFileSync(new URL("./fetch-wiki-history.mjs",import.meta.url),"utf8");
+const begin=source.indexOf("const CUT =");const end=source.indexOf("\nconst docs =",begin);
+const convert=(html)=>vm.runInNewContext(source.slice(begin,end)+"\nplaintext(1)",{api:()=>({parse:{text:html}})});
+test("numeric entities preserve supplementary-plane and hex characters",()=>assert.equal(convert("<p>&#128640; &#x1F680; &#X41;</p>"),"🚀 🚀 A"));
+test("invalid numeric scalar values do not throw or truncate",()=>assert.equal(convert("<p>&#1114112; &#55296; &#0;</p>"),"� � �"));
+test("existing named entities and ordinary decimal text stay intact",()=>assert.equal(convert("<p>&quot;A&amp;B&quot; &#65;</p>"),'"A&B" A'));
