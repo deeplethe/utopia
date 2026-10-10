@@ -11,9 +11,11 @@ export type Theme = "system" | "light" | "dark";
 export type Resolved = "light" | "dark";
 
 const KEY = "utopia.theme";
+let sessionTheme: Theme | null = null;
 const listeners = new Set<(t: Resolved) => void>();
 
 function stored(): Theme {
+  if (sessionTheme !== null) return sessionTheme;
   try {
     const v = localStorage.getItem(KEY);
     return v === "light" || v === "dark" || v === "system" ? v : "dark";
@@ -53,8 +55,10 @@ function apply(r: Resolved) {
 export function setTheme(t: Theme) {
   try {
     localStorage.setItem(KEY, t);
+    sessionTheme = null;
   } catch {
     /* 隐私模式：不存，这一次会话内仍生效 */
+    sessionTheme = t;
   }
   apply(resolve(t));
 }
