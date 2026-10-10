@@ -98,6 +98,7 @@ export function parseOperand(op: string, text: string): unknown | undefined {
   const kind = operandKind(op);
   if (kind === "none") return undefined;
   const t = text.trim();
+  if (!t) return undefined;
   if (kind === "set") {
     const set = t
       .split(",")
