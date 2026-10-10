@@ -94,7 +94,7 @@ function operandText(op: string, operand: unknown, attributes: RelationTypeView[
 }
 
 /** 输入框文本 → 操作数。**解析不出来就返回 undefined**，由调用方拦在保存之前 */
-function parseOperand(op: string, text: string): unknown | undefined {
+export function parseOperand(op: string, text: string): unknown | undefined {
   const kind = operandKind(op);
   if (kind === "none") return undefined;
   const t = text.trim();
@@ -106,7 +106,9 @@ function parseOperand(op: string, text: string): unknown | undefined {
     return set.length ? set : undefined;
   }
   if (kind === "range") {
-    const parts = t.split(/[-~]/).map((s) => Number(s.trim()));
+    const number = "[+-]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:[eE][+-]?\\d+)?";
+    const match = new RegExp(`^(${number})\\s*[-~]\\s*(${number})$`).exec(t);
+    const parts = match ? [Number(match[1]), Number(match[2])] : [];
     return parts.length === 2 && parts.every((n) => Number.isFinite(n))
       ? parts
       : undefined;
