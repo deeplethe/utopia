@@ -74,6 +74,7 @@ for (const title of TITLES) {
   try {
     const { title: real, text } = extract(title);
     const body = clean(text);
+    if (!body) throw new Error(`${real}: empty article extract`);
     const slug = real.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
     docs.push([`${slug}.txt`, `${real}\n\n${body}\n`]);
     process.stderr.write(`OK  ${real.padEnd(38)} ${String(body.length).padStart(7)} 字符\n`);
