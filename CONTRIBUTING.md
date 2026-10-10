@@ -117,7 +117,7 @@ for the proposed delivery contract and remaining production acceptance.
 
 **A test has to run in CI.** CI runs `cargo test --workspace`, `pnpm test` and `scripts/bench/lib.test.mjs`, and nothing else. A test that is `#[ignore]`d, needs a database of its own, or lives in a script file CI does not run is exercised by no one after the day it was written. The delivery regressions above are the one exception, kept because they kill processes; another needs a reason of that kind, agreed in the issue first.
 
-**One pull request is one reviewable change.** Past about 500 lines of code and tests together, say in the description why it cannot be split. What was run to check it (machine, commit, counts) goes in the description too, not in a decision record.
+**One pull request is one reviewable change.** A pull request that adds more than 500 lines of code and tests together explains in its description why it cannot be split. What was run to check it (machine, commit, counts) goes in the description too, not in a decision record.
 
 **UI strings go in i18n.** Add to both `web/src/i18n/en.ts` and `zh.ts`; no hard-coded strings in components.
 
