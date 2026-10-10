@@ -19,6 +19,11 @@ pub struct ToolCall {
     pub name: String,
     /// JSON 字符串参数（协议原样透传）
     pub arguments: String,
+    /// 端点挂在调用上的私货，原样带回。Gemini 3 在每个 function call 上给一个
+    /// `extra_content.google.thought_signature`，同一回合把结果送回去时**必须**
+    /// 原样附上，否则 400「Function call is missing a thought_signature」；上一回合
+    /// 的可以不带。内容不解读，不是对象就当没有。
+    pub extra_content: Option<serde_json::Value>,
 }
 
 /// 工具对话的一个 assistant 回合：文本与工具调用至少其一。
@@ -38,11 +43,17 @@ impl AssistantTurn {
             msg["tool_calls"] = json!(self
                 .tool_calls
                 .iter()
-                .map(|c| json!({
-                    "id": c.id,
-                    "type": "function",
-                    "function": { "name": c.name, "arguments": c.arguments },
-                }))
+                .map(|c| {
+                    let mut call = json!({
+                        "id": c.id,
+                        "type": "function",
+                        "function": { "name": c.name, "arguments": c.arguments },
+                    });
+                    if let Some(extra) = &c.extra_content {
+                        call["extra_content"] = extra.clone();
+                    }
+                    call
+                })
                 .collect::<Vec<_>>());
         }
         msg
@@ -52,6 +63,11 @@ impl AssistantTurn {
 /// 工具结果消息（role=tool）。
 pub fn tool_result_message(tool_call_id: &str, content: &str) -> serde_json::Value {
     json!({ "role": "tool", "tool_call_id": tool_call_id, "content": content })
+}
+
+/// 一条工具调用上端点挂的 `extra_content`：是对象才算，别的形状不猜。
+fn extra_content_of(call: &serde_json::Value) -> Option<serde_json::Value> {
+    call.get("extra_content").filter(|v| v.is_object()).cloned()
 }
 
 /// 带工具的流式回合事件。
@@ -842,6 +858,7 @@ impl LlmClient {
                                 .as_str()
                                 .unwrap_or("{}")
                                 .to_string(),
+                            extra_content: extra_content_of(c),
                         })
                     })
                     .collect()
@@ -928,9 +945,13 @@ impl LlmClient {
                                         id: String::new(),
                                         name: String::new(),
                                         arguments: String::new(),
+                                        extra_content: None,
                                     });
                                 }
                                 let slot = &mut calls[idx];
+                                if let Some(extra) = extra_content_of(tc) {
+                                    slot.extra_content = Some(extra);
+                                }
                                 if let Some(id) = tc["id"].as_str() {
                                     slot.id.push_str(id);
                                 }
@@ -2891,5 +2912,72 @@ data: [DONE]
         .await
         .unwrap();
         assert_eq!(out, vec![vec![1.0, 10.0], vec![2.0, 20.0]]);
+    }
+
+    /// Gemini 3 的形状：tool_call 不带 `index`，带 `extra_content.google.thought_signature`，
+    /// finish_reason 说 `stop`。两种传输都要把 `extra_content` 留住，回灌时原样带回
+    #[tokio::test]
+    async fn a_tool_call_keeps_its_extra_content_in_both_transports() {
+        use futures_util::TryStreamExt;
+        let extra = json!({"google": {"thought_signature": "Eq0CCqoC"}});
+        let call = json!({
+            "id": "call_170866", "type": "function",
+            "function": {"name": "search_kb", "arguments": "{\"query\":\"lore\"}"},
+            "extra_content": extra
+        });
+        let body = json!({"choices":[{"message":{"role":"assistant","tool_calls":[call]},"finish_reason":"stop"}]})
+            .to_string();
+        let (addr, server) = an_http_response("200 OK", "application/json", &body).await;
+        let turn = client_at(addr)
+            .chat_tools_with(&[], None, None)
+            .await
+            .unwrap();
+        server.await.unwrap();
+        assert_eq!(turn.tool_calls[0].extra_content, Some(extra.clone()));
+        assert_eq!(turn.to_message()["tool_calls"][0]["extra_content"], extra);
+
+        let frame =
+            json!({"choices":[{"delta":{"role":"assistant","tool_calls":[call]},"index":0}]});
+        let done =
+            json!({"choices":[{"delta":{"role":"assistant"},"finish_reason":"stop","index":0}]});
+        let sse = format!("data: {frame}\n\ndata: {done}\n\ndata: [DONE]\n\n");
+        let (addr, server) = an_http_response("200 OK", "text/event-stream", &sse).await;
+        let stream = client_at(addr)
+            .chat_tools_stream_with(&[], None, None)
+            .await
+            .unwrap();
+        let items: Vec<ToolStreamItem> = stream.try_collect().await.unwrap();
+        server.await.unwrap();
+        let [ToolStreamItem::Turn(turn)] = items.as_slice() else {
+            panic!("expected one completed turn: {items:?}");
+        };
+        assert_eq!(turn.tool_calls[0].extra_content, Some(extra.clone()));
+        assert_eq!(turn.to_message()["tool_calls"][0]["extra_content"], extra);
+    }
+
+    /// 没有 `extra_content`、或它不是对象的调用，回灌时也不长出这个键
+    #[tokio::test]
+    async fn a_tool_call_without_extra_content_echoes_none() {
+        for call in [
+            json!({"id": "c1", "type": "function", "function": {"name": "f", "arguments": "{}"}}),
+            json!({"id": "c1", "type": "function", "function": {"name": "f", "arguments": "{}"}, "extra_content": null}),
+            json!({"id": "c1", "type": "function", "function": {"name": "f", "arguments": "{}"}, "extra_content": "sig"}),
+        ] {
+            let body = json!({"choices":[{"message":{"role":"assistant","tool_calls":[call]},"finish_reason":"tool_calls"}]})
+                .to_string();
+            let (addr, server) = an_http_response("200 OK", "application/json", &body).await;
+            let turn = client_at(addr)
+                .chat_tools_with(&[], None, None)
+                .await
+                .unwrap();
+            server.await.unwrap();
+            assert_eq!(turn.tool_calls[0].extra_content, None, "{call}");
+            assert!(
+                turn.to_message()["tool_calls"][0]
+                    .get("extra_content")
+                    .is_none(),
+                "{call}"
+            );
+        }
     }
 }
