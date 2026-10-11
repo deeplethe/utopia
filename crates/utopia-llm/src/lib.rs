@@ -60,6 +60,25 @@ impl AssistantTurn {
     }
 }
 
+/// 一段 tool_call 增量归到哪个调用。写了 `index` 的听它的；没写的，带着 `id`
+/// 就是一个新调用，什么都不带就是上一个调用的续篇。
+///
+/// **不写 `index` 的端点把并行调用也不编号。** Gemini 的 OpenAI 兼容端点一个
+/// 调用一块，块上没有 `index`、有 `id`、参数一次给全；两个并行调用都按 0 归并，
+/// 名字就拼成了 `find_entitiessearch_chunks`，于是「未知工具」整轮作废。续篇的
+/// 判据是没有 `id`：OpenAI 的续篇只带参数碎片，开头那块才带 `id`
+fn tool_call_slot(delta: &serde_json::Value, seen: usize) -> usize {
+    if let Some(index) = delta["index"].as_u64() {
+        return index as usize;
+    }
+    let starts_a_call = delta["id"].as_str().is_some_and(|id| !id.is_empty());
+    if starts_a_call || seen == 0 {
+        seen
+    } else {
+        seen - 1
+    }
+}
+
 /// 工具结果消息（role=tool）。
 pub fn tool_result_message(tool_call_id: &str, content: &str) -> serde_json::Value {
     json!({ "role": "tool", "tool_call_id": tool_call_id, "content": content })
@@ -939,7 +958,7 @@ impl LlmClient {
                         }
                         if let Some(tcs) = delta["tool_calls"].as_array() {
                             for tc in tcs {
-                                let idx = tc["index"].as_u64().unwrap_or(0) as usize;
+                                let idx = tool_call_slot(tc, calls.len());
                                 while calls.len() <= idx {
                                     calls.push(ToolCall {
                                         id: String::new(),
@@ -3015,5 +3034,71 @@ data: [DONE]
                 "{call}"
             );
         }
+    }
+
+    /// Gemini 的并行调用：一块一个，块上没有 `index`，各带自己的 `id`。两个调用，
+    /// 名字和参数各归各
+    #[tokio::test]
+    async fn parallel_tool_calls_without_an_index_stay_separate() {
+        use futures_util::TryStreamExt;
+        let first = json!({"choices":[{"delta":{"role":"assistant","tool_calls":[{
+            "function":{"arguments":"{\"name\":\"lore\"}","name":"find_entities"},
+            "id":"call_266956","type":"function"}]},"index":0}]});
+        let second = json!({"choices":[{"delta":{"role":"assistant","tool_calls":[{
+            "function":{"arguments":"{\"query\":\"what's next\"}","name":"search_chunks"},
+            "id":"call_266959","type":"function"}]},"index":0}]});
+        let done =
+            json!({"choices":[{"delta":{"role":"assistant"},"finish_reason":"stop","index":0}]});
+        let sse = format!("data: {first}\n\ndata: {second}\n\ndata: {done}\n\ndata: [DONE]\n\n");
+        let (addr, server) = an_http_response("200 OK", "text/event-stream", &sse).await;
+        let stream = client_at(addr)
+            .chat_tools_stream_with(&[], None, None)
+            .await
+            .unwrap();
+        let items: Vec<ToolStreamItem> = stream.try_collect().await.unwrap();
+        server.await.unwrap();
+        let [ToolStreamItem::Turn(turn)] = items.as_slice() else {
+            panic!("expected one completed turn: {items:?}");
+        };
+        let calls: Vec<(&str, &str, &str)> = turn
+            .tool_calls
+            .iter()
+            .map(|c| (c.id.as_str(), c.name.as_str(), c.arguments.as_str()))
+            .collect();
+        assert_eq!(
+            calls,
+            vec![
+                ("call_266956", "find_entities", "{\"name\":\"lore\"}"),
+                (
+                    "call_266959",
+                    "search_chunks",
+                    "{\"query\":\"what's next\"}"
+                ),
+            ]
+        );
+    }
+
+    /// 没有 `index` 也没有 `id` 的增量是上一个调用的续篇：参数碎片接在后面
+    #[tokio::test]
+    async fn an_unindexed_delta_without_an_id_continues_the_last_call() {
+        use futures_util::TryStreamExt;
+        let head = json!({"choices":[{"delta":{"tool_calls":[{
+            "id":"call_1","function":{"name":"lookup","arguments":"{\"name\":"}}]}}]});
+        let tail = json!({"choices":[{"delta":{"tool_calls":[{
+            "function":{"arguments":"\"Acme\"}"}}]}}]});
+        let done = json!({"choices":[{"delta":{},"finish_reason":"tool_calls"}]});
+        let sse = format!("data: {head}\n\ndata: {tail}\n\ndata: {done}\n\ndata: [DONE]\n\n");
+        let (addr, server) = an_http_response("200 OK", "text/event-stream", &sse).await;
+        let stream = client_at(addr)
+            .chat_tools_stream_with(&[], None, None)
+            .await
+            .unwrap();
+        let items: Vec<ToolStreamItem> = stream.try_collect().await.unwrap();
+        server.await.unwrap();
+        let [ToolStreamItem::Turn(turn)] = items.as_slice() else {
+            panic!("expected one completed turn: {items:?}");
+        };
+        assert_eq!(turn.tool_calls.len(), 1);
+        assert_eq!(turn.tool_calls[0].arguments, "{\"name\":\"Acme\"}");
     }
 }
