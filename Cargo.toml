@@ -67,7 +67,13 @@ text-splitter = { version = "0.32", features = ["tiktoken-rs"] }
 # 分块预算按 token 数：cl100k 的排名表随 crate 内嵌，离线可用
 tiktoken-rs = "0.12"
 pdf-extract = "0.12"
-calamine = "0.36"
+# `chrono` 特性带上 `Data::as_datetime() -> Option<chrono::NaiveDateTime>` 与
+# `ExcelDateTime::as_datetime()`，让 spreadsheet parser 能把 DateTime 单元格
+# 渲染成 ISO 8601 日期而不是 f64 (`45292.0`)。这一刻对 East Asian locale 影响最
+# 大——JIS / GB18030 出来的 xlsx 里日期字段全是这种 raw float，模型拿到的是
+# 数字 「45292」「45293」而不是「2024-01-15」「2024-01-16」；同时 1904 date
+# system 也以「is_1904」在内部处理掉，Mac 下开 1904 选项表也能正确读
+calamine = { version = "0.36", features = ["chrono"] }
 pgvector = { version = "0.4", features = ["sqlx"] }
 # `gzip` 不是可选项：一次嵌入回 64×1024 个浮点数，写成 JSON 文本每个数字占
 # 21 字节而信息量只有 4 字节，一次响应 1.33 MB。实测同一条链路上不压缩 62 秒、
