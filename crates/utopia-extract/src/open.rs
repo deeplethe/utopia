@@ -116,6 +116,8 @@ Output one JSON object and nothing else, shaped like this:\n\
 \n\
 1. \"e\" lists the things the passage talks about, one entry each: [name, kind, named]. Every \
 thing a statement refers to is listed here once, under exactly the name the statements use. \
+Literal values are not things to list here, including an identifier stated as a value: list \
+the thing whose identifier the passage gives, not its code as another entity. \
 named = 1 for a proper name or a fixed term: the name of one particular person, organization, \
 product, place, document, law or event, or a term that means the same thing in any document (a \
 disease, a drug, an industry, a product category, an indicator), written as the passage writes \
@@ -147,7 +149,11 @@ that appears in a qualifier alone is words there, not a listed thing: \"各部�
 基层单位开展宣传活动\" gives 各部门 —开展→ 宣传活动 with {\"走进\": \"学校、社区等基层单位\"}, \
 and neither 学校 nor 社区 is listed.\n\
    A statement with a value is what the passage says about one thing by itself: a figure with \
-its units, a percentage, an amount, a count, a title, a status. phrase is how the passage says \
+its units, a percentage, an amount, a count, a title, a status, or an identifier assigned to it \
+(a reference number, registration code or serial number). An identifier is the literal value, \
+not a second thing listed in \"e\"; letters and digits in it do not make it an entity. This does \
+not turn a named product, document or project into a value when the sentence links to that \
+thing rather than stating its identifier. phrase is how the passage says \
 what is measured or stated (\"area\", \"was completed\", \"joined\", \"占地面积\"); value is the \
 literal as written. Wording that names or describes something is not a value: that something \
 goes in \"e\" and is linked by a statement with an object. \"1,200 beekeepers joined\" is the \
@@ -177,6 +183,14 @@ the coating are part of the description.\n\
 words that say when it stopped, each copied exactly as written (\"March 4, 2011\", \"去年冬天\", \
 \"by the end of next season\"). Never compute, convert or normalise a date, and never write one \
 the passage does not. Each is null when the passage gives none.\n\
+   Choose the slot by what happened to the relationship, not by a preposition alone. A \
+date from which someone no longer holds a role, or no longer supplies another thing, is \
+when that relationship ended: copy those date words into ended, leaving when null unless \
+the passage also states when it began. \"From April 2, 2018, Harbor Bakery no longer supplied \
+the school\" has ended = \"From April 2, 2018\", not when. In contrast, \"From April 2, \
+2018, Harbor Bakery supplied the school\" has when = \"From April 2, 2018\" and ended = \
+null: the same date wording begins a positive relationship and ends one explicitly said \
+to stop. Without words saying it stopped, do not invent an ending.\n\
    Words that say when go in when or ended and nowhere else, never in the phrase, the \
 object, the value or a qualifier; also when they count from now or from another event \
 (\"三个月后\", \"last week\", \"six months after the launch\") and when the statement is \
