@@ -46,19 +46,42 @@ pub async fn create_from_upload(
     source_id: Option<Uuid>,
     content_time: Option<DateTime<Utc>>,
 ) -> AppResult<Document> {
-    create_with_time_source(
-        pool,
-        kb_id,
-        filename,
-        mime,
-        size_bytes,
-        sha256,
-        source_id,
-        content_time,
-        "content",
-        None,
+    let mut tx = pool.begin().await?;
+    let deleted: Option<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM documents
+          WHERE kb_id = $1 AND sha256 = $2 AND deleted_at IS NOT NULL AND purged_at IS NULL",
     )
-    .await
+    .bind(kb_id)
+    .bind(sha256)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let document = if let Some(id) = deleted {
+        let document = restore_tx(&mut tx, kb_id, id).await?;
+        crate::jobs::enqueue_with_max_attempts_tx(
+            &mut tx,
+            "process_document",
+            serde_json::json!({ "document_id": id }),
+            3,
+        )
+        .await?;
+        document
+    } else {
+        create_with_version_and_processing_on(
+            &mut tx,
+            kb_id,
+            filename,
+            mime,
+            size_bytes,
+            sha256,
+            source_id,
+            content_time,
+            "content",
+            None,
+        )
+        .await?
+    };
+    tx.commit().await?;
+    Ok(document)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -130,6 +153,38 @@ pub async fn create_with_version_and_processing(
     external_key: Option<&str>,
 ) -> AppResult<Document> {
     let mut tx = pool.begin().await?;
+    let document = create_with_version_and_processing_on(
+        &mut tx,
+        kb_id,
+        filename,
+        mime,
+        size_bytes,
+        sha256,
+        source_id,
+        doc_time,
+        "source",
+        external_key,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(document)
+}
+
+// Content reads require the current digest in the version ledger. Upload used to
+// commit only the document, so a successful upload could never serve its original.
+#[allow(clippy::too_many_arguments)]
+async fn create_with_version_and_processing_on(
+    tx: &mut Transaction<'_, Postgres>,
+    kb_id: Uuid,
+    filename: &str,
+    mime: &str,
+    size_bytes: i64,
+    sha256: &str,
+    source_id: Option<Uuid>,
+    doc_time: Option<DateTime<Utc>>,
+    time_source: &str,
+    external_key: Option<&str>,
+) -> AppResult<Document> {
     let document: Document = sqlx::query_as(
         "INSERT INTO documents (id, kb_id, filename, mime, size_bytes, sha256, source_id,
                                 doc_time, doc_time_source, external_key)
@@ -144,9 +199,13 @@ pub async fn create_with_version_and_processing(
     .bind(source_id)
     .bind(doc_time)
     // 没有日期就是没有日期：同步的时刻是记录时间，不是文档的日期（0045 决定 3，#714）
-    .bind(if doc_time.is_some() { "source" } else { "none" })
+    .bind(if doc_time.is_some() {
+        time_source
+    } else {
+        "none"
+    })
     .bind(external_key)
-    .fetch_one(&mut *tx)
+    .fetch_one(&mut **tx)
     .await
     .map_err(|e| match &e {
         sqlx::Error::Database(db) if db.is_unique_violation() => AppError::Conflict(format!(
@@ -162,16 +221,15 @@ pub async fn create_with_version_and_processing(
     .bind(document.id)
     .bind(sha256)
     .bind(size_bytes)
-    .execute(&mut *tx)
+    .execute(&mut **tx)
     .await?;
     crate::jobs::enqueue_with_max_attempts_tx(
-        &mut tx,
+        tx,
         "process_document",
         serde_json::json!({ "document_id": document.id }),
         3,
     )
     .await?;
-    tx.commit().await?;
     Ok(document)
 }
 

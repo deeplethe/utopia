@@ -305,15 +305,7 @@ pub async fn upload(
         )
         .await
         {
-            Ok(doc) => {
-                utopia_store::jobs::enqueue(
-                    &state.pool,
-                    "process_document",
-                    json!({ "document_id": doc.id }),
-                )
-                .await?;
-                created.push(doc);
-            }
+            Ok(doc) => created.push(doc),
             Err(AppError::Conflict(_)) => {
                 skipped.push(json!({ "filename": filename, "reason": "duplicate content" }));
             }

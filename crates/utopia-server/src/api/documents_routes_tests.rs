@@ -597,6 +597,34 @@ async fn each_upload_keeps_its_own_date_before_processing_and_extraction() -> an
             (doc.doc_time, doc.doc_time_source.as_str(), doc.source_id),
             (date, "content", Some(f.folder))
         );
+        let versions = documents::versions(&independent, doc.id).await?;
+        assert_eq!(versions.len(), 1);
+        assert_eq!(versions[0].version, 1);
+        assert_eq!(versions[0].sha256, doc.sha256);
+        assert_eq!(versions[0].size_bytes, doc.size_bytes);
+        let version_date: Option<DateTime<Utc>> = sqlx::query_scalar(
+            "SELECT doc_time FROM document_versions WHERE document_id=$1 AND version=1",
+        )
+        .bind(doc.id)
+        .fetch_one(&independent)
+        .await?;
+        assert_eq!(version_date, date);
+        let original = files
+            .iter()
+            .find(|(name, _)| *name == doc.filename)
+            .unwrap()
+            .1;
+        for suffix in ["", "?version=1"] {
+            let (status, headers, bytes) = f
+                .get_raw(
+                    &format!("/api/v1/documents/{}/content{suffix}", doc.id),
+                    Some(&f.token),
+                )
+                .await?;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(headers["content-type"], "text/plain");
+            assert_eq!(bytes, original.as_bytes());
+        }
         // Claim only this test's job, using an independent connection as a worker would.
         let id: i64 = sqlx::query_scalar(
             "UPDATE jobs SET status='running', locked_at=now() WHERE kind='process_document'
@@ -639,6 +667,90 @@ async fn each_upload_keeps_its_own_date_before_processing_and_extraction() -> an
     assert_eq!(other[0].doc_time, created[0].doc_time);
     assert_eq!(other[0].doc_time_source, "content");
     f.cleanup().await
+}
+
+#[tokio::test]
+async fn reupload_restores_one_version_and_requeues_processing() -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    let files = [("undated.txt", "An original without a date")];
+    let (_, body) = f.upload(f.kb, "", &files).await?;
+    let original = f.created_docs(&body).await?.remove(0);
+    assert_eq!(original.doc_time_source, "none");
+    documents::delete(&f.pool, f.kb, original.id, None).await?;
+    let (status, body) = f.upload(f.kb, "", &files).await?;
+    assert_eq!(status, StatusCode::OK);
+    let restored = f.created_docs(&body).await?.remove(0);
+    assert_eq!(restored.id, original.id);
+    assert_eq!(restored.doc_time_source, "none");
+    assert_eq!(documents::versions(&f.pool, restored.id).await?.len(), 1);
+    let jobs: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM jobs WHERE kind='process_document' AND payload->>'document_id'=$1",
+    )
+    .bind(restored.id.to_string())
+    .fetch_one(&f.pool)
+    .await?;
+    assert_eq!(jobs, 2);
+    let (status, _, bytes) = f
+        .get_raw(
+            &format!("/api/v1/documents/{}/content", restored.id),
+            Some(&f.token),
+        )
+        .await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(bytes, files[0].1.as_bytes());
+    f.cleanup().await
+}
+
+#[tokio::test]
+async fn failed_upload_queue_rolls_back_creation_and_restoration() -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    let original = [("original.txt", "Retained original")];
+    let (_, body) = f.upload(f.kb, "", &original).await?;
+    let doc = f.created_docs(&body).await?.remove(0);
+    documents::delete(&f.pool, f.kb, doc.id, None).await?;
+    let guard = format!("fail_upload_queue_{}", f.kb.simple());
+    // Reject only this fixture's jobs, after the document and version were written.
+    sqlx::raw_sql(&format!(
+        "CREATE FUNCTION {guard}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+           IF NEW.kind='process_document' AND EXISTS
+             (SELECT 1 FROM documents WHERE id::text=NEW.payload->>'document_id' AND kb_id='{}')
+           THEN RAISE EXCEPTION 'fixture rejects upload queue'; END IF;
+           RETURN NEW; END $$;
+         CREATE TRIGGER {guard} BEFORE INSERT ON jobs FOR EACH ROW EXECUTE FUNCTION {guard}();",
+        f.kb
+    ))
+    .execute(&f.pool)
+    .await?;
+    let result = async {
+        for files in [[("new.txt", "A new original")], original] {
+            let (status, _) = f.upload(f.kb, "", &files).await?;
+            assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+        }
+        let state: (i64, i64, i64) = sqlx::query_as(
+            "SELECT (SELECT count(*) FROM documents WHERE kb_id=$1),
+                    (SELECT count(*) FROM document_versions v JOIN documents d ON d.id=v.document_id WHERE d.kb_id=$1),
+                    (SELECT count(*) FROM jobs WHERE payload->>'document_id'=$2)",
+        )
+        .bind(f.kb)
+        .bind(doc.id.to_string())
+        .fetch_one(&f.pool)
+        .await?;
+        assert_eq!(state, (1, 1, 1));
+        assert!(documents::get(&f.pool, doc.id).await?.deleted_at.is_some());
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+    sqlx::raw_sql(&format!(
+        "DROP TRIGGER {guard} ON jobs; DROP FUNCTION {guard}();"
+    ))
+    .execute(&f.pool)
+    .await?;
+    f.cleanup().await?;
+    result
 }
 
 /// `#610`：文件名里有日期时，日期来自文件名而不是正文——这一档要把
