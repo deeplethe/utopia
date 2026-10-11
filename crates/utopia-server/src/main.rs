@@ -19,6 +19,8 @@ mod live;
 mod llm_util;
 mod mapping_index;
 mod mappings;
+#[cfg(test)]
+mod namesake_scripted_cases;
 mod notion;
 mod object_storage;
 mod ontology_agent;
