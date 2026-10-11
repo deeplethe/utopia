@@ -130,6 +130,49 @@ impl DatabricksConn {
     }
 }
 
+/// `clickhouse://user[:password]@host[:port][/database][?ssl=true|false]`
+///
+/// 明文 http 是 ClickHouse 的默认（8123）；带密码、`ssl=true`、或端口 443 / 8443 时走 https。
+///
+/// 库名在路径首位；schema 不在路径里——ClickHouse 一个库就是一个 schema（"数据库"），
+/// 与 PG/MySQL 的「库下分 schema」是两件事。`SELECT database FROM system.tables` 自己
+/// 给出数据库名，这里只截一份到连接串，以便在 URL 上把它圈出来。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClickhouseConn {
+    pub base: String,
+    pub user: String,
+    pub password: Option<String>,
+    pub database: Option<String>,
+}
+
+impl ClickhouseConn {
+    pub fn parse(conn: &str) -> anyhow::Result<Self> {
+        let u = Url::parse(conn.trim())?;
+        let user = decode(u.username());
+        if user.is_empty() {
+            anyhow::bail!(
+                "clickhouse://: a user is required (Basic auth user), \
+                 e.g. clickhouse://alice@host:8123/default"
+            );
+        }
+        let password = u.password().map(decode).filter(|s| !s.is_empty());
+        // 与 Trino 同一条规矩：明文上不收密码；带密码 / 显式 ssl=true / 端口是 443|8443
+        // → 升 https。本地替身与 docker 测试用 `?ssl=false` 强行回到明文。
+        let https = !ssl_off(&u)
+            && (password.is_some()
+                || query(&u, "ssl").as_deref() == Some("true")
+                || matches!(u.port(), Some(443) | Some(8443)));
+        let base = base_of(&u, https, if https { 8443 } else { 8123 })?;
+        let segs = segments(&u);
+        Ok(Self {
+            base,
+            user,
+            password,
+            database: segs.first().cloned(),
+        })
+    }
+}
+
 /// `snowflake://:TOKEN@account.snowflakecomputing.com/[DATABASE[/SCHEMA]][?warehouse=WH&role=R&token_type=pat|oauth]`
 ///
 /// SQL API 不收密码，只收令牌：默认当作 programmatic access token，`token_type=oauth`
@@ -179,7 +222,7 @@ impl SnowflakeConn {
 
 #[cfg(test)]
 mod tests {
-    use super::{DatabricksConn, SnowflakeConn, TrinoConn};
+    use super::{ClickhouseConn, DatabricksConn, SnowflakeConn, TrinoConn};
 
     #[test]
     fn trino_defaults_to_plain_http_and_upgrades_when_it_must() {
@@ -249,5 +292,38 @@ mod tests {
         )
         .is_err());
         assert!(SnowflakeConn::parse("snowflake://acct.snowflakecomputing.com/DB").is_err());
+    }
+
+    #[test]
+    fn clickhouse_defaults_to_plain_http_and_upgrades_when_it_must() {
+        let c = ClickhouseConn::parse("clickhouse://alice@ch.internal:8123/default").unwrap();
+        assert_eq!(c.base, "http://ch.internal:8123");
+        assert_eq!(c.user, "alice");
+        assert_eq!(c.password, None);
+        assert_eq!(c.database.as_deref(), Some("default"));
+
+        // 带密码 → 必须 https
+        let c = ClickhouseConn::parse("clickhouse://alice:s%40cret@ch.cloud").unwrap();
+        assert_eq!(c.base, "https://ch.cloud");
+        assert_eq!(c.password.as_deref(), Some("s@cret"));
+
+        // ssl=true 显式升 https（端口自动跟到 8443）
+        let c = ClickhouseConn::parse("clickhouse://alice@ch.internal:8123/db?ssl=true").unwrap();
+        assert_eq!(c.base, "https://ch.internal:8443");
+
+        // ssl=true 也认 443 → 不写默认端口
+        let c = ClickhouseConn::parse("clickhouse://alice@ch.cloud/db?ssl=true").unwrap();
+        assert_eq!(c.base, "https://ch.cloud");
+
+        // 本地替身 / 测试用 ssl=false 回到明文
+        let c = ClickhouseConn::parse("clickhouse://alice@127.0.0.1:8123/db?ssl=false").unwrap();
+        assert_eq!(c.base, "http://127.0.0.1:8123");
+        assert_eq!(c.database.as_deref(), Some("db"));
+
+        // 没库也能解析，但 fetch_schema 会在里头拒
+        let c = ClickhouseConn::parse("clickhouse://alice@host:8123").unwrap();
+        assert_eq!(c.database, None);
+
+        assert!(ClickhouseConn::parse("clickhouse://ch.internal/default").is_err());
     }
 }

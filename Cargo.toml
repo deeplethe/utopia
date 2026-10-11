@@ -33,7 +33,10 @@ sqlx = { version = "0.8", default-features = false, features = [
     "runtime-tokio", "tls-rustls", "postgres", "mysql", "bigdecimal", "uuid", "chrono", "json", "migrate", "macros",
 ] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# `preserve_order` 让 `serde_json::Value::Object` 用 LinkedHashMap 而非 BTreeMap。
+# JSONEachRow 把列名写在每个对象的键里，键序 = SELECT 列表的顺序，模型读表靠
+# 这个顺序；BTreeMap 会按字母重排，写回 JSON Lines 时列名顺序就乱了
+serde_json = { version = "1", features = ["preserve_order"] }
 thiserror = "2"
 anyhow = "1"
 uuid = { version = "1", features = ["v4", "v7", "serde"] }

@@ -480,6 +480,22 @@ export function dsSpecs(): EngineSpec[] {
         `?warehouse=${enc(v.warehouse)}`,
     },
     {
+      id: "clickhouse",
+      label: "ClickHouse",
+      fields: [
+        { key: "host", label: D.fHost, placeholder: "ch.internal" },
+        { key: "port", label: D.fPort, placeholder: "8123" },
+        { key: "database", label: D.fDatabase, placeholder: "default" },
+        { key: "user", label: D.fUser, placeholder: "default" },
+        { key: "password", label: D.fPassword, optional: true, secret: true },
+      ],
+      // clickhouse://user[:password]@host[:port]/database。明文 http 是 CH 的默认；
+      // 带密码会由后端自动升 https，本地替身与测试用 ?ssl=false 回到明文
+      build: (v) =>
+        `clickhouse://${auth(v.user, v.password)}${v.host}:${v.port || "8123"}` +
+        `/${enc(v.database)}`,
+    },
+    {
       id: "raw",
       label: D.engineRaw,
       fields: [{ key: "conn", label: D.connString }],

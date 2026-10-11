@@ -16,6 +16,7 @@
 //!    HTTP 族没有会话，只有语句超时——只读靠第 1 层，这是它们比线协议少的那一层
 //! 4. 结果统一为 JSON Lines：PG 让库自己转；HTTP 族拿到列名与值后在这里拼，列序保留
 
+mod clickhouse;
 mod conn;
 mod databricks;
 mod mysql;
@@ -38,7 +39,7 @@ pub(crate) const HTTP_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 pub(crate) const HTTP_POLL_BUDGET: Duration = Duration::from_secs(30);
 
 /// 注册表里 `engine` 列的取值。迁移里的 CHECK 与这张表要一致
-pub const ENGINES: &[&str] = &["postgres", "mysql", "trino", "databricks", "snowflake"];
+pub const ENGINES: &[&str] = &["postgres", "mysql", "trino", "databricks", "snowflake", "clickhouse"];
 
 #[derive(Debug)]
 pub struct QueryResult {
@@ -88,6 +89,7 @@ pub fn engine_from_conn(conn: &str) -> Option<&'static str> {
         "trino" | "presto" => Some("trino"),
         "databricks" => Some("databricks"),
         "snowflake" => Some("snowflake"),
+        "clickhouse" => Some("clickhouse"),
         _ => None,
     }
 }
@@ -105,6 +107,9 @@ pub fn engine_for(engine: &str, conn: &str) -> anyhow::Result<Box<dyn QueryEngin
         ))),
         "snowflake" => Ok(Box::new(snowflake::SnowflakeEngine::new(
             conn::SnowflakeConn::parse(conn)?,
+        ))),
+        "clickhouse" => Ok(Box::new(clickhouse::ClickhouseEngine::new(
+            conn::ClickhouseConn::parse(conn)?,
         ))),
         other => anyhow::bail!("Unsupported engine: {other}"),
     }
@@ -315,7 +320,7 @@ mod tests {
 
     #[test]
     fn every_dialect_keeps_the_same_gate() {
-        for engine in ["postgres", "mysql", "trino", "databricks", "snowflake"] {
+        for engine in ["postgres", "mysql", "trino", "databricks", "snowflake", "clickhouse"] {
             assert!(
                 guard_sql_for(engine, "SELECT a FROM t WHERE b > 1").is_ok(),
                 "{engine}"
@@ -332,6 +337,8 @@ mod tests {
         assert!(guard_sql_for("trino", "SELECT count(*) FROM hive.default.orders").is_ok());
         // MySQL 的反引号与 PG 方言不兼容，走自己的方言才过得去
         assert!(guard_sql_for("mysql", "SELECT `region` FROM `sales`.`orders`").is_ok());
+        // ClickHouse 用 PG 方言兜底；常见 `LIMIT n` 与 PG 同形
+        assert!(guard_sql_for("clickhouse", "SELECT count() FROM events").is_ok());
     }
 
     #[test]
@@ -348,6 +355,7 @@ mod tests {
             engine_from_conn("snowflake://:t@a.snowflakecomputing.com/db"),
             Some("snowflake")
         );
+        assert_eq!(engine_from_conn("clickhouse://u@h:8123/db"), Some("clickhouse"));
         assert_eq!(engine_from_conn("mysql://u:p@h:3306/db"), Some("mysql"));
         // 同一套协议的另一个写法，引擎里会被改写成 mysql:// 再交给驱动
         assert_eq!(engine_from_conn("mariadb://u@h/db"), Some("mysql"));
