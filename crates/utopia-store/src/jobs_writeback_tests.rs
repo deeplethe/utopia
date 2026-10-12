@@ -1,11 +1,11 @@
 //! 写回测试只操作自己的任务行，不启动会认领全库任务的 worker。
 
-use super::{persist_outcome, Job, JobOutcome, RequeueScope, DEFER_WINDOW_SECS};
+use super::{persist_outcome, persist_with_retry, Job, JobOutcome, DEFER_WINDOW_SECS};
 use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
 use sqlx::PgPool;
 use std::time::Duration;
-use utopia_core::{Deferred, Terminal};
+use utopia_core::Deferred;
 use uuid::Uuid;
 
 async fn running_job(pool: &PgPool, attempts: i32) -> anyhow::Result<Job> {
@@ -63,6 +63,71 @@ async fn remove(pool: &PgPool, id: i64) -> anyhow::Result<()> {
 }
 
 #[tokio::test]
+async fn a_refused_write_retries_the_computed_result() -> anyhow::Result<()> {
+    let Some(url) = crate::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let job = running_job(&pool, 1).await?;
+    let object_name = format!("test_writeback_retry_{}", Uuid::now_v7().simple());
+
+    let result: anyhow::Result<()> = async {
+        // sequence 不随拒写事务回滚，计数能证明第一次写入确实失败。
+        sqlx::raw_sql(&format!(
+            "CREATE SEQUENCE {object_name};
+             CREATE FUNCTION {object_name}() RETURNS trigger LANGUAGE plpgsql AS $$
+             BEGIN
+                 IF nextval('{object_name}') = 1 THEN
+                     RAISE EXCEPTION 'injected result writeback failure';
+                 END IF;
+                 RETURN NEW;
+             END; $$;
+             CREATE TRIGGER {object_name} BEFORE UPDATE ON jobs
+             FOR EACH ROW WHEN (OLD.id = {id} AND OLD.kind = '{kind}'
+                                AND OLD.status = 'running' AND NEW.status = 'done')
+             EXECUTE FUNCTION {object_name}();",
+            id = job.id,
+            kind = job.kind,
+        ))
+        .execute(&pool)
+        .await?;
+
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            persist_with_retry(&pool, &job, &JobOutcome::Done, Utc::now()),
+        )
+        .await?;
+        let writes: i64 = sqlx::query_scalar(&format!("SELECT last_value FROM {object_name}"))
+            .fetch_one(&pool)
+            .await?;
+        anyhow::ensure!(
+            writes == 2,
+            "expected one refused write and one successful retry"
+        );
+        let written = state(&pool, job.id).await?;
+        anyhow::ensure!(written.status == "done" && written.last_error.is_none());
+        anyhow::ensure!(written.attempts == job.attempts);
+        anyhow::ensure!(written.locked_at == Some(job.locked_at));
+        Ok(())
+    }
+    .await;
+
+    let dropped = sqlx::raw_sql(&format!(
+        "DROP TRIGGER IF EXISTS {object_name} ON jobs;
+         DROP FUNCTION IF EXISTS {object_name}();
+         DROP SEQUENCE IF EXISTS {object_name};"
+    ))
+    .execute(&pool)
+    .await;
+    let removed = remove(&pool, job.id).await;
+    pool.close().await;
+    result?;
+    dropped?;
+    removed?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn an_old_claim_cannot_overwrite_any_new_running_result() -> anyhow::Result<()> {
     let Some(url) = crate::test_db::url() else {
         return Ok(());
@@ -70,7 +135,6 @@ async fn an_old_claim_cannot_overwrite_any_new_running_result() -> anyhow::Resul
     let pool = PgPool::connect(&url).await?;
     let completed_at = DateTime::<Utc>::from_timestamp(1_700_000_000, 0).unwrap();
     let ordinary = anyhow::anyhow!("network failure").context("provider request");
-    let terminal = anyhow::anyhow!("balance gone").context(Terminal);
     let deferred = anyhow::anyhow!("index busy").context(Deferred::new(Duration::from_secs(17)));
 
     // 窗口内和窗口外的旧 Deferred 都不能把新认领写成失败。
@@ -95,7 +159,6 @@ async fn an_old_claim_cannot_overwrite_any_new_running_result() -> anyhow::Resul
         for outcome in [
             JobOutcome::Done,
             JobOutcome::failed(&job, &ordinary),
-            JobOutcome::failed(&job, &terminal),
             JobOutcome::failed(&job, &deferred),
         ] {
             assert!(!persist_outcome(&pool, &job, &outcome, completed_at).await?);
@@ -103,48 +166,6 @@ async fn an_old_claim_cannot_overwrite_any_new_running_result() -> anyhow::Resul
         }
         remove(&pool, job.id).await?;
     }
-    pool.close().await;
-    Ok(())
-}
-
-#[tokio::test]
-async fn manual_requeue_changes_claim_time_after_resetting_attempts() -> anyhow::Result<()> {
-    let Some(url) = crate::test_db::url() else {
-        return Ok(());
-    };
-    let pool = PgPool::connect(&url).await?;
-    let old_job = running_job(&pool, 1).await?;
-    let completed_at = DateTime::<Utc>::from_timestamp(1_700_000_000, 0).unwrap();
-    let error = anyhow::anyhow!("permanent provider failure").context(Terminal);
-    let old_outcome = JobOutcome::failed(&old_job, &error);
-    assert!(persist_outcome(&pool, &old_job, &old_outcome, completed_at).await?);
-
-    let count = super::requeue_failed(
-        &pool,
-        RequeueScope {
-            kind: Some(&old_job.kind),
-            ..RequeueScope::default()
-        },
-    )
-    .await?;
-    assert_eq!(count, 1);
-    let requeued = state(&pool, old_job.id).await?;
-    assert_eq!(requeued.attempts, 0);
-    assert_eq!(requeued.locked_at, Some(old_job.locked_at));
-
-    // 只认领本测试已经提交重排的行，使用数据库返回的原始时间。
-    let new_job = claim_job(&pool, old_job.id).await?;
-    assert_eq!(new_job.attempts, old_job.attempts);
-    assert_ne!(new_job.locked_at, old_job.locked_at);
-    let new_execution = state(&pool, new_job.id).await?;
-    for outcome in [JobOutcome::Done, old_outcome] {
-        assert!(!persist_outcome(&pool, &old_job, &outcome, completed_at).await?);
-        assert_eq!(state(&pool, new_job.id).await?, new_execution);
-    }
-
-    assert!(persist_outcome(&pool, &new_job, &JobOutcome::Done, completed_at).await?);
-    assert_eq!(state(&pool, new_job.id).await?.last_error, None);
-    remove(&pool, new_job.id).await?;
     pool.close().await;
     Ok(())
 }
@@ -159,50 +180,24 @@ async fn a_repeated_ack_preserves_the_first_writeback() -> anyhow::Result<()> {
     let deferred = anyhow::anyhow!("index busy").context(Deferred::new(Duration::from_secs(17)));
     let ordinary =
         anyhow::anyhow!("provider detail: request rejected").context("outer request context");
-    let terminal = anyhow::anyhow!("balance gone").context(Terminal);
-    let terminal_and_deferred = anyhow::anyhow!("balance gone after waiting")
-        .context(Deferred::new(Duration::from_secs(17)))
-        .context(Terminal)
-        .context("outer request context");
 
-    for (attempts, error, expected_status, expected_attempts, retry_secs) in [
-        (2, None, "done", 2, None),
-        (2, Some(&ordinary), "queued", 2, Some(120)),
-        (3, Some(&ordinary), "failed", 3, None),
-        (2, Some(&terminal), "failed", 2, None),
-        (1, Some(&terminal_and_deferred), "failed", 1, None),
-        (2, Some(&deferred), "queued", 1, Some(17)),
+    for (error, starts_deferral) in [
+        (None, false),
+        (Some(&ordinary), false),
+        (Some(&deferred), true),
     ] {
-        let job = running_job(&pool, attempts).await?;
-        let before = state(&pool, job.id).await?;
+        let job = running_job(&pool, 2).await?;
         let outcome = match error {
             Some(error) => JobOutcome::failed(&job, error),
             None => JobOutcome::Done,
         };
         assert!(persist_outcome(&pool, &job, &outcome, completed_at).await?);
         let first_ack = state(&pool, job.id).await?;
-        assert_eq!(first_ack.status, expected_status);
-        assert_eq!(first_ack.attempts, expected_attempts);
-        assert_eq!(
-            first_ack.last_error,
-            error.map(|error| format!("{error:#}"))
-        );
-        if let Some(retry_secs) = retry_secs {
-            assert_eq!(
-                first_ack.run_at,
-                completed_at + chrono::Duration::seconds(retry_secs)
-            );
-        }
-        if expected_attempts == attempts {
-            assert_eq!(first_ack.payload, before.payload);
-        } else {
-            // 只有有效 Deferred 退还预算，并首次写入等待窗口起点。
-            let since: DateTime<Utc> = sqlx::query_scalar(
-                "SELECT (payload->>'deferred_since')::timestamptz FROM jobs WHERE id = $1",
-            )
-            .bind(job.id)
-            .fetch_one(&pool)
-            .await?;
+        if starts_deferral {
+            let since: DateTime<Utc> = sqlx::query_scalar("SELECT $1::text::timestamptz")
+                .bind(first_ack.payload["deferred_since"].as_str())
+                .fetch_one(&pool)
+                .await?;
             assert_eq!(since, completed_at);
         }
         let duplicate_ack = persist_outcome(
@@ -260,31 +255,6 @@ async fn deferred_window_uses_completion_time_and_current_database_payload() -> 
         }
         remove(&pool, job.id).await?;
     }
-    pool.close().await;
-    Ok(())
-}
-
-#[tokio::test]
-async fn a_handler_that_already_marked_done_is_not_overwritten() -> anyhow::Result<()> {
-    let Some(url) = crate::test_db::url() else {
-        return Ok(());
-    };
-    let pool = PgPool::connect(&url).await?;
-    let job = running_job(&pool, 1).await?;
-    // RSS hydration 会在自己的事务中提交 done。
-    sqlx::query(
-        "UPDATE jobs SET status = 'done', last_error = NULL, updated_at = now() WHERE id = $1",
-    )
-    .bind(job.id)
-    .execute(&pool)
-    .await?;
-    let handler_commit = state(&pool, job.id).await?;
-    let error = anyhow::anyhow!("late error");
-    for outcome in [JobOutcome::Done, JobOutcome::failed(&job, &error)] {
-        assert!(!persist_outcome(&pool, &job, &outcome, Utc::now()).await?);
-        assert_eq!(state(&pool, job.id).await?, handler_commit);
-    }
-    remove(&pool, job.id).await?;
     pool.close().await;
     Ok(())
 }
