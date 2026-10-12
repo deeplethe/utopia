@@ -329,6 +329,18 @@ SELECT edge, kind, COUNT(*) AS rows FROM (
       LEFT JOIN relation_types p ON p.id = r.conclude_property_id
      WHERE r.kb_id = $1
     UNION ALL
+    -- @edge ontology_regression_cases.statement_id -> facts.id
+    SELECT 'regression.statement', 'cross_kb', f.kb_id IS DISTINCT FROM c.kb_id
+      FROM ontology_regression_cases c
+      LEFT JOIN facts f ON f.id = c.statement_id
+     WHERE c.kb_id = $1
+    UNION ALL
+    -- @edge ontology_regression_cases.expected_property_id -> relation_types.id
+    SELECT 'regression.property', 'cross_kb', p.kb_id IS DISTINCT FROM c.kb_id
+      FROM ontology_regression_cases c
+      LEFT JOIN relation_types p ON p.id = c.expected_property_id
+     WHERE c.kb_id = $1
+    UNION ALL
     -- @edge phrase_readings.entity_id -> entities.id
     -- 读数缓存：答出的实体喂给蕴含——别库的实体等于把别库语义读进本库
     SELECT 'reading.entity', 'cross_kb', e.kb_id IS DISTINCT FROM pr.kb_id

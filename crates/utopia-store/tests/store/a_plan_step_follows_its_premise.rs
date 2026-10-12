@@ -598,6 +598,7 @@ async fn bind_is_on(pool: &PgPool, f: &Fixture) -> anyhow::Result<()> {
         count: 1,
         examples: Vec::new(),
         quotes: Vec::new(),
+        example_statement_ids: Vec::new(),
     };
     let written = phrase_bindings::decide(
         pool,

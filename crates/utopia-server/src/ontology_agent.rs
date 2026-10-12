@@ -51,6 +51,8 @@ fn shape_of(sig: &PhraseSignature) -> Value {
         "subject": sig.subject_type_key,
         "object": sig.object_type_key,
         "value": sig.object_is_value,
+        // Proposals show the first example; keep its identity from the same read.
+        "example_statement_ids": sig.example_statement_ids.first().into_iter().collect::<Vec<_>>(),
     })
 }
 
@@ -1000,7 +1002,7 @@ pub async fn adopt(
             tracing::warn!(%kb_id, error = %e, "采纳后本体向量没补上，对齐的短名单看不见新元素");
         }
     }
-    utopia_store::ontology::decide_proposal(pool, kb_id, section, key, "adopted", actor).await?;
+    finish_adoption(pool, kb_id, &p, id, actor).await?;
     if edited {
         utopia_store::ontology::mark_proposal_edited(pool, kb_id, section, key).await?;
     }
@@ -1016,6 +1018,78 @@ pub async fn adopt(
     .await;
     state.emit_graph(kb_id);
     Ok(id)
+}
+
+async fn finish_adoption(
+    pool: &sqlx::PgPool,
+    kb_id: Uuid,
+    proposal: &utopia_store::ontology::StoredProposal,
+    property_id: Uuid,
+    actor: Uuid,
+) -> Result<(), AppError> {
+    let mut examples = Vec::new();
+    let property = matches!(
+        proposal.section.as_str(),
+        "relation_types" | "attribute_types"
+    ) || (proposal.section == "map_to"
+        && proposal.payload.get("kind").and_then(Value::as_str) != Some("class"));
+    if property {
+        for shape in proposal
+            .signatures
+            .get("phrases")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let ids = match shape.get("example_statement_ids") {
+                Some(ids) => serde_json::from_value::<Vec<Uuid>>(ids.clone()).map_err(|_| {
+                    AppError::invalid("invalid_examples", "Invalid proposal statement identities.")
+                })?,
+                None => Vec::new(),
+            };
+            let direction = match shape.get("direction").and_then(Value::as_str) {
+                Some("reverse") => "reverse",
+                _ => "forward",
+            };
+            examples.extend(ids.into_iter().map(|statement| (statement, direction)));
+        }
+    }
+    let mut tx = pool.begin().await?;
+    let open: Option<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM ontology_proposals WHERE kb_id=$1 AND section=$2 AND key=$3 AND status='open' FOR UPDATE"
+    ).bind(kb_id).bind(&proposal.section).bind(&proposal.key).fetch_optional(&mut *tx).await?;
+    if open.is_none() {
+        return Err(AppError::NotFound);
+    }
+    for (statement_id, direction) in examples {
+        // Removed examples cannot be checked; never substitute another statement.
+        let live: Option<Uuid> = sqlx::query_scalar("SELECT id FROM facts WHERE kb_id=$1 AND id=$2 AND layer='open' AND invalidated_at IS NULL FOR SHARE")
+            .bind(kb_id).bind(statement_id).fetch_optional(&mut *tx).await?;
+        if live.is_none() {
+            continue;
+        }
+        utopia_store::ontology_regressions::add_on(
+            &mut tx,
+            kb_id,
+            utopia_store::ontology_regressions::NewCase {
+                statement_id,
+                expected_property_id: property_id,
+                expected_direction: direction,
+                created_by: actor,
+                origin: "adoption",
+            },
+        )
+        .await?;
+    }
+    sqlx::query(
+        "UPDATE ontology_proposals SET status='adopted',decided_by=$2,decided_at=now() WHERE id=$1",
+    )
+    .bind(open)
+    .bind(actor)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(())
 }
 
 /// map_to 的采纳：目标是属性，提案里的每条形状写成人的绑定（属性 + 方向），投影跟着

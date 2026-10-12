@@ -105,6 +105,7 @@ async fn tied_signatures_come_in_a_fixed_order() -> anyhow::Result<()> {
             "{shape:#?}"
         );
         let supplied = &sigs[0];
+        anyhow::ensure!(supplied.example_statement_ids == supplies[..3]);
         anyhow::ensure!(
             supplied.examples
                 == vec![

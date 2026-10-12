@@ -19,7 +19,8 @@ export function fmtObjectValue(v: Record<string, unknown> | null): string | null
         notation: Math.abs(v.value) >= 10000 ? "compact" : "standard",
         maximumFractionDigits: 2,
       }).format(v.value);
-      return `${unit}${n}`;
+      // Currency symbols precede an amount; physical units follow a quantity.
+      return /\p{Sc}/u.test(unit) ? `${unit}${n}` : `${n} ${unit}`;
     }
     const val = String(v.value);
     if (!unit) return val;

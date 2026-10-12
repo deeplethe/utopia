@@ -15,6 +15,7 @@ mod mapping_routes;
 mod mcp;
 mod members_routes;
 mod oidc_routes;
+mod ontology_regression_routes;
 pub(crate) mod ontology_routes;
 mod question_routes;
 mod review_routes;
@@ -286,6 +287,10 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
             get(documents_routes::extraction_drops),
         )
         .route("/kbs/{id}/ontology", get(ontology_routes::get))
+        .route(
+            "/kbs/{id}/ontology/regressions",
+            post(ontology_regression_routes::create),
+        )
         // 业务规则（0021）：读规则要 Viewer，写要 Editor
         .route(
             "/kbs/{id}/rules",

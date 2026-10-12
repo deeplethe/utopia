@@ -186,14 +186,14 @@ function SourceGrants({ sourceId }: { sourceId: string }) {
 }
 
 /** 部署级配置：注册开关 + worker 并发。 */
-function DeploymentAdmin() {
+export function DeploymentAdmin() {
   const queryClient = useQueryClient();
   const dep = useQuery({
     queryKey: ["deployment"],
     queryFn: api.adminDeployment,
   });
   const [workers, setWorkers] = useState<number | null>(null);
-  const shown = workers ?? dep.data?.worker_concurrency ?? 32;
+  const shown = workers ?? dep.data?.worker_concurrency ?? 64;
   // 按模型的并发：缺省值 + 每个在用模型的覆盖
   const [modelDefault, setModelDefault] = useState<number | null>(null);
   const shownDefault =
@@ -266,11 +266,11 @@ function DeploymentAdmin() {
             <Input size="sm" className="u-input-plain w-16 u-num text-center"
               type="number"
               min={1}
-              max={32}
+              max={256}
               value={shown}
               disabled={dep.isPending}
               onChange={(e) =>
-                setWorkers(Math.max(1, Math.min(32, Number(e.target.value) || 1)))
+                setWorkers(Math.max(1, Math.min(256, Number(e.target.value) || 1)))
               }
             />
             <Button variant="secondary" size="sm"
@@ -462,7 +462,7 @@ export function dsSpecs(): EngineSpec[] {
         { key: "password", label: D.fPassword, secret: true },
       ],
       build: (v) =>
-        `postgres://${auth(v.user, v.password)}${v.host}:${v.port || "5432"}/${v.database}`,
+        `postgres://${auth(v.user, v.password)}${v.host}:${v.port || "5432"}/${enc(v.database)}`,
     },
     {
       id: "mysql",
@@ -475,7 +475,7 @@ export function dsSpecs(): EngineSpec[] {
         { key: "password", label: D.fPassword, secret: true },
       ],
       build: (v) =>
-        `mysql://${auth(v.user, v.password)}${v.host}:${v.port || "3306"}/${v.database}`,
+        `mysql://${auth(v.user, v.password)}${v.host}:${v.port || "3306"}/${enc(v.database)}`,
     },
     {
       id: "clickhouse",
@@ -507,8 +507,8 @@ export function dsSpecs(): EngineSpec[] {
         { key: "password", label: D.fPassword, optional: true, secret: true },
       ],
       build: (v) =>
-        `trino://${auth(v.user, v.password)}${v.host}:${v.port || "8080"}/${v.catalog}` +
-        (v.schema ? `/${v.schema}` : ""),
+        `trino://${auth(v.user, v.password)}${v.host}:${v.port || "8080"}/${enc(v.catalog)}` +
+        (v.schema ? `/${enc(v.schema)}` : ""),
     },
     {
       id: "databricks",
@@ -538,7 +538,7 @@ export function dsSpecs(): EngineSpec[] {
         { key: "warehouse", label: D.fWarehouse },
       ],
       build: (v) =>
-        `snowflake://:${enc(v.token)}@${v.account}/${v.database}/${v.schema}` +
+        `snowflake://:${enc(v.token)}@${v.account}/${enc(v.database)}/${enc(v.schema)}` +
         `?warehouse=${enc(v.warehouse)}`,
     },
     {
