@@ -5,6 +5,7 @@
 //! may be any entity the declared join reaches. It also checks that the
 //! persisted row carries its object and the full three-part proof.
 
+use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use utopia_store::business_rules::{self, ConclusionInput, ConditionInput};
 use uuid::Uuid;
@@ -28,6 +29,8 @@ type DerivedRows = Vec<(
     Option<Uuid>,
     chrono::DateTime<chrono::Utc>,
 )>;
+
+type TimedRelationRow = (Uuid, Uuid, Option<Uuid>, DateTime<Utc>, DateTime<Utc>);
 
 async fn seed(pool: &PgPool) -> anyhow::Result<Fixture> {
     let (org, ws, kb) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
@@ -316,6 +319,224 @@ async fn dropping_the_join_is_refused_while_the_rule_keeps_y_conditions() -> any
             None,
         )
         .await?;
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+
+    sqlx::query("DELETE FROM organizations WHERE id = $1")
+        .bind(f.org)
+        .execute(&pool)
+        .await?;
+    run
+}
+
+#[tokio::test]
+async fn a_y_only_join_scopes_x_without_requiring_x_attributes() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    utopia_store::db::migrate(&pool).await?;
+    let f = seed(&pool).await?;
+
+    let run = async {
+        let (horizontal_well, plant_type) = (Uuid::now_v7(), Uuid::now_v7());
+        let (subclass_subject, plant_subject) = (Uuid::now_v7(), Uuid::now_v7());
+        sqlx::query(
+            "INSERT INTO entity_types (id, kb_id, key, label)
+             VALUES ($1, $2, 'horizontal_well', 'HorizontalWell'), ($3, $2, 'plant', 'Plant')",
+        )
+        .bind(horizontal_well)
+        .bind(f.kb)
+        .bind(plant_type)
+        .execute(&pool)
+        .await?;
+        sqlx::query("INSERT INTO entity_type_parents (child_id, parent_id) VALUES ($1, $2)")
+            .bind(horizontal_well)
+            .bind(f.well)
+            .execute(&pool)
+            .await?;
+        sqlx::query(
+            "INSERT INTO entities (id, kb_id, type_id, canonical_name)
+             VALUES ($1, $2, $3, 'HW-1'), ($4, $2, $5, 'P-1')",
+        )
+        .bind(subclass_subject)
+        .bind(f.kb)
+        .bind(horizontal_well)
+        .bind(plant_subject)
+        .bind(plant_type)
+        .execute(&pool)
+        .await?;
+        // None of the three subjects has attributes; only Y supplies the reading.
+        attr(&pool, &f, f.y, f.pressure, 120.0, "2024-01-15T00:00:00Z").await?;
+        let join = edge(
+            &pool,
+            &f,
+            f.supplies,
+            "2024-01-01T00:00:00Z",
+            "2024-02-01T00:00:00Z",
+        )
+        .await?;
+        for subject in [subclass_subject, plant_subject] {
+            sqlx::query(
+                "INSERT INTO facts (id, kb_id, subject_id, predicate_id, object_id,
+                                    valid_from, valid_from_precision, valid_to, valid_to_precision,
+                                    confidence)
+                 SELECT $1, kb_id, $2, predicate_id, object_id,
+                        valid_from, valid_from_precision, valid_to, valid_to_precision, confidence
+                   FROM facts WHERE id = $3",
+            )
+            .bind(Uuid::now_v7())
+            .bind(subject)
+            .bind(join)
+            .execute(&pool)
+            .await?;
+        }
+        let rule = business_rules::create(
+            &pool,
+            f.kb,
+            "a Well connected to a high-pressure Field",
+            "",
+            f.well,
+            "relation",
+            None,
+            Some(f.upstream_of),
+            None,
+            None,
+            Some(f.supplies),
+            &pressure_condition(&f, "y"),
+        )
+        .await?;
+        utopia_store::reasoning::materialize(&pool, f.kb).await?;
+        let subjects: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT subject_id FROM derived_facts
+              WHERE kb_id = $1 AND attribute_rule_id = $2 AND invalidated_at IS NULL",
+        )
+        .bind(f.kb)
+        .bind(rule)
+        .fetch_all(&pool)
+        .await?;
+        assert_eq!(subjects.len(), 2, "only Well and its subclass may conclude");
+        assert!(subjects.contains(&f.x));
+        assert!(subjects.contains(&subclass_subject));
+        assert!(!subjects.contains(&plant_subject));
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+
+    sqlx::query("DELETE FROM organizations WHERE id = $1")
+        .bind(f.org)
+        .execute(&pool)
+        .await?;
+    run
+}
+
+#[tokio::test]
+async fn a_y_only_join_keeps_a_concluded_class_in_its_proof() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    utopia_store::db::migrate(&pool).await?;
+    let f = seed(&pool).await?;
+
+    let run = async {
+        let gas_well = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO entity_types (id, kb_id, key, label) VALUES ($1, $2, 'gas_well', 'GasWell')",
+        )
+        .bind(gas_well)
+        .bind(f.kb)
+        .execute(&pool)
+        .await?;
+        let x_pressure = attr(&pool, &f, f.x, f.pressure, 120.0, "2024-01-01T00:00:00Z").await?;
+        sqlx::query(
+            "UPDATE facts SET valid_to = '2024-02-01T00:00:00Z', valid_to_precision = 'day' WHERE id = $1",
+        )
+        .bind(x_pressure)
+        .execute(&pool)
+        .await?;
+        let y_pressure = attr(&pool, &f, f.y, f.pressure, 120.0, "2024-01-15T00:00:00Z").await?;
+        let join = edge(
+            &pool,
+            &f,
+            f.supplies,
+            "2024-01-01T00:00:00Z",
+            "2024-03-01T00:00:00Z",
+        )
+        .await?;
+        // The same pair's later edge falls entirely outside its concluded GasWell interval.
+        edge(
+            &pool,
+            &f,
+            f.supplies,
+            "2024-04-01T00:00:00Z",
+            "2024-05-01T00:00:00Z",
+        )
+        .await?;
+        let typing_rule = business_rules::create(
+            &pool,
+            f.kb,
+            "high pressure makes a GasWell",
+            "",
+            f.well,
+            "typing",
+            Some(gas_well),
+            None,
+            None,
+            None,
+            None,
+            &pressure_condition(&f, "x"),
+        )
+        .await?;
+        let relation_rule = business_rules::create(
+            &pool,
+            f.kb,
+            "a GasWell connected to a high-pressure Field",
+            "",
+            gas_well,
+            "relation",
+            None,
+            Some(f.upstream_of),
+            None,
+            None,
+            Some(f.supplies),
+            &pressure_condition(&f, "y"),
+        )
+        .await?;
+        utopia_store::reasoning::materialize(&pool, f.kb).await?;
+        let rows: Vec<TimedRelationRow> = sqlx::query_as(
+            "SELECT id, subject_id, object_id, valid_from, valid_to FROM derived_facts
+              WHERE kb_id = $1 AND attribute_rule_id = $2 AND invalidated_at IS NULL",
+        )
+        .bind(f.kb)
+        .bind(relation_rule)
+        .fetch_all(&pool)
+        .await?;
+        assert_eq!(rows.len(), 1, "the disjoint join must not conclude a relation");
+        let (derived, subject, object, from, to) = rows[0];
+        assert_eq!((subject, object), (f.x, Some(f.y)));
+        assert_eq!(from.to_rfc3339(), "2024-01-15T00:00:00+00:00");
+        assert_eq!(to.to_rfc3339(), "2024-02-01T00:00:00+00:00");
+        let concluded_class: Uuid = sqlx::query_scalar(
+            "SELECT id FROM derived_facts
+              WHERE kb_id = $1 AND attribute_rule_id = $2 AND invalidated_at IS NULL",
+        )
+        .bind(f.kb)
+        .bind(typing_rule)
+        .fetch_one(&pool)
+        .await?;
+        let premises: Vec<(Option<Uuid>, Option<Uuid>)> = sqlx::query_as(
+            "SELECT premise_fact_id, premise_derived_id
+               FROM fact_derivations WHERE derived_fact_id = $1 ORDER BY seq",
+        )
+        .bind(derived)
+        .fetch_all(&pool)
+        .await?;
+        assert_eq!(premises.len(), 3);
+        assert!(premises.contains(&(Some(y_pressure), None)));
+        assert!(premises.contains(&(Some(join), None)));
+        assert!(premises.contains(&(None, Some(concluded_class))));
         Ok::<_, anyhow::Error>(())
     }
     .await;
