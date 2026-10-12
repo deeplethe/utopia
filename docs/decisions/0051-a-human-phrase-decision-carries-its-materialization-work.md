@@ -1,6 +1,6 @@
 # 0051 · A human phrase decision carries its materialization work
 
-- **Status**: Implemented 2026-09-23 (#876)
+- **Status**: Implemented · 2026-09-23 (#876) · revised 2026-10-12 ([#1137](https://github.com/deeplethe/utopia/pull/1137))
 - **Written**: 2026-09-21
 - **Related**: [0044](0044-the-ontology-is-a-view-over-what-documents-say.md); [PR #841](https://github.com/deeplethe/utopia/pull/841).
 
@@ -80,6 +80,17 @@ kill inside a partly written materialization transaction, failed ack persistence
 notification-loss polling, old-aligner/new-handler overlap, and production route
 permissions/status reads/UI E2E remain explicit acceptance work. Existing temporal
 and evidence tests must pass after any extraction; the experiment is not a substitute.
+
+**Revision 2026-10-12 (job result writeback, [#1137](https://github.com/deeplethe/utopia/pull/1137)).**
+While the worker lives, this supersedes the failed-ack limitation above (#1106).
+Guard every outcome update by ID, `status = 'running'`, and the exact database
+`locked_at` returned by `claim_one`, including the expired Deferred fallback.
+Freeze the result, full error, retry decision and completion time; repeated writes
+cannot spend another business attempt, move the schedule or extend deferral.
+Retry persistence in the same task after 1, 2, 4, 8, 16, then at most 30 seconds;
+retain the worker slot, release connections before waiting, and stop on pool closure.
+Outcomes stay in memory: process exit may rerun business work, and persistent
+write failures retain slots. No schema change or multi-instance guarantee is added.
 
 After contract approval, wire the route's existing authorization and binding lookup
 to a same-transaction decision+job function; register the pure handler in main;

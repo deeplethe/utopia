@@ -264,6 +264,8 @@ pub fn evaluate(
 ///
 /// `facts` stays scoped to the conclusion's subject type. A one-hop join can
 /// reach another entity type, so its conditions read from `pool_facts`.
+/// A joined X may have no attribute facts, so callers must also scope `edges`
+/// by their subjects or add an X-side scope condition.
 pub fn evaluate_with_pool(
     rules: &[BusinessRule],
     facts: &[AttrFact],
