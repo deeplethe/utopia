@@ -73,6 +73,25 @@ reported at its original time. These cases observe alignment without another eva
 model call, evaluation job, or version identity. They are not a semantic accuracy
 benchmark. The workbench view follows in a second PR.
 
+## Cut 2 workbench boundary — 2026-10-10
+
+The [second slice welcomed on merging #1178](https://github.com/deeplethe/utopia/pull/1178#pullrequestreview-5477806071)
+shows a base's live statement cases in the ontology workbench. A Viewer reads
+`GET /api/v1/kbs/{kb_id}/ontology/regressions`: source and property labels,
+expected and actual direction, the latest stored comparison and its check time,
+and origin and attribution. Expanding a case reads the existing evidence route
+and links back to the document. A preserved human binding is called a human
+decision, not an independent match; the binding's decision time remains distinct
+from the comparison's check time.
+
+An Editor uses “Make a case” beside an open statement in the document viewer,
+chooses the expected property without a model answer preselected, and confirms
+its direction through the existing POST. Typed projections and legacy facts do
+not supply statement IDs. Literal statements offer forward attributes only.
+The list refreshes through the existing graph and review events; refreshing reads
+saved results and never starts alignment. No evaluator, job, schema migration,
+or version identity is added.
+
 ## Status history
 
 The status line as it stood on 2026-09-27, before status lines were cut to one line:

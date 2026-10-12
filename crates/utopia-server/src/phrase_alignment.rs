@@ -17,6 +17,7 @@
 use crate::extraction::chat_retrying_rate_limits_at;
 use crate::llm_util;
 use crate::state::AppState;
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use utopia_core::models::RelationTypeView;
 use utopia_extract::phrase_align::{
@@ -269,7 +270,10 @@ type Shortlist = HashMap<SignatureKey, Vec<Uuid>>;
 /// 按相关度给候选多的签名开短名单：签名的文本（短语加一条例句）嵌入后，与属性的向量比
 /// 近（`embed_ontology` 建的那份），留最近的 [`SHORTLIST`] 条；标签里的词出现在短语里的
 /// 属性无论远近都留着（"based in" 对 "based in"）。没配嵌入模型、属性还没向量、或候选本来
-/// 就不多的签名不进表——那时模型看的还是全部结构候选
+/// 就不多的签名不进表——那时模型看的还是全部结构候选。
+///
+/// 签名的向量按 (库, 嵌入模型, 文本的哈希) 存在 `signature_vectors` 里，一轮只嵌没见过的
+/// 文本（#1097）：签名的文本两轮之间几乎不变，从前每轮全部重嵌，判的可能只是新来的几十条
 async fn shortlist(
     state: &AppState,
     settings: &utopia_core::models::LlmSettings,
@@ -278,17 +282,28 @@ async fn shortlist(
     full: &Considered<'_>,
 ) -> anyhow::Result<Shortlist> {
     let mut out = Shortlist::new();
-    let Some(client) = llm_util::embed_client(settings) else {
+    let (Some(client), Some(model)) = (
+        llm_util::embed_client(settings),
+        settings.embed_model.as_deref(),
+    ) else {
         return Ok(out);
     };
     let wide: Vec<&PhraseSignature> = sigs
         .iter()
         .filter(|s| full.get(&s.key()).is_some_and(|(f, _)| f.len() > SHORTLIST))
         .collect();
+    let pool = &state.pool;
+    let texts: Vec<String> = wide.iter().map(|s| signature_text(s)).collect();
+    let hashes: Vec<Vec<u8>> = texts
+        .iter()
+        .map(|t| Sha256::digest(t.as_bytes()).to_vec())
+        .collect();
+    // 这一轮不再出现的文本、别的模型嵌的向量删掉。按全部候选多的签名留，不只按下面嵌了的：
+    // 一批嵌入失败时，上一轮存好的不跟着丢
+    utopia_store::signature_vectors::prune(pool, kb_id, model, &hashes).await?;
     if wide.is_empty() {
         return Ok(out);
     }
-    let pool = &state.pool;
     // 先问这一类属性有没有向量，没有的签名不嵌：嵌了最近邻也是空，照样看全部。一个没跑过
     // `embed_ontology` 的库从前每轮把一万七千条签名送去嵌入、短名单一条没开（#1097）。
     // 一类问一句，至多两句
@@ -300,23 +315,25 @@ async fn shortlist(
             has_vectors.insert(kind, has);
         }
     }
-    let usable: Vec<&PhraseSignature> = wide
+    let usable: Vec<usize> = (0..wide.len())
+        .filter(|&i| has_vectors.get(property_kind(wide[i])) == Some(&true))
+        .collect();
+    let wanted: Vec<Vec<u8>> = usable.iter().map(|&i| hashes[i].clone()).collect();
+    let mut vectors = utopia_store::signature_vectors::get(pool, kb_id, model, &wanted).await?;
+    let reused = vectors.len();
+    // 没存过的才嵌；两条签名文本相同（例句、引文都一样）只嵌一次
+    let mut queued = HashSet::new();
+    let missing: Vec<usize> = usable
         .iter()
         .copied()
-        .filter(|s| has_vectors.get(property_kind(s)) == Some(&true))
+        .filter(|&i| !vectors.contains_key(&hashes[i]) && queued.insert(&hashes[i]))
         .collect();
-    for batch in usable.chunks(SHORTLIST_EMBED_BATCH) {
-        let texts: Vec<String> = batch
-            .iter()
-            .map(|s| match (s.examples.first(), s.quotes.first()) {
-                (Some(e), Some(q)) => format!("{} · {e} · {q}", s.phrase),
-                (Some(e), None) => format!("{} · {e}", s.phrase),
-                _ => s.phrase.clone(),
-            })
-            .collect();
-        let vectors = {
+    let mut embedded = 0;
+    for batch in missing.chunks(SHORTLIST_EMBED_BATCH) {
+        let batch_texts: Vec<String> = batch.iter().map(|&i| texts[i].clone()).collect();
+        let got = {
             let _permit = llm_util::acquire_embed(state, settings).await;
-            match client.embed(&texts).await {
+            match client.embed(&batch_texts).await {
                 Ok(v) if v.len() == batch.len() => v,
                 Ok(v) => {
                     tracing::warn!(%kb_id, sent = batch.len(), got = v.len(), "签名向量数量对不上，这一批不开短名单");
@@ -328,40 +345,62 @@ async fn shortlist(
                 }
             }
         };
-        for (s, vector) in batch.iter().zip(vectors) {
-            let (fitting, _) = &full[&s.key()];
-            let near = utopia_store::ontology::nearest_relation_type_ids(
-                pool,
-                kb_id,
-                &vector,
-                (fitting.len() * 2) as i64,
-                Some(property_kind(s)),
-            )
-            .await?;
-            if near.is_empty() {
-                // 属性还没有向量：不开短名单，模型看全部
-                continue;
-            }
-            let fitting_ids: Vec<Uuid> = fitting.iter().map(|p| p.id).collect();
-            let must_keep: Vec<Uuid> = fitting
-                .iter()
-                .filter(|p| label_in_phrase(&p.label, &s.phrase))
-                .map(|p| p.id)
-                .collect();
-            out.insert(
-                s.key(),
-                pick_shortlist(&near, &fitting_ids, &must_keep, SHORTLIST),
-            );
+        let items: Vec<(Vec<u8>, Vec<f32>)> =
+            batch.iter().map(|&i| hashes[i].clone()).zip(got).collect();
+        utopia_store::signature_vectors::put(pool, kb_id, model, &items).await?;
+        embedded += items.len();
+        vectors.extend(items);
+    }
+    for &i in &usable {
+        let s = wide[i];
+        // 这一批没嵌出来：不开短名单，模型看全部
+        let Some(vector) = vectors.get(&hashes[i]) else {
+            continue;
+        };
+        let (fitting, _) = &full[&s.key()];
+        let near = utopia_store::ontology::nearest_relation_type_ids(
+            pool,
+            kb_id,
+            vector,
+            (fitting.len() * 2) as i64,
+            Some(property_kind(s)),
+        )
+        .await?;
+        if near.is_empty() {
+            // 属性还没有向量：不开短名单，模型看全部
+            continue;
         }
+        let fitting_ids: Vec<Uuid> = fitting.iter().map(|p| p.id).collect();
+        let must_keep: Vec<Uuid> = fitting
+            .iter()
+            .filter(|p| label_in_phrase(&p.label, &s.phrase))
+            .map(|p| p.id)
+            .collect();
+        out.insert(
+            s.key(),
+            pick_shortlist(&near, &fitting_ids, &must_keep, SHORTLIST),
+        );
     }
     tracing::info!(
         %kb_id,
         wide = wide.len(),
         skipped = wide.len() - usable.len(),
+        reused,
+        embedded,
         shortlisted = out.len(),
         "候选短名单开好"
     );
     Ok(out)
+}
+
+/// 嵌入用的签名文本：短语加第一条例句和它的引文。缓存按它的哈希认，改了这里旧向量都对不上，
+/// 下一轮全部重嵌一次
+fn signature_text(s: &PhraseSignature) -> String {
+    match (s.examples.first(), s.quotes.first()) {
+        (Some(e), Some(q)) => format!("{} · {e} · {q}", s.phrase),
+        (Some(e), None) => format!("{} · {e}", s.phrase),
+        _ => s.phrase.clone(),
+    }
 }
 
 /// 签名能绑的是哪一类属性：宾语是字面值的绑属性，否则绑关系

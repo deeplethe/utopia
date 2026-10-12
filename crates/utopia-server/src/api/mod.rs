@@ -289,7 +289,7 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
         .route("/kbs/{id}/ontology", get(ontology_routes::get))
         .route(
             "/kbs/{id}/ontology/regressions",
-            post(ontology_regression_routes::create),
+            get(ontology_regression_routes::list).post(ontology_regression_routes::create),
         )
         // 业务规则（0021）：读规则要 Viewer，写要 Editor
         .route(

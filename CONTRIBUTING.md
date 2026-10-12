@@ -113,6 +113,12 @@ for the proposed delivery contract and remaining production acceptance.
 
 **Don't collide migration numbers.** `migrations/` rolls forward by number. Check the latest number on `main` before opening a PR — two branches each writing an `0011_` has happened, and after the merge neither one runs.
 
+**Tests cover what the change introduces.** One test per behaviour the change adds or fixes, and it fails without the change. Do not prove again what the change leaves alone, and do not add a case for an input the code is never given. Tests several times the size of the code they cover will be asked to shrink.
+
+**A test has to run in CI.** CI runs `cargo test --workspace`, `pnpm test` and `scripts/bench/lib.test.mjs`, and nothing else. A test that is `#[ignore]`d, needs a database of its own, or lives in a script file CI does not run is exercised by no one after the day it was written. The delivery regressions above are the one exception, kept because they kill processes; another needs a reason of that kind, agreed in the issue first.
+
+**One pull request is one reviewable change.** A pull request that adds more than 500 lines of code and tests together explains in its description why it cannot be split. What was run to check it (machine, commit, counts) goes in the description too, not in a decision record.
+
 **UI strings go in i18n.** Add to both `web/src/i18n/en.ts` and `zh.ts`; no hard-coded strings in components.
 
 **Comments explain why.** This repository comments densely and deliberately records the traps it fell into ("the first version used OR, and the Elon Musk article then produced a snapshot every 6KB"). Follow that. A comment restating what the code does will be asked to go.

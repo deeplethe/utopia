@@ -104,11 +104,14 @@ impl CompletionModel for RigModel {
                         .tool_calls
                         .iter()
                         .map(|c| {
-                            Ok(RawStreamingChoice::ToolCall(RawStreamingToolCall::new(
-                                call_id(&c.id),
-                                c.name.clone(),
-                                args_value(&c.arguments),
-                            )))
+                            Ok(RawStreamingChoice::ToolCall(
+                                RawStreamingToolCall::new(
+                                    call_id(&c.id),
+                                    c.name.clone(),
+                                    args_value(&c.arguments),
+                                )
+                                .with_additional_params(c.extra_content.clone()),
+                            ))
                         })
                         .collect();
                     v.push(Ok(RawStreamingChoice::FinalResponse(
@@ -300,14 +303,22 @@ pub(super) fn push_message(out: &mut Vec<Value>, m: &Message) {
             for c in content {
                 match c {
                     AssistantContent::Text(t) => text.push_str(&t.text),
-                    AssistantContent::ToolCall(tc) => calls.push(json!({
-                        "id": tc.id.as_str(),
-                        "type": "function",
-                        "function": {
-                            "name": tc.function.name,
-                            "arguments": args_string(&tc.function.arguments),
+                    // 端点挂在调用上的 `extra_content`（Gemini 3 的 thought_signature）
+                    // 跟着回去：同一回合里缺了它，端点拒收整个请求
+                    AssistantContent::ToolCall(tc) => {
+                        let mut call = json!({
+                            "id": tc.id.as_str(),
+                            "type": "function",
+                            "function": {
+                                "name": tc.function.name,
+                                "arguments": args_string(&tc.function.arguments),
+                            }
+                        });
+                        if let Some(extra) = &tc.additional_params {
+                            call["extra_content"] = extra.clone();
                         }
-                    })),
+                        calls.push(call);
+                    }
                     // 推理块与图片不回灌
                     _ => {}
                 }
@@ -370,11 +381,12 @@ fn choice_of(turn: &AssistantTurn) -> Vec<AssistantContent> {
         out.push(AssistantContent::text(text));
     }
     for c in &turn.tool_calls {
-        out.push(AssistantContent::tool_call(
-            call_id(&c.id),
-            c.name.clone(),
-            args_value(&c.arguments),
-        ));
+        let mut call =
+            AssistantContent::tool_call(call_id(&c.id), c.name.clone(), args_value(&c.arguments));
+        if let AssistantContent::ToolCall(tc) = &mut call {
+            tc.additional_params = c.extra_content.clone();
+        }
+        out.push(call);
     }
     out
 }
@@ -510,6 +522,7 @@ mod tests {
                 id: "c9".into(),
                 name: "find_entities".into(),
                 arguments: "{\"name\":\"Acme\"}".into(),
+                extra_content: None,
             }],
         };
         let choice = choice_of(&turn);
@@ -523,5 +536,60 @@ mod tests {
             }
             other => panic!("expected a tool call, got {other:?}"),
         }
+    }
+
+    /// Gemini 3 把 thought_signature 挂在调用的 `extra_content` 上，同一回合回灌时
+    /// 必须原样带回：rig 这边装在 `additional_params`，上线时还原成 `extra_content`
+    #[test]
+    fn a_tool_call_carries_its_extra_content_from_turn_to_wire() {
+        let extra = json!({"google": {"thought_signature": "Eq0CCqoC"}});
+        let turn = AssistantTurn {
+            finish_reason: Some("stop".into()),
+            content: None,
+            tool_calls: vec![utopia_llm::ToolCall {
+                id: "call_170866".into(),
+                name: "search_kb".into(),
+                arguments: "{\"query\":\"lore\"}".into(),
+                extra_content: Some(extra.clone()),
+            }],
+        };
+        let choice = choice_of(&turn);
+        let AssistantContent::ToolCall(call) = &choice[0] else {
+            panic!("expected a tool call, got {choice:?}");
+        };
+        assert_eq!(call.additional_params, Some(extra.clone()));
+
+        let w = wire(&req(vec![
+            Message::user("i want to know about lore"),
+            Message::Assistant {
+                id: None,
+                content: choice,
+            },
+            Message::tool_result("call_170866", "search_kb", "found"),
+        ]));
+        assert_eq!(w.messages[2]["tool_calls"][0]["extra_content"], extra);
+        assert_eq!(
+            w.messages[2]["tool_calls"][0]["function"]["name"],
+            "search_kb"
+        );
+    }
+
+    #[test]
+    fn a_tool_call_without_extra_content_adds_no_key_on_the_wire() {
+        let w = wire(&req(vec![
+            Message::user("q"),
+            Message::Assistant {
+                id: None,
+                content: vec![AssistantContent::tool_call(
+                    "c1",
+                    "search_chunks",
+                    json!({ "query": "x" }),
+                )],
+            },
+            Message::tool_result("c1", "search_chunks", "found"),
+        ]));
+        assert!(w.messages[2]["tool_calls"][0]
+            .get("extra_content")
+            .is_none());
     }
 }

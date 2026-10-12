@@ -216,6 +216,9 @@ async fn a_fact_without_a_predicate_is_still_visible_everywhere() -> anyhow::Res
             "文档页看不见没有说法的事实"
         );
 
+        assert!(chunk_facts.iter().all(|c| !c.is_open_statement),
+            "历史投影即便有原文说法，也不能用投影 ID 添加陈述案例");
+
         // 宾语是字面值的那条：阅读页右栏只认 canonical_name 的时候，它在界面上是
         // 主语加短语、后面空着一片（「Hugging Face, Inc. known as」）
         let valued = Uuid::now_v7();
@@ -240,6 +243,8 @@ async fn a_fact_without_a_predicate_is_still_visible_everywhere() -> anyhow::Res
         let v = chunk_facts.iter().find(|c| c.fact_id == valued).unwrap();
         assert_eq!(v.object.as_deref(), Some("Acme Inc."), "值宾语在文档页是空的");
         assert!(v.object_id.is_none(), "字面值没有实体可跳");
+        assert!(v.is_open_statement, "有短语的原始陈述可添加案例");
+        assert_eq!(v.predicate.as_deref(), Some("known as"), "确认案例要显示原文短语");
 
         // 5. 实体历史（外层 FROM 是 CTE，别名写错会直接报 missing FROM-clause）
         let (hist, _) = utopia_store::graph::entity_history(&pool, f.kb, f.subject, 50, 0).await?;

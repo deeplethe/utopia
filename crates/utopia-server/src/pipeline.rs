@@ -273,8 +273,11 @@ pub async fn memory_ingest(
     let kb_row = utopia_store::kbs::get(&state.pool, doc.kb_id).await?;
     let settings = utopia_store::settings::get(&state.pool, kb_row.workspace_id).await?;
 
+    // 一句一句嵌，嵌不了的那句留着没有向量，别的照常往下走。日志是一篇越写越长的文档，
+    // 从前所有没向量的块一起嵌、一处出错整个任务失败：一句嵌不了的记忆从此挡在每一句
+    // 新记忆前面，索引不重建、抽取不排队，而 `remember` 照样回「记下了」（#1187）
     if let Some((settings, client)) = embedder(settings.as_ref()) {
-        embed_pending(state, settings, &client, document_id).await?;
+        embed_each(state, settings, &client, document_id).await?;
     }
 
     let chunks = utopia_store::documents::chunks_full(&state.pool, document_id).await?;
@@ -302,6 +305,40 @@ pub async fn memory_ingest(
     }
     state.emit_document(doc.kb_id, document_id);
     Ok(())
+}
+
+/// 记忆日志的嵌入：每块单独一次请求，失败的只记日志、留着下次再试，返回嵌成了几条。
+/// 与 [`embed_pending`] 相反的取舍——那边一批错位会把向量写到别人身上，所以整篇失败；
+/// 这里一次一条，没有错位可言，而一条失败不该连累后来的
+async fn embed_each(
+    state: &AppState,
+    settings: &LlmSettings,
+    client: &LlmClient,
+    document_id: Uuid,
+) -> anyhow::Result<usize> {
+    let pending =
+        utopia_store::documents::chunks_pending_embedding(&state.pool, document_id).await?;
+    let mut done = 0;
+    for (chunk_id, text) in pending {
+        let embedded = {
+            let _permit = llm_util::acquire_embed(state, settings).await;
+            client.embed(std::slice::from_ref(&text)).await
+        };
+        match embedded {
+            Ok(mut vectors) if vectors.len() == 1 => {
+                let vector = vectors.remove(0);
+                utopia_store::documents::set_embeddings(&state.pool, &[(chunk_id, vector)]).await?;
+                done += 1;
+            }
+            Ok(vectors) => {
+                tracing::warn!(%document_id, %chunk_id, got = vectors.len(), "记忆的向量数量对不上，这一句先不嵌");
+            }
+            Err(e) => {
+                tracing::warn!(%document_id, %chunk_id, error = %e, "这一句记忆没嵌成，别的照常");
+            }
+        }
+    }
+    Ok(done)
 }
 
 /// 工作区配了嵌入模型才有客户端；设置与客户端一起交出去，闸门许可证要按设置取。

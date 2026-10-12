@@ -6,7 +6,8 @@ import { S } from "../i18n";
 import { useKbId } from "../kb";
 import { originHint, originLabel } from "../origin";
 import { fmtTime } from "../time";
-import { GroupLabel, PageHeader, Pager, pageSlice } from "../ui";
+import { GroupLabel, LinkButton, PageHeader, Pager, pageSlice } from "../ui";
+import { AddOntologyRegressionDialog } from "./AddOntologyRegressionDialog";
 import { QuotedText } from "../ui/citation";
 import { SourcesRail } from "./SourcesRail";
 
@@ -21,6 +22,7 @@ function factRange(f: ChunkFact): string | null {
 
 export function DocViewer() {
   const kbId = useKbId();
+  const [caseStatement, setCaseStatement] = useState<ChunkFact | null>(null);
   const { docId } = useParams({ from: "/app/kb/$kbId/doc/$docId" });
   const { chunk, quote } = useSearch({ from: "/app/kb/$kbId/doc/$docId" });
   const navigate = useNavigate();
@@ -28,6 +30,13 @@ export function DocViewer() {
   const detail = useQuery({
     queryKey: ["docDetail", docId],
     queryFn: () => api.documentDetail(docId),
+  });
+  // 角色仅详情接口返回；复用 KbScope 的键，不能从工作区 KB 列表判断写权限。
+  const roleKbId = detail.data?.document.kb_id;
+  const role = useQuery({
+    queryKey: ["kbOne", roleKbId],
+    queryFn: () => api.kbDetail(roleKbId!),
+    enabled: !!roleKbId,
   });
   // 反向证据链：各分块抽出的事实（一次取整文档，按 chunk 分组）
   const extractions = useQuery({
@@ -46,6 +55,7 @@ export function DocViewer() {
   // null = 自动定位：有引用跳转时翻到目标分块所在页
   const [page, setPage] = useState<number | null>(null);
   useEffect(() => setPage(null), [chunk, docId]);
+  useEffect(() => setCaseStatement(null), [docId]);
 
   const highlightRef = useRef<HTMLDivElement>(null);
   // 引用跳转：滚动到目标分块点亮一下，稍候淡出恢复普通状态（不常驻高亮）
@@ -190,6 +200,12 @@ export function DocViewer() {
                               )}
                             </div>
                             {range && <div className="u-num text-fine text-ink-2">{range}</div>}
+                            {f.is_open_statement &&
+                              ["editor", "admin", "owner"].includes(role.data?.my_role ?? "") && (
+                              <LinkButton className="mt-1 text-fine" onClick={() => setCaseStatement(f)}>
+                                {S.ontology.caseMake}
+                              </LinkButton>
+                            )}
                           </div>
                         );
                       })}
@@ -203,6 +219,16 @@ export function DocViewer() {
           <Pager total={chunks.length} pageSize={DOC_PAGE} page={safePage} onPage={setPage} />
         </div>
       </div>
+      {caseStatement && (
+        <AddOntologyRegressionDialog
+          key={caseStatement.fact_id}
+          kbId={doc.kb_id}
+          statementId={caseStatement.fact_id}
+          statement={`${caseStatement.subject} ${caseStatement.predicate ?? ""} ${caseStatement.object ?? ""}`}
+          isValue={!caseStatement.object_id}
+          onClose={() => setCaseStatement(null)}
+        />
+      )}
     </div>
   );
 }

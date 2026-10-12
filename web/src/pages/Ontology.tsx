@@ -9,6 +9,7 @@ import {
   ArrowLeft,
   ArrowLeftRight,
   ArrowRight,
+  CheckCheck,
   ChevronRight,
   Inbox,
   Link2,
@@ -43,6 +44,7 @@ import { useKb } from "../kb";
 import { toast } from "../toast";
 import { OntologySchemaGraph, type SchemaSelection } from "./OntologySchemaGraph";
 import { RulesPanel } from "./RulesPanel";
+import { OntologyRegressionsPanel } from "./OntologyRegressionsPanel";
 import {
   AttributeDialog,
   ClassDialog,
@@ -103,6 +105,7 @@ type Sel =
   | { kind: "class"; id: string }
   | { kind: "relation"; id: string }
   | { kind: "misses" }
+  | { kind: "regressions" }
   | { kind: "uniqueness" }
   // 业务规则那一页。**focusId 是从模式图上点一条规则边过来的**——那一行高亮，
   // 不必在一页规则里再找一遍
@@ -162,7 +165,8 @@ export function Ontology() {
     sel?.kind === "refine" ||
     sel?.kind === "uniqueness" ||
     sel?.kind === "rules" ||
-    sel?.kind === "misses";
+    sel?.kind === "misses" ||
+    sel?.kind === "regressions";
   // 模式图详情面板停在哪一段。**跨选中保留**：在实例上挨个类看下去，
   // 是一种真实的读法，每换一个类就被弹回定义页会打断它
   const [panelTab, setPanelTab] = useState<
@@ -456,6 +460,13 @@ export function Ontology() {
         >
           {S.ontology.uniquenessShort}
         </RailItem>
+        <RailItem
+          active={sel?.kind === "regressions"}
+          icon={<CheckCheck size={14} />}
+          onClick={() => setSel({ kind: "regressions" })}
+        >
+          {S.ontology.casesShort}
+        </RailItem>
         {/* 底部常驻：抽取未匹配信号（有存量时带数量徽标） */}
         <RailItem
           active={sel?.kind === "misses"}
@@ -487,7 +498,8 @@ export function Ontology() {
       sel?.kind === "refine" ||
       sel?.kind === "misses" ||
       sel?.kind === "uniqueness" ||
-      sel?.kind === "rules" ? (
+      sel?.kind === "rules" ||
+      sel?.kind === "regressions" ? (
         <div className="flex-1 min-w-0 overflow-y-auto u-scroll px-8 py-6">
           <div>
             {sel.kind === "import" ? (
@@ -512,6 +524,8 @@ export function Ontology() {
                   onError={onError}
                 />
               </div>
+            ) : sel.kind === "regressions" ? (
+              <OntologyRegressionsPanel kbId={kb.id} />
             ) : sel.kind === "rules" ? (
               <div>
                 <RulesPanel

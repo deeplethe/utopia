@@ -558,6 +558,66 @@ async fn signatures_are_not_embedded_while_no_property_has_a_vector() -> anyhow:
     run
 }
 
+/// 签名的向量存下来（#1097）：库没变，第二轮一次嵌入也不叫，也不再问模型。换了嵌入模型，
+/// 旧向量与新的属性向量不在一个空间里，重嵌一次，旧模型的行删掉
+#[tokio::test]
+async fn a_second_run_over_an_unchanged_base_makes_no_embedding_call() -> anyhow::Result<()> {
+    let Some(f) = Fx::new().await? else {
+        return Ok(());
+    };
+    let run = async {
+        f.enable_embeddings().await?;
+        // 12 条不声明域/值域的关系，加上 based_in 共 13 > SHORTLIST：这条签名要开短名单
+        for i in 0..12 {
+            sqlx::query("INSERT INTO relation_types(id,kb_id,key,label,kind,temporal) VALUES($1,$2,$3,$3,'relation','state')")
+                .bind(Uuid::now_v7()).bind(f.kb).bind(format!("filler_{i}")).execute(&f.pool).await?;
+        }
+        sqlx::query("UPDATE relation_types SET embedding = '[1,0,0,0]' WHERE kb_id=$1")
+            .bind(f.kb)
+            .execute(&f.pool)
+            .await?;
+        let cached = || async {
+            sqlx::query_scalar::<_, String>(
+                "SELECT model FROM signature_vectors WHERE kb_id=$1 ORDER BY model",
+            )
+            .bind(f.kb)
+            .fetch_all(&f.pool)
+            .await
+        };
+
+        f.script(bound());
+        f.run().await?;
+        assert_eq!(f.embed_calls(), 1, "the first run embeds the signature");
+        assert_eq!(f.binding().await?.status, "bound");
+        let asked = f.requests().len();
+
+        f.run().await?;
+        assert_eq!(
+            f.embed_calls(),
+            1,
+            "a second run over an unchanged base makes no embedding call"
+        );
+        assert_eq!(f.requests().len(), asked, "and asks the model nothing");
+        assert_eq!(cached().await?, vec!["scripted-embed".to_string()]);
+
+        sqlx::query("UPDATE llm_settings SET embed_model='scripted-embed-2' WHERE workspace_id=$1")
+            .bind(f.ws)
+            .execute(&f.pool)
+            .await?;
+        f.run().await?;
+        assert_eq!(f.embed_calls(), 2, "a new embedding model embeds again");
+        assert_eq!(
+            cached().await?,
+            vec!["scripted-embed-2".to_string()],
+            "the old model's vectors are dropped"
+        );
+        anyhow::Ok(())
+    }
+    .await;
+    f.cleanup().await?;
+    run
+}
+
 #[tokio::test]
 async fn an_endpoint_class_change_moves_the_signature_and_the_old_row_stops_looping(
 ) -> anyhow::Result<()> {

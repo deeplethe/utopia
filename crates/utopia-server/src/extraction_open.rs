@@ -1097,12 +1097,14 @@ pub(crate) async fn run_open(
         tracing::info!(%document_id, "抽取任务已被新一轮接管，收尾时退出");
         return Ok(());
     }
-    // 有分块没抽成就不许标 done（与类型化那条路同一条规矩）
-    if let Some(msg) = incomplete_reason(&unextracted, chunks.len()) {
-        return Err(anyhow::anyhow!(msg));
+    // 有分块没抽成就不许标 done（与类型化那条路同一条规矩）。**但抽成了的那些照常收尾**：
+    // 从前在这里直接返回，后面的时间解析、待确认的那一声通知都跟着没了——记忆日志里一句
+    // 抽不成的话，让它后面每一句的确认卡都不出现（#1187）。错留到最后再报
+    let incomplete = incomplete_reason(&unextracted, chunks.len());
+    if incomplete.is_none() {
+        utopia_store::documents::set_graph_status(pool, document_id, "done").await?;
+        state.emit_document(kb_id, document_id);
     }
-    utopia_store::documents::set_graph_status(pool, document_id, "done").await?;
-    state.emit_document(kb_id, document_id);
     state.emit_graph(kb_id);
     // 文档的时间语境（0064）：这一轮各块报上来的日期并进文档上存着的那份。没抽到的块
     // （增量抽取时认领的未变段落）原来报的留着；这一轮抽过的块以这一轮的为准。
@@ -1186,6 +1188,9 @@ pub(crate) async fn run_open(
     }
     if needs_adjudication || human_reviews_found {
         state.emit_review(kb_id);
+    }
+    if let Some(msg) = incomplete {
+        return Err(anyhow::anyhow!(msg));
     }
     tracing::info!(%document_id, statements = statement_count, "开放图谱抽取完成");
     Ok(())

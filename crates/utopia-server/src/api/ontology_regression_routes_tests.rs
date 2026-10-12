@@ -150,3 +150,122 @@ async fn editor_adds_regression_case_while_viewer_and_cross_kb_statement_are_rej
         .await?;
     result
 }
+
+#[tokio::test]
+async fn viewer_reads_only_live_cases_in_the_authorized_kb() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    utopia_store::db::migrate(&pool).await?;
+    let (
+        org,
+        workspace,
+        kb,
+        foreign_kb,
+        viewer,
+        subject,
+        foreign_subject,
+        property,
+        foreign_property,
+    ) = (
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+    );
+    sqlx::raw_sql(&format!(
+        r#"
+        INSERT INTO organizations(id,name) VALUES ('{org}','case-list-test');
+        INSERT INTO workspaces(id,org_id,name) VALUES ('{workspace}','{org}','case-list-test');
+        INSERT INTO knowledge_bases(id,workspace_id,name,visibility) VALUES
+            ('{kb}','{workspace}','case-list-test','restricted'),
+            ('{foreign_kb}','{workspace}','foreign-case-list-test','restricted');
+        INSERT INTO users(id,org_id,email,password_hash,display_name)
+            VALUES ('{viewer}','{org}','{viewer}@example.test','unused','Viewer');
+        INSERT INTO kb_members(kb_id,user_id,role) VALUES ('{kb}','{viewer}','viewer');
+        INSERT INTO entities(id,kb_id,canonical_name) VALUES
+            ('{subject}','{kb}','Alice'), ('{foreign_subject}','{foreign_kb}','Foreign');
+        INSERT INTO relation_types(id,kb_id,key,label,kind) VALUES
+            ('{property}','{kb}','knows','knows','relation'),
+            ('{foreign_property}','{foreign_kb}','foreign','foreign','relation');
+        "#
+    ))
+    .execute(&pool)
+    .await?;
+    let result = async {
+        let mut statement = Uuid::nil();
+        for (case_kb, entity, expected) in [
+            (kb, subject, property),
+            (foreign_kb, foreign_subject, foreign_property),
+        ] {
+            let id = graph::insert_open_statement(
+                &pool, case_kb, entity, "knows", graph::FactObject::Entity(entity), None, 1.0,
+            ).await?.0;
+            utopia_store::ontology_regressions::add(&pool, case_kb,
+                utopia_store::ontology_regressions::NewCase {
+                    statement_id: id, expected_property_id: expected,
+                    expected_direction: "forward", created_by: viewer, origin: "person",
+                },
+            ).await?;
+            if case_kb == kb {
+                statement = id;
+            }
+        }
+        let cached = json!({"passed": true, "human_bound": true, "actual_property_id": property,
+            "actual_direction": "forward", "status": "bound"});
+        sqlx::query("UPDATE ontology_regression_cases SET last_result=$2,last_checked_at=now() WHERE kb_id=$1")
+            .bind(kb).bind(&cached).execute(&pool).await?;
+        let checked_at: chrono::DateTime<chrono::Utc> = sqlx::query_scalar(
+            "SELECT last_checked_at FROM ontology_regression_cases WHERE kb_id=$1",
+        ).bind(kb).fetch_one(&pool).await?;
+        let directory = tempfile::tempdir()?;
+        let config = utopia_core::config::AppConfig {
+            data_dir: directory.path().to_string_lossy().into_owned(), ..Default::default()
+        };
+        let search = Arc::new(utopia_search::SearchIndex::open(&directory.path().join("search"))?);
+        let state = crate::state::AppState::new(pool.clone(), &config, search, "test-only".into());
+        let token = crate::auth::issue_token(&state, viewer)?;
+        let app = crate::api::router(state, &config);
+        for (requested_kb, expected) in [(kb, StatusCode::OK), (foreign_kb, StatusCode::NOT_FOUND)] {
+            let response = app.clone().oneshot(Request::builder()
+                .uri(format!("/api/v1/kbs/{requested_kb}/ontology/regressions"))
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())?).await?;
+            anyhow::ensure!(response.status() == expected);
+            if requested_kb == kb {
+                let body: serde_json::Value = serde_json::from_slice(&to_bytes(response.into_body(), 65536).await?)?;
+                let cases = body["cases"].as_array().unwrap();
+                anyhow::ensure!(cases.len() == 1);
+                let case = &cases[0];
+                anyhow::ensure!(case["statement_id"] == json!(statement) && case["kb_id"] == json!(kb));
+                anyhow::ensure!(case["subject_label"] == "Alice" && case["object_label"] == "Alice" && case["phrase"] == "knows");
+                anyhow::ensure!(case["expected_property_key"] == "knows" && case["actual_property_label"] == "knows" && case["created_by_label"] == "Viewer");
+                anyhow::ensure!(case["last_result"] == cached && case["last_checked_at"] == json!(checked_at));
+            }
+        }
+        let unchanged: chrono::DateTime<chrono::Utc> = sqlx::query_scalar(
+            "SELECT last_checked_at FROM ontology_regression_cases WHERE kb_id=$1",
+        ).bind(kb).fetch_one(&pool).await?;
+        anyhow::ensure!(unchanged == checked_at);
+        sqlx::query("UPDATE facts SET invalidated_at=now() WHERE id=$1").bind(statement).execute(&pool).await?;
+        let response = app.oneshot(Request::builder()
+            .uri(format!("/api/v1/kbs/{kb}/ontology/regressions"))
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())?).await?;
+        anyhow::ensure!(response.status() == StatusCode::OK);
+        let body: serde_json::Value = serde_json::from_slice(&to_bytes(response.into_body(), 65536).await?)?;
+        anyhow::ensure!(body["cases"] == json!([]));
+        anyhow::Ok(())
+    }.await;
+    sqlx::query("DELETE FROM organizations WHERE id=$1")
+        .bind(org)
+        .execute(&pool)
+        .await?;
+    result
+}

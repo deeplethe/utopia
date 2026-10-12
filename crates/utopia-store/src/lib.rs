@@ -44,6 +44,7 @@ pub mod review_summary;
 pub mod rss_full_content;
 pub mod sealing;
 pub mod settings;
+pub mod signature_vectors;
 pub mod sources;
 pub mod temporal;
 pub mod test_db;

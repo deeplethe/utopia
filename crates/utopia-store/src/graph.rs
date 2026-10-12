@@ -2071,8 +2071,11 @@ pub async fn document_extractions(
     let rows: Vec<ChunkFactView> = sqlx::query_as(
         "SELECT fe.chunk_id, f.id AS fact_id,
                 f.subject_id, s.canonical_name AS subject,
-                COALESCE(r.label, fact_surface_predicate(f.id)) AS predicate,
+                -- 开放陈述的短语在 facts 本身，不依赖旧证据的 proposed_predicate。
+                CASE WHEN f.layer='open' THEN f.phrase
+                     ELSE COALESCE(r.label, fact_surface_predicate(f.id)) END AS predicate,
                 r.id IS NULL AS inferred,
+                (f.layer='open' AND nullif(btrim(f.phrase),'') IS NOT NULL) AS is_open_statement,
                 -- 宾语是一样东西就用它的名字，是字面值（名字、金额、百分比）就用那个值。
                 -- 只取 canonical_name 的话，每一条值宾语的陈述在阅读页右栏都是主语加短语、
                 -- 后面空着一片——「Hugging Face, Inc. known as」后面什么都没有

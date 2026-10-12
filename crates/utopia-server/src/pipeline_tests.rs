@@ -12,7 +12,7 @@
 //! 4. **一批失败文档不悬着**：走完整的 process_document，第二批回 500，文档落在 failed
 //!    并带原因，不是停在 embedding。
 //! 5. **就绪之前全部嵌完**：process_document 走通后没有一条向量为空。
-//! 6. **记忆摄入走同一条路**：memory_ingest 嵌完自己的分块。
+//! 6. **记忆一句一句嵌**（#1187）：memory_ingest 嵌完自己的分块；一句嵌不了，别的照常。
 //! 7. **正文夹 NUL 不毁整篇**（#611）：Postgres 的 TEXT 不收 0x00，从前一个字节就让整篇
 //!    落在 failed。现在走完整的 process_document 到 ready，库里没有一个分块带 NUL。
 //!
@@ -1114,7 +1114,7 @@ async fn a_document_is_fully_embedded_before_it_is_ready() -> anyhow::Result<()>
 }
 
 #[tokio::test]
-async fn a_memory_episode_embeds_by_the_same_path_as_a_document() -> anyhow::Result<()> {
+async fn a_memory_episode_gets_the_vector_of_its_own_text() -> anyhow::Result<()> {
     let Some(f) = fixture(FakeEmbed::new(Duration::ZERO)).await? else {
         return Ok(());
     };
@@ -1131,5 +1131,34 @@ async fn a_memory_episode_embeds_by_the_same_path_as_a_document() -> anyhow::Res
     for (text, vector) in f.stored(doc).await? {
         assert_eq!(vector.as_deref(), Some(vector_of(&text).as_slice()));
     }
+    f.cleanup().await
+}
+
+/// #1187：从前日志里所有没向量的块一起嵌、一处出错整个任务失败，一句嵌不了的记忆从此
+/// 挡在每一句新记忆前面。现在那一句留着没有向量，别的照常，任务照常走完
+#[tokio::test]
+async fn a_memory_that_cannot_be_embedded_does_not_hold_back_the_others() -> anyhow::Result<()> {
+    let mut fake = FakeEmbed::new(Duration::ZERO);
+    fake.fail_request = Some(2);
+    let Some(f) = fixture(fake).await? else {
+        return Ok(());
+    };
+    let doc = f.document_with_chunks(5).await?;
+    super::memory_ingest(
+        &f.state,
+        doc,
+        Proposer {
+            user_id: None,
+            token_id: None,
+        },
+    )
+    .await?;
+    let embedded: Vec<bool> = f
+        .stored(doc)
+        .await?
+        .iter()
+        .map(|(_, vector)| vector.is_some())
+        .collect();
+    assert_eq!(embedded, vec![true, false, true, true, true]);
     f.cleanup().await
 }

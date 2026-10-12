@@ -38,7 +38,17 @@ pub(super) async fn run(
     let result = collect(&handle, producer, &previous_answer, &previous_sources).await;
     let terminal = match result {
         Ok(answer) => save(&pool, conversation_id, &handle, answer).await,
-        Err(failure) => error_event(failure.code, &failure.message),
+        Err(failure) => {
+            // 失败只送给浏览器一份，服务端一行不留，线上就只能请人打开开发者工具抄
+            // 回来。code 与原句都记：原句是端点说的话，code 是界面查措辞的键
+            tracing::warn!(
+                %conversation_id,
+                code = failure.code,
+                error = %failure.message,
+                "Answer failed"
+            );
+            error_event(failure.code, &failure.message)
+        }
     };
     handle.complete(terminal).await;
 }
