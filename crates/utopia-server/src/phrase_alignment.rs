@@ -112,9 +112,21 @@ pub(crate) fn structurally_fits(
 
 /// 签名两端的类落在属性声明的域/值域里，经继承也算；正反两个方向都算。
 fn fits(p: &RelationTypeView, sig: &PhraseSignature, closure: &Closure) -> Option<Fit> {
+    fits_direction(p, sig, closure, Direction::Forward)
+        .or_else(|| fits_direction(p, sig, closure, Direction::Reverse))
+}
+
+// Admitting a property in either orientation does not admit both orientations.
+// Two agreeing model votes used to turn a forward-only candidate into a reverse binding.
+fn fits_direction(
+    p: &RelationTypeView,
+    sig: &PhraseSignature,
+    closure: &Closure,
+    direction: Direction,
+) -> Option<Fit> {
     let mut via = Vec::new();
     if sig.object_is_value {
-        if p.kind != "attribute" {
+        if p.kind != "attribute" || direction != Direction::Forward {
             return None;
         }
         via.extend(within(&p.domains, sig.subject_type_id, closure)?);
@@ -123,20 +135,32 @@ fn fits(p: &RelationTypeView, sig: &PhraseSignature, closure: &Closure) -> Optio
     if p.kind != "relation" {
         return None;
     }
-    let forward = within(&p.domains, sig.subject_type_id, closure).zip(within(
-        &p.ranges,
-        sig.object_type_id,
-        closure,
-    ));
-    let reverse = within(&p.domains, sig.object_type_id, closure).zip(within(
-        &p.ranges,
-        sig.subject_type_id,
-        closure,
-    ));
-    let (a, b) = forward.or(reverse)?;
+    let (subject, object) = match direction {
+        Direction::Forward => (sig.subject_type_id, sig.object_type_id),
+        Direction::Reverse => (sig.object_type_id, sig.subject_type_id),
+    };
+    let a = within(&p.domains, subject, closure)?;
+    let b = within(&p.ranges, object, closure)?;
     via.extend(a);
     via.extend(b);
     Some(Fit { via })
+}
+
+fn invalid_agent_direction(
+    b: &phrase_bindings::Binding,
+    sig: &PhraseSignature,
+    props: &[RelationTypeView],
+    closure: &Closure,
+) -> bool {
+    b.decided_by == "agent"
+        && b.status == "bound"
+        && b.relation_type_id
+            .and_then(|id| props.iter().find(|p| p.id == id))
+            .is_some_and(|p| match b.direction.as_deref() {
+                Some("forward") => fits_direction(p, sig, closure, Direction::Forward).is_none(),
+                Some("reverse") => fits_direction(p, sig, closure, Direction::Reverse).is_none(),
+                _ => true,
+            })
 }
 
 /// 签名的键：短语 + 两端的类 + 宾语是不是字面值（与 `PhraseSignature::key` 同形）
@@ -599,7 +623,8 @@ async fn align_phrases_locked(
             Some(b) => {
                 b.decided_by != "person"
                     && (b.basis.as_deref() != Some(considered[&s.key()].1.as_str())
-                        || awaits_marks(b, &props))
+                        || awaits_marks(b, &props)
+                        || invalid_agent_direction(b, s, &props, &closure))
             }
         })
         .collect();
@@ -610,8 +635,10 @@ async fn align_phrases_locked(
         .iter()
         .filter_map(|s| {
             let b = existing.get(&s.key())?;
-            (b.basis.as_deref() == Some(considered[&s.key()].1.as_str()) && awaits_marks(b, &props))
-                .then_some((s.key(), b))
+            (b.basis.as_deref() == Some(considered[&s.key()].1.as_str())
+                && awaits_marks(b, &props)
+                && !invalid_agent_direction(b, s, &props, &closure))
+            .then_some((s.key(), b))
         })
         .collect();
     tracing::info!(%kb_id, signatures = sigs.len(), to_decide = todo.len(), properties = props.len(), "短语对齐开始");
@@ -916,18 +943,27 @@ async fn align_phrases_locked(
                     })
                     .unwrap_or(serde_json::Value::Null)
             };
-            let record = if asked_twice {
+            let mut record = if asked_twice {
                 serde_json::json!({ "first": show(a), "second": show(b) })
             } else {
                 serde_json::json!({ "first": null, "reason": "first_vote_none" })
             };
+            let valid = |v: &Vote| v.as_ref().is_none_or(|(k, d, _)| {
+                by_key.get(k.as_str()).is_some_and(|p| fits_direction(p, s, closure, *d).is_some())
+            });
+            let invalid_direction = !valid(a) || !valid(b);
+            if invalid_direction {
+                // Keep both votes for review; an invalid direction is neither a
+                // semantic none nor permission to silently flip the model's answer.
+                record["reason"] = serde_json::json!("invalid_direction");
+            }
             // 两票选的属性与方向（或都说没有）是否一致
             let agree = match (a, b) {
                 (Some((ka, da, _)), Some((kb, db, _))) => ka == kb && da == db,
                 (None, None) => true,
                 _ => false,
             };
-            if !agree {
+            if !agree || invalid_direction {
                 phrase_bindings::decide(
                     pool,
                     kb_id,
@@ -1028,6 +1064,69 @@ async fn align_phrases_locked(
             unanswered += un;
             marked += m;
             unsettled += us;
+        }
+    }
+    // Old invalid agent bindings have matching fingerprints, so explicitly retry
+    // them above. If the model fails, structural invalidity still cannot support
+    // their typed rows: keep the old votes in an undecided result for a person.
+    // Read again so a person who decided during the request remains protected.
+    let repair: Vec<_> = todo
+        .iter()
+        .copied()
+        .filter(|s| {
+            existing
+                .get(&s.key())
+                .is_some_and(|b| invalid_agent_direction(b, s, &props, &closure))
+        })
+        .collect();
+    if !repair.is_empty() {
+        let now: HashMap<_, _> = phrase_bindings::bindings(pool, kb_id)
+            .await?
+            .into_iter()
+            .map(|b| (b.key(), b))
+            .collect();
+        for s in repair {
+            let Some(b) = now.get(&s.key()) else {
+                continue;
+            };
+            if !invalid_agent_direction(b, s, &props, &closure) {
+                continue;
+            }
+            let previous: Option<serde_json::Value> = sqlx::query_scalar(
+                "SELECT votes FROM phrase_bindings WHERE kb_id=$1 AND phrase=$2
+             AND subject_type_id IS NOT DISTINCT FROM $3
+             AND object_type_id IS NOT DISTINCT FROM $4 AND object_is_value=$5",
+            )
+            .bind(kb_id)
+            .bind(&s.phrase)
+            .bind(s.subject_type_id)
+            .bind(s.object_type_id)
+            .bind(s.object_is_value)
+            .fetch_optional(pool)
+            .await?;
+            let Some(previous) = previous else {
+                continue;
+            };
+            if phrase_bindings::decide(
+                pool,
+                kb_id,
+                s,
+                Decision {
+                    relation_type_id: None,
+                    direction: None,
+                    status: "undecided",
+                    votes: &serde_json::json!({"reason":"invalid_direction", "previous":previous,
+                                      "previous_decided_at":b.decided_at}),
+                    decided_by: "agent",
+                    basis: Some(&considered[&s.key()].1),
+                    marks: None,
+                    marks_asked: false,
+                },
+            )
+            .await?
+            {
+                undecided += 1;
+            }
         }
     }
     tracing::info!(%kb_id, bound, none, undecided, skipped, failed, unanswered, marked, unsettled, "短语对齐完成");
@@ -1399,6 +1498,49 @@ mod tests {
             fits(&hq, &sig(Some(org), Some(place), false), &Closure::new()).is_none(),
             "without the parent edge the property is not a candidate"
         );
+    }
+
+    #[test]
+    fn a_selected_direction_respects_inheritance_unknown_types_and_literal_shape() {
+        let (parent, child, place) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
+        let closure = closures([(parent, &[][..]), (child, &[parent][..]), (place, &[][..])]);
+        let relation = view("relation", vec![parent], vec![place]);
+        let attribute = view("attribute", vec![parent], vec![]);
+        let open = view("relation", vec![], vec![]);
+        let any_to_place = view("relation", vec![], vec![place]);
+        for (p, s, allowed) in [
+            (
+                &relation,
+                sig(Some(child), Some(place), false),
+                [true, false],
+            ),
+            (
+                &relation,
+                sig(Some(place), Some(child), false),
+                [false, true],
+            ),
+            (&relation, sig(None, Some(place), false), [false, false]),
+            (&any_to_place, sig(None, Some(place), false), [true, false]),
+            (&any_to_place, sig(Some(place), None, false), [false, true]),
+            (&open, sig(None, None, false), [true, true]),
+            (&attribute, sig(Some(child), None, true), [true, false]),
+            (
+                &attribute,
+                sig(Some(child), Some(place), false),
+                [false, false],
+            ),
+            (&relation, sig(Some(child), None, true), [false, false]),
+        ] {
+            for (direction, expected) in [Direction::Forward, Direction::Reverse]
+                .into_iter()
+                .zip(allowed)
+            {
+                assert_eq!(
+                    fits_direction(p, &s, &closure, direction).is_some(),
+                    expected
+                );
+            }
+        }
     }
 
     /// 闭包：多继承与菱形，每个祖先只出现一次，且含自己
