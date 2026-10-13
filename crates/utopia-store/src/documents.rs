@@ -110,7 +110,10 @@ async fn create_with_time_source(
     {
         return restore(pool, kb_id, id).await;
     }
-    sqlx::query_as(
+    // 读原文要在版本账本里找到当前摘要：文档和它的第 1 版一起落，缺一不可（#1204 修了
+    // 文件上传那条路，JSON 推送走的是这里）
+    let mut tx = pool.begin().await?;
+    let document: Document = sqlx::query_as(
         "INSERT INTO documents (id, kb_id, filename, mime, size_bytes, sha256, source_id,
                                 doc_time, doc_time_source, external_key)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *",
@@ -130,14 +133,27 @@ async fn create_with_time_source(
         "none"
     })
     .bind(external_key)
-    .fetch_one(pool)
+    .fetch_one(&mut *tx)
     .await
     .map_err(|e| match &e {
         sqlx::Error::Database(db) if db.is_unique_violation() => AppError::Conflict(format!(
             "File already exists (identical content): {filename}"
         )),
         _ => AppError::Db(e),
-    })
+    })?;
+    sqlx::query(
+        "INSERT INTO document_versions (id, document_id, version, sha256, size_bytes, doc_time)
+         VALUES ($1, $2, 1, $3, $4, $5)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(document.id)
+    .bind(sha256)
+    .bind(size_bytes)
+    .bind(document.doc_time)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(document)
 }
 
 #[allow(clippy::too_many_arguments)]

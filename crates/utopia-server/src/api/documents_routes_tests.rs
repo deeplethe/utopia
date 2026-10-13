@@ -704,6 +704,35 @@ async fn reupload_restores_one_version_and_requeues_processing() -> anyhow::Resu
 }
 
 #[tokio::test]
+async fn a_pushed_document_serves_its_original() -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    let pushed = b"A document pushed as JSON";
+    crate::ingest_sources::ingest_upload(
+        &f.state,
+        f.kb,
+        "pushed.md",
+        "text/markdown",
+        pushed,
+        None,
+    )
+    .await?;
+    let id: Uuid =
+        sqlx::query_scalar("SELECT id FROM documents WHERE kb_id=$1 AND filename='pushed.md'")
+            .bind(f.kb)
+            .fetch_one(&f.pool)
+            .await?;
+    assert_eq!(documents::versions(&f.pool, id).await?.len(), 1);
+    let (status, _, bytes) = f
+        .get_raw(&format!("/api/v1/documents/{id}/content"), Some(&f.token))
+        .await?;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(bytes, pushed);
+    f.cleanup().await
+}
+
+#[tokio::test]
 async fn failed_upload_queue_rolls_back_creation_and_restoration() -> anyhow::Result<()> {
     let Some(f) = Fixture::new().await? else {
         return Ok(());
