@@ -1,0 +1,528 @@
+{
+  "session_date": "2026-10-13",
+  "review_url": "https://github.com/deeplethe/utopia/pull/1205#pullrequestreview-5497963894",
+  "common_base_commit": "259931ac702623351c2ed4e6487474790e57a6b0",
+  "ending_code_commit": "69c1ee2c99b8553a501b61b2bee8f96475f425d8",
+  "identifier_code_commit": "f11f06dca11b28e6e7db4bfe62a9c2389ace51d1",
+  "model": "qwen3.7-flash-2026-07-15",
+  "enable_thinking": false,
+  "embedding": "BAAI/bge-m3; CPU float32; normalized CLS; 1024; revision5617a9f61b028005a4858fdac845db406aefb181",
+  "known_in_prompt": true,
+  "scripts_and_truth_unchanged": true,
+  "input_sha256": {
+    "scripts/bench/temporal.mjs": "2f96f8e66ead33e956862cbd34020248efd4e87a9f024e0ea05293a6a4d02336",
+    "scripts/bench/recall.mjs": "0fb7a3896e11327dc0a6b86cde2d6034d68f32a0e767f69ab6f5ccf66678e5c1",
+    "scripts/bench/temporal/corpus.json": "d5aae55ad3f02aacb4a56b18e7fe4b648c78bec4e276ae5472abca0789e34576",
+    "scripts/bench/temporal/questions.json": "fa4f40e6470f50dfefdbd90c7fd8859d418bc157e7caf177a9dcee98046a9f13",
+    "scripts/bench/truth/nvda-public-docs.json": "e348f42a9f61ecedf17420c4b27ee13ce9b57cf392b09744f3474a3955fd15c0"
+  },
+  "sec_document_sha256": {
+    "nvda-8k-2026-08-17-exhibit.html": "e59fdac3d89f8c847cbbdaa08f2491d805d582d6aa15abd5c296cec4015d5a4c",
+    "nvda-8k-2026-09-02.html": "9a051a8edd0b8f4c2d10fd017989254af18c09c173e5b858c802522536701a7b",
+    "nvda-q2fy27-earnings-release.html": "119dfb902c02260ec37b645ab0fb545d2006505a10a44244da5763d860062ad2",
+    "nvda-8k-2026-06-24.html": "95c36d7a44b581b133fa0d7dff3f24fb1ee6878cd31c76c620117bb0a46522df"
+  },
+  "temporal": {
+    "script": "scripts/bench/temporal.mjs",
+    "question_count": 37,
+    "mode": "ledger world and record axes; no --chat",
+    "attempts": [
+      {
+        "round": 1,
+        "candidate": "verbose-ending-only",
+        "baseline": {
+          "exit_code": 1,
+          "error": "stalled waiting for remaining work"
+        },
+        "ending": {
+          "exit_code": 1,
+          "error": "stalled waiting for remaining work"
+        }
+      },
+      {
+        "round": 2,
+        "candidate": "verbose-ending-only",
+        "baseline": {
+          "exit_code": 0,
+          "kb_id": "01a13594-6733-7242-98fd-37bece9d19ef",
+          "ledger": {
+            "all": {
+              "asked": 37,
+              "pass": 32,
+              "rate": 0.865
+            },
+            "world": {
+              "asked": 23,
+              "pass": 18,
+              "rate": 0.783
+            },
+            "record": {
+              "asked": 14,
+              "pass": 14,
+              "rate": 1
+            },
+            "known_gaps": {
+              "asked": 0,
+              "pass": 0,
+              "rate": null
+            }
+          },
+          "stamps": {
+            "wave-1": "2026-10-13T14:05:27.217Z",
+            "wave-2": "2026-10-13T14:06:43.835Z",
+            "wave-3": "2026-10-13T14:06:56.040Z"
+          }
+        },
+        "ending": {
+          "exit_code": 0,
+          "kb_id": "01a13594-6723-7141-b785-abf403292bbc",
+          "ledger": {
+            "all": {
+              "asked": 37,
+              "pass": 25,
+              "rate": 0.676
+            },
+            "world": {
+              "asked": 23,
+              "pass": 14,
+              "rate": 0.609
+            },
+            "record": {
+              "asked": 14,
+              "pass": 11,
+              "rate": 0.786
+            },
+            "known_gaps": {
+              "asked": 0,
+              "pass": 0,
+              "rate": null
+            }
+          },
+          "stamps": {
+            "wave-1": "2026-10-13T14:05:35.257Z",
+            "wave-2": "2026-10-13T14:06:51.831Z",
+            "wave-3": "2026-10-13T14:07:04.060Z"
+          }
+        }
+      },
+      {
+        "round": 3,
+        "candidate": "final-explicit-contrast",
+        "baseline": {
+          "exit_code": 0,
+          "kb_id": "01a135d0-3da6-7672-920f-9f346c6a3f27",
+          "ledger": {
+            "all": {
+              "asked": 37,
+              "pass": 31,
+              "rate": 0.838
+            },
+            "world": {
+              "asked": 23,
+              "pass": 17,
+              "rate": 0.739
+            },
+            "record": {
+              "asked": 14,
+              "pass": 14,
+              "rate": 1
+            },
+            "known_gaps": {
+              "asked": 0,
+              "pass": 0,
+              "rate": null
+            }
+          },
+          "stamps": {
+            "wave-1": "2026-10-13T15:10:48.572Z",
+            "wave-2": "2026-10-13T15:11:57.145Z",
+            "wave-3": "2026-10-13T15:12:09.423Z"
+          }
+        },
+        "ending": {
+          "exit_code": 0,
+          "kb_id": "01a135d0-3da6-78d2-8d45-485e9faa8c20",
+          "ledger": {
+            "all": {
+              "asked": 37,
+              "pass": 32,
+              "rate": 0.865
+            },
+            "world": {
+              "asked": 23,
+              "pass": 18,
+              "rate": 0.783
+            },
+            "record": {
+              "asked": 14,
+              "pass": 14,
+              "rate": 1
+            },
+            "known_gaps": {
+              "asked": 0,
+              "pass": 0,
+              "rate": null
+            }
+          },
+          "stamps": {
+            "wave-1": "2026-10-13T15:10:48.738Z",
+            "wave-2": "2026-10-13T15:12:05.334Z",
+            "wave-3": "2026-10-13T15:12:17.594Z"
+          }
+        }
+      },
+      {
+        "round": 4,
+        "candidate": "final-explicit-contrast",
+        "baseline": {
+          "exit_code": 0,
+          "kb_id": "01a135d2-5f9a-75d2-a58a-a9322ca7b7cf",
+          "ledger": {
+            "all": {
+              "asked": 37,
+              "pass": 31,
+              "rate": 0.838
+            },
+            "world": {
+              "asked": 23,
+              "pass": 17,
+              "rate": 0.739
+            },
+            "record": {
+              "asked": 14,
+              "pass": 14,
+              "rate": 1
+            },
+            "known_gaps": {
+              "asked": 0,
+              "pass": 0,
+              "rate": null
+            }
+          },
+          "stamps": {
+            "wave-1": "2026-10-13T15:13:08.297Z",
+            "wave-2": "2026-10-13T15:14:16.956Z",
+            "wave-3": "2026-10-13T15:14:29.247Z"
+          }
+        },
+        "ending": {
+          "exit_code": 1,
+          "error": "scripted correction cannot find Zhang San -> Project Aurora with original start date"
+        }
+      },
+      {
+        "round": 5,
+        "candidate": "final-explicit-contrast",
+        "baseline": {
+          "exit_code": 0,
+          "kb_id": "01a135d7-a9cd-7e31-b469-7962abcf33ed",
+          "ledger": {
+            "all": {
+              "asked": 37,
+              "pass": 32,
+              "rate": 0.865
+            },
+            "world": {
+              "asked": 23,
+              "pass": 18,
+              "rate": 0.783
+            },
+            "record": {
+              "asked": 14,
+              "pass": 14,
+              "rate": 1
+            },
+            "known_gaps": {
+              "asked": 0,
+              "pass": 0,
+              "rate": null
+            }
+          },
+          "stamps": {
+            "wave-1": "2026-10-13T15:18:55.230Z",
+            "wave-2": "2026-10-13T15:20:11.986Z",
+            "wave-3": "2026-10-13T15:20:24.303Z"
+          }
+        },
+        "ending": {
+          "exit_code": 0,
+          "kb_id": "01a135d7-a9cd-7a40-b82c-f2dbab71f7f2",
+          "ledger": {
+            "all": {
+              "asked": 37,
+              "pass": 32,
+              "rate": 0.865
+            },
+            "world": {
+              "asked": 23,
+              "pass": 18,
+              "rate": 0.783
+            },
+            "record": {
+              "asked": 14,
+              "pass": 14,
+              "rate": 1
+            },
+            "known_gaps": {
+              "asked": 0,
+              "pass": 0,
+              "rate": null
+            }
+          },
+          "stamps": {
+            "wave-1": "2026-10-13T15:19:03.281Z",
+            "wave-2": "2026-10-13T15:19:15.590Z",
+            "wave-3": "2026-10-13T15:19:27.910Z"
+          }
+        }
+      }
+    ]
+  },
+  "recall": {
+    "script": "scripts/bench/recall.mjs",
+    "truth_count": 52,
+    "schema_pack": "schema-org",
+    "rounds": [
+      {
+        "round": 1,
+        "baseline": {
+          "kb_id": "01a13596-a1a2-7ff1-b2e1-e5e61dd11c70",
+          "pass": 29,
+          "total": 52,
+          "per_document": {
+            "nvda-8k-2026-09-02": 4,
+            "nvda-8k-2026-08-17-exhibit": 7,
+            "nvda-q2fy27-earnings-release": 12,
+            "nvda-8k-2026-06-24": 6
+          },
+          "miss_ids": [
+            "acq-price",
+            "acq-retention",
+            "acq-close",
+            "acq-fy-end",
+            "cfo-title",
+            "hq",
+            "hf-open",
+            "oh-huang-title",
+            "oh-hossfeld-title",
+            "oh-altman-title",
+            "oh-son-title",
+            "oh-gw",
+            "oh-grid",
+            "oh-2028",
+            "oh-aep",
+            "er-buyback",
+            "er-div-record",
+            "er-guide",
+            "er-huang-title",
+            "er-coreweave",
+            "er-nebius",
+            "er-oci",
+            "vt-meeting"
+          ],
+          "complete": true,
+          "settled": true,
+          "settle_seconds": 120
+        },
+        "identifier": {
+          "kb_id": "01a13596-a1e0-7e41-9108-cbb90e3059ad",
+          "pass": 34,
+          "total": 52,
+          "per_document": {
+            "nvda-8k-2026-09-02": 7,
+            "nvda-8k-2026-08-17-exhibit": 8,
+            "nvda-q2fy27-earnings-release": 13,
+            "nvda-8k-2026-06-24": 6
+          },
+          "miss_ids": [
+            "acq-retention",
+            "acq-fy-end",
+            "cfo-title",
+            "hq",
+            "oh-huang-title",
+            "oh-hossfeld-title",
+            "oh-altman-title",
+            "oh-son-title",
+            "oh-gw",
+            "oh-grid",
+            "oh-2028",
+            "er-buyback",
+            "er-div-record",
+            "er-guide",
+            "er-coreweave",
+            "er-nebius",
+            "er-oci",
+            "vt-meeting"
+          ],
+          "complete": true,
+          "settled": true,
+          "settle_seconds": 391
+        }
+      },
+      {
+        "round": 2,
+        "baseline": {
+          "kb_id": "01a135c5-1db2-7a33-b86e-5b381e2d8747",
+          "pass": 33,
+          "total": 52,
+          "per_document": {
+            "nvda-8k-2026-09-02": 4,
+            "nvda-8k-2026-08-17-exhibit": 10,
+            "nvda-q2fy27-earnings-release": 14,
+            "nvda-8k-2026-06-24": 5
+          },
+          "miss_ids": [
+            "acq-price",
+            "acq-retention",
+            "acq-close",
+            "acq-fy-end",
+            "cfo-title",
+            "hq",
+            "hf-open",
+            "oh-parties",
+            "oh-huang-title",
+            "oh-gw",
+            "oh-grid",
+            "oh-2028",
+            "er-buyback",
+            "er-div-record",
+            "er-coreweave",
+            "er-nebius",
+            "er-oci",
+            "vt-meeting",
+            "vt-for-huang"
+          ],
+          "complete": true,
+          "settled": true,
+          "settle_seconds": 181
+        },
+        "identifier": {
+          "kb_id": "01a135c5-1da8-7c23-9b40-80f81881ecca",
+          "pass": 28,
+          "total": 52,
+          "per_document": {
+            "nvda-8k-2026-09-02": 4,
+            "nvda-8k-2026-08-17-exhibit": 8,
+            "nvda-q2fy27-earnings-release": 10,
+            "nvda-8k-2026-06-24": 6
+          },
+          "miss_ids": [
+            "acq-price",
+            "acq-retention",
+            "acq-close",
+            "acq-fy-end",
+            "cfo-title",
+            "hq",
+            "hf-open",
+            "oh-huang-title",
+            "oh-hossfeld-title",
+            "oh-son-title",
+            "oh-gw",
+            "oh-grid",
+            "oh-2028",
+            "oh-pike",
+            "er-gm",
+            "er-eps",
+            "er-eps-nongaap",
+            "er-buyback",
+            "er-div-record",
+            "er-guide",
+            "er-coreweave",
+            "er-nebius",
+            "er-oci",
+            "vt-meeting"
+          ],
+          "complete": true,
+          "settled": true,
+          "settle_seconds": 150
+        }
+      }
+    ]
+  },
+  "supplementary": {
+    "final_ending_results": [
+      {
+        "side": "baseline",
+        "round": 1,
+        "case": "dated-ending-zh",
+        "passed": false
+      },
+      {
+        "side": "ending",
+        "round": 1,
+        "case": "dated-ending-zh",
+        "passed": true
+      },
+      {
+        "side": "baseline",
+        "round": 1,
+        "case": "dated-ending-en",
+        "passed": false
+      },
+      {
+        "side": "ending",
+        "round": 1,
+        "case": "dated-ending-en",
+        "passed": true
+      },
+      {
+        "side": "baseline",
+        "round": 1,
+        "case": "positive-start",
+        "passed": true
+      },
+      {
+        "side": "ending",
+        "round": 1,
+        "case": "positive-start",
+        "passed": true
+      },
+      {
+        "side": "baseline",
+        "round": 2,
+        "case": "dated-ending-zh",
+        "passed": false
+      },
+      {
+        "side": "ending",
+        "round": 2,
+        "case": "dated-ending-zh",
+        "passed": true
+      },
+      {
+        "side": "baseline",
+        "round": 2,
+        "case": "dated-ending-en",
+        "passed": false
+      },
+      {
+        "side": "ending",
+        "round": 2,
+        "case": "dated-ending-en",
+        "passed": true
+      },
+      {
+        "side": "baseline",
+        "round": 2,
+        "case": "positive-start",
+        "passed": true
+      },
+      {
+        "side": "ending",
+        "round": 2,
+        "case": "positive-start",
+        "passed": true
+      }
+    ]
+  },
+  "decision": {
+    "identifier": "removed; both two-round mean recalls are 31/52, no stable benefit",
+    "ending": "retain narrow date-slot clarification for review; no claim of global accuracy improvement or blanket non-regression"
+  },
+  "execution_limits": [
+    "One final candidate temporal attempt failed before scoring and is not assigned an invented score.",
+    "Failed, verbose and ineffective candidates remain recorded; scored completions are not a whole-document non-regression guarantee.",
+    "The tiny dated-cessation controls are supplementary to the unchanged repository benches.",
+    "One upstream HTTP 429 was handled by the existing retry path."
+  ]
+}
