@@ -177,10 +177,11 @@ the coating are part of the description.\n\
 words that say when it stopped, each copied exactly as written (\"March 4, 2011\", \"去年冬天\", \
 \"by the end of next season\"). Never compute, convert or normalise a date, and never write one \
 the passage does not. Each is null when the passage gives none.\n\
-   A date from which the passage explicitly says a relationship ceased goes in ended, \
-not when, even if the date words begin with \"from\" or \"since\". The same date wording \
-for the beginning of a relationship goes in when. Copy only the stated date words; do \
-not infer a beginning for a cessation or an ending for a beginning.\n\
+   \"From April 2, 2018, Harbor Bakery no longer supplied the school\" has ended = \
+\"From April 2, 2018\" and when = null: that date ends the supplying relationship. In \
+\"From April 2, 2018, Harbor Bakery supplied the school\", when = \"From April 2, 2018\" \
+and ended = null: that date begins it. Keep the phrase as written, including \"no longer\"; \
+choose the date slot by what happened to the relationship, not the preposition alone.\n\
    Words that say when go in when or ended and nowhere else, never in the phrase, the \
 object, the value or a qualifier; also when they count from now or from another event \
 (\"三个月后\", \"last week\", \"six months after the launch\") and when the statement is \
