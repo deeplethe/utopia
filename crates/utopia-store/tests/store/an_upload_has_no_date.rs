@@ -14,6 +14,76 @@ use uuid::Uuid;
 
 const ORG: &str = "upload-has-no-date-test";
 
+#[tokio::test]
+async fn version_repair_records_only_unversioned_retained_originals() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    utopia_store::db::migrate(&pool).await?;
+    let mut tx = pool.begin().await?;
+    // Temp copies retain the real migrated column types and checks. The repair
+    // deliberately scans all documents; it must not touch concurrent fixtures.
+    sqlx::raw_sql(
+        "CREATE TEMP TABLE documents (LIKE public.documents INCLUDING ALL) ON COMMIT DROP;
+         CREATE TEMP TABLE document_versions (LIKE public.document_versions INCLUDING ALL) ON COMMIT DROP;",
+    )
+    .execute(&mut *tx)
+    .await?;
+    let (current, recorded, purged, kb, version_id) = (
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+    );
+    let written = Utc.with_ymd_and_hms(2024, 2, 29, 0, 0, 0).unwrap();
+    sqlx::query(
+        "INSERT INTO documents(id,kb_id,filename,sha256,size_bytes,doc_time,doc_time_source,purged_at)
+         VALUES ($1,$4,'current.txt','current',7,$5,'content',NULL),
+                ($2,$4,'recorded.txt','current-2',9,NULL,'none',NULL),
+                ($3,$4,'purged.txt','purged',6,NULL,'none',now())",
+    )
+    .bind(current).bind(recorded).bind(purged).bind(kb).bind(written)
+    .execute(&mut *tx).await?;
+    sqlx::query(
+        "INSERT INTO document_versions(id,document_id,version,sha256,size_bytes,ingested_at)
+         VALUES ($1,$2,3,'historical',4,'2020-01-01T00:00:00Z')",
+    )
+    .bind(version_id)
+    .bind(recorded)
+    .execute(&mut *tx)
+    .await?;
+    let migration =
+        include_str!("../../../../migrations/0111_an_uploaded_original_has_a_version.sql");
+    for _ in 0..2 {
+        sqlx::raw_sql(migration).execute(&mut *tx).await?;
+    }
+    let current_version: (i32, String, i64, Option<chrono::DateTime<Utc>>, bool) = sqlx::query_as(
+        "SELECT version,sha256,size_bytes,doc_time,ingested_at>=transaction_timestamp()
+         FROM document_versions WHERE document_id=$1",
+    )
+    .bind(current)
+    .fetch_one(&mut *tx)
+    .await?;
+    assert_eq!(
+        current_version,
+        (1, "current".into(), 7, Some(written), true)
+    );
+    let versions: Vec<(Uuid, Uuid, i32, String)> = sqlx::query_as(
+        "SELECT id,document_id,version,sha256 FROM document_versions WHERE document_id<>$1",
+    )
+    .bind(current)
+    .fetch_all(&mut *tx)
+    .await?;
+    assert_eq!(
+        versions,
+        vec![(version_id, recorded, 3, "historical".into())]
+    );
+    tx.rollback().await?;
+    Ok(())
+}
+
 async fn seed(pool: &PgPool) -> anyhow::Result<(Uuid, Uuid)> {
     let (org, ws, kb, src) = (
         Uuid::now_v7(),
