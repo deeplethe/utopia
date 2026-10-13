@@ -1,6 +1,18 @@
-//! Scripted namesake diagnostics: source identity is the oracle, never the model verdict.
-//! Default CI checks an explicit known-debt ceiling; it does not certify gold correctness.
-//! UTOPIA_NAMESAKE_STRICT=1 makes every gold violation fail, including existing defects.
+//! Fixed, DB-backed namesake cases for #1136 and #1202; no provider or embedding calls.
+//! Run with a migrated UTOPIA_DATABASE_URL and UTOPIA_TEST_REQUIRE_DB=1:
+//! cargo test --locked -p utopia-server namesake_scripted_cases -- --nocapture
+//! Normal cargo test --workspace runs this too; no CI flags or ignored tests.
+//!
+//! Resolver pairs have two existing candidates with different department facts.
+//! The incoming passage names one department: it conflicts with the profile preference
+//! in the failing case and agrees in the control. Gold is that candidate's exact ID,
+//! so a resolver that always creates another entity fails the control.
+//!
+//! Adjudicator pairs test the real HTTP request, not a scripted model's judgement:
+//! scalar employee numbers and entity-valued departments must reach their own Record
+//! A/B sections. Fixed different replies only complete the production caller.
+//! Both seed orders run independently. The named list requires today's known failures
+//! to fail and every other check to pass; a fix removes its names from that list.
 use crate::state::AppState;
 use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::post, Json, Router};
 use serde_json::{json, Value};
@@ -13,39 +25,47 @@ use std::{
 use utopia_store::resolution::ReviewStage;
 use uuid::Uuid;
 
+// Both profiles are viable: cosine 1.0 versus 0.8, outside the existing tie guard.
+const DEPARTMENTS: [&str; 2] = ["Platform Engineering", "Finance"];
+const EMPLOYEES: [&str; 2] = ["E17", "F42"];
+
+#[derive(Clone, Copy)]
+enum Check {
+    Resolver { target: usize },
+    Adjudicator { literal: bool },
+}
+
 struct Case {
     id: &'static str,
-    gold: [&'static str; 2],
-    verdict: Option<&'static str>,
-    // Only this named violation is allowed, at most once per case/order. Controls have none.
-    debt: Option<&'static str>,
+    check: Check,
 }
 
 const CASES: [Case; 4] = [
     Case {
-        id: "resolver_distinct",
-        gold: ["employee_E17", "employee_F42"],
-        verdict: None,
-        debt: Some("false_merge"),
+        id: "resolver_passage_over_profile",
+        check: Check::Resolver { target: 1 },
     },
     Case {
-        id: "adjudicator_distinct_same",
-        gold: ["employee_E17", "employee_F42"],
-        verdict: Some("same"),
-        debt: Some("false_merge"),
+        id: "resolver_passage_agrees_with_profile",
+        check: Check::Resolver { target: 0 },
     },
     Case {
-        id: "adjudicator_true_same",
-        gold: ["employee_E17", "employee_E17"],
-        verdict: Some("same"),
-        debt: None,
+        id: "adjudicator_literal_clues_reach_request",
+        check: Check::Adjudicator { literal: true },
     },
     Case {
-        id: "adjudicator_distinct_different",
-        gold: ["employee_E17", "employee_F42"],
-        verdict: Some("different"),
-        debt: None,
+        id: "adjudicator_entity_clues_reach_request",
+        check: Check::Adjudicator { literal: false },
     },
+];
+
+// #1136: a listed case MUST fail today; every other case MUST pass. A fix removes
+// the corresponding names with its code change, so success cannot silently go stale.
+const KNOWN_FAILURES: [(&str, &str); 4] = [
+    ("resolver_passage_over_profile", "forward"),
+    ("resolver_passage_over_profile", "reverse"),
+    ("adjudicator_literal_clues_reach_request", "forward"),
+    ("adjudicator_literal_clues_reach_request", "reverse"),
 ];
 
 struct Step {
@@ -101,9 +121,10 @@ struct Fx {
     state: AppState,
     org: Uuid,
     kb: Uuid,
-    docs: [Uuid; 2],
-    chunks: [Uuid; 2],
-    quotes: [String; 2],
+    docs: [Uuid; 3],
+    chunks: [Uuid; 3],
+    quotes: [String; 3],
+    departments: [Uuid; 2],
     model: Model,
     server: tokio::task::JoinHandle<()>,
     _dir: tempfile::TempDir,
@@ -128,18 +149,34 @@ impl Fx {
         .bind(ws)
         .execute(pool)
         .await?;
-        let docs = [Uuid::now_v7(), Uuid::now_v7()];
-        let chunks = [Uuid::now_v7(), Uuid::now_v7()];
-        // Employee numbers are explicit source identities, not an ontology inference or a
-        // production merge rule. Different workers can share a name and employer.
-        let quotes = std::array::from_fn(|i| {
-            format!(
-                "Directory {}: Alex Lee (employee {}) works for Acme.",
-                i + 1,
-                case.gold[i].strip_prefix("employee_").unwrap()
-            )
-        });
+        let docs = std::array::from_fn(|_| Uuid::now_v7());
+        let chunks = std::array::from_fn(|_| Uuid::now_v7());
+        let departments = [Uuid::now_v7(), Uuid::now_v7()];
         for i in 0..2 {
+            sqlx::query("INSERT INTO entities(id,kb_id,canonical_name) VALUES ($1,$2,$3)")
+                .bind(departments[i])
+                .bind(kb)
+                .bind(DEPARTMENTS[i])
+                .execute(pool)
+                .await?;
+        }
+        let quotes = std::array::from_fn(|i| match (case.check, i) {
+            (Check::Adjudicator { literal: true }, 0..=1) => format!(
+                "Directory {}: Alex Lee has employee number {}.",
+                i + 1,
+                EMPLOYEES[i]
+            ),
+            (_, 0..=1) => format!(
+                "Directory {}: Alex Lee works for {}.",
+                i + 1,
+                DEPARTMENTS[i]
+            ),
+            (Check::Resolver { target }, _) => {
+                format!("Alex Lee from {} submitted a report.", DEPARTMENTS[target])
+            }
+            _ => "Unused incoming passage.".into(),
+        });
+        for i in 0..3 {
             sqlx::query("INSERT INTO documents(id,kb_id,filename,sha256) VALUES ($1,$2,$3,$4)")
                 .bind(docs[i])
                 .bind(kb)
@@ -194,19 +231,26 @@ impl Fx {
             docs,
             chunks,
             quotes,
+            departments,
             model,
             server,
             _dir: dir,
         })
     }
 
-    async fn seed(&self, i: usize) -> anyhow::Result<Uuid> {
+    async fn seed(&self, i: usize, check: Check) -> anyhow::Result<Uuid> {
         let id = Uuid::now_v7();
-        sqlx::query("INSERT INTO entities(id,kb_id,canonical_name,profile_embedding,profile_n) VALUES ($1,$2,'Alex Lee','[1,0,0]'::vector,1)")
-            .bind(id).bind(self.kb).execute(&self.pool).await?;
+        let profile = if i == 0 { "[1,0,0]" } else { "[0.8,0.6,0]" };
+        sqlx::query("INSERT INTO entities(id,kb_id,canonical_name,profile_embedding,profile_n) VALUES ($1,$2,'Alex Lee',$3::vector,1)")
+            .bind(id).bind(self.kb).bind(profile).execute(&self.pool).await?;
         let fact = Uuid::now_v7();
-        sqlx::query("INSERT INTO facts(id,kb_id,subject_id,layer,phrase,object_value) VALUES ($1,$2,$3,'open','works for','{\"value\":\"Acme\"}'::jsonb)")
-            .bind(fact).bind(self.kb).bind(id).execute(&self.pool).await?;
+        if matches!(check, Check::Adjudicator { literal: true }) {
+            sqlx::query("INSERT INTO facts(id,kb_id,subject_id,layer,phrase,object_value) VALUES ($1,$2,$3,'open','employee number',$4)")
+                .bind(fact).bind(self.kb).bind(id).bind(json!({"value":EMPLOYEES[i]})).execute(&self.pool).await?;
+        } else {
+            sqlx::query("INSERT INTO facts(id,kb_id,subject_id,layer,phrase,object_id) VALUES ($1,$2,$3,'open','works for',$4)")
+                .bind(fact).bind(self.kb).bind(id).bind(self.departments[i]).execute(&self.pool).await?;
+        }
         sqlx::query("INSERT INTO fact_evidence(fact_id,chunk_id,quote,document_id,doc_version) VALUES ($1,$2,$3,$4,1)")
             .bind(fact).bind(self.chunks[i]).bind(&self.quotes[i]).bind(self.docs[i]).execute(&self.pool).await?;
         Ok(id)
@@ -214,51 +258,91 @@ impl Fx {
 
     async fn run(&self, case: &Case, reverse: bool) -> anyhow::Result<Value> {
         let order = if reverse { [1, 0] } else { [0, 1] };
-        let first = self.seed(order[0]).await?;
-        if let Some(verdict) = case.verdict {
-            let second = self.seed(order[1]).await?;
-            utopia_store::resolution::create_review(
-                &self.pool,
-                self.kb,
-                first,
-                second,
-                0.7,
-                "scripted_same_name",
-                ReviewStage::Adjudicating,
-            )
-            .await?;
-            self.model.steps.lock().unwrap().push_back(Step {
-                prompt_has: "Alex Lee".into(),
-                stream: false,
-                text: json!({"verdicts":[{"i":0,"verdict":verdict,"confidence":0.99,
-                    "why":"same name and employer"}]})
-                .to_string(),
-            });
-            crate::adjudication::adjudicate_entities(&self.state, self.kb).await?;
-        } else {
-            // Two bare-name candidates already exist. The wrong holder has the
-            // uniquely highest profile score; source identity must still win.
-            // Equal vectors would exercise the existing tie guard instead.
-            sqlx::query("INSERT INTO entities(id,kb_id,canonical_name,profile_embedding,profile_n) VALUES ($1,$2,'Alex Lee','[0,1,0]'::vector,1)")
-                .bind(Uuid::now_v7()).bind(self.kb).execute(&self.pool).await?;
-            let i = order[1];
-            self.model.steps.lock().unwrap().push_back(Step {
-                prompt_has: self.quotes[i].clone(),
-                stream: true,
-                text: json!({"e":[["Alex Lee","person",1]],
-                    "s":[[self.quotes[i],"Alex Lee","works for",null,"Acme",null,null,null]],
-                    "n":[]})
-                .to_string(),
-            });
-            crate::extraction::extract_document(&self.state, self.docs[i], Default::default())
-                .await?;
-            let status: String =
-                sqlx::query_scalar("SELECT graph_status FROM documents WHERE id=$1")
-                    .bind(self.docs[i])
-                    .fetch_one(&self.pool)
-                    .await?;
-            anyhow::ensure!(status == "done", "extraction did not complete: {status}");
+        let mut holders = [Uuid::nil(); 2];
+        for i in order {
+            holders[i] = self.seed(i, case.check).await?;
         }
+        let (passed, observation) = match case.check {
+            Check::Resolver { target } => {
+                self.model.steps.lock().unwrap().push_back(Step {
+                    prompt_has: self.quotes[2].clone(), stream: true,
+                    text: json!({"e":[["Alex Lee","person",1]],
+                        "s":[[self.quotes[2],"Alex Lee","submitted",null,"a report",null,null,null]],
+                        "n":[]}).to_string(),
+                });
+                crate::extraction::extract_document(&self.state, self.docs[2], Default::default())
+                    .await?;
+                let status: String =
+                    sqlx::query_scalar("SELECT graph_status FROM documents WHERE id=$1")
+                        .bind(self.docs[2])
+                        .fetch_one(&self.pool)
+                        .await?;
+                anyhow::ensure!(status == "done", "extraction did not complete: {status}");
+                let owners: Vec<Uuid> = sqlx::query_scalar(
+                    "SELECT DISTINCT f.subject_id FROM facts f JOIN fact_evidence fe ON fe.fact_id=f.id
+                     WHERE f.kb_id=$1 AND fe.document_id=$2 AND f.layer='open' AND f.phrase='submitted'")
+                    .bind(self.kb).bind(self.docs[2]).fetch_all(&self.pool).await?;
+                anyhow::ensure!(
+                    owners.len() == 1,
+                    "incoming source has {} owners",
+                    owners.len()
+                );
+                // Exact pre-existing ID: creating a new entity is not successful disambiguation.
+                (
+                    owners[0] == holders[target],
+                    json!({"expected_owner":holders[target],
+                    "actual_owner":owners[0],"passage":self.quotes[2]}),
+                )
+            }
+            Check::Adjudicator { literal } => {
+                utopia_store::resolution::create_review(
+                    &self.pool,
+                    self.kb,
+                    holders[order[0]],
+                    holders[order[1]],
+                    0.7,
+                    "scripted_same_name",
+                    ReviewStage::Adjudicating,
+                )
+                .await?;
+                self.model.steps.lock().unwrap().push_back(Step {
+                    prompt_has: "Alex Lee".into(),
+                    stream: false,
+                    // The reply only completes the caller. We test its INPUT, not model judgement.
+                    text: json!({"verdicts":[{"i":0,"verdict":"different","confidence":0.99,
+                        "why":"scripted transport reply"}]})
+                    .to_string(),
+                });
+                crate::adjudication::adjudicate_entities(&self.state, self.kb).await?;
+                let requests = self.model.requests.lock().unwrap();
+                let user = requests
+                    .first()
+                    .and_then(|r| r["messages"].as_array())
+                    .and_then(|m| m.iter().find(|m| m["role"] == "user"))
+                    .and_then(|m| m["content"].as_str())
+                    .ok_or_else(|| anyhow::anyhow!("missing user request"))?;
+                let pair = user
+                    .strip_prefix("Pair 0:\nRecord A: ")
+                    .ok_or_else(|| anyhow::anyhow!("missing first record"))?;
+                let (left, right) = pair
+                    .split_once("\nRecord B: ")
+                    .ok_or_else(|| anyhow::anyhow!("missing second record"))?;
+                let (phrase, clues) = if literal {
+                    ("employee number", EMPLOYEES)
+                } else {
+                    ("works for", DEPARTMENTS)
+                };
+                let expected = order.map(|i| format!("{phrase} → {}", clues[i]));
+                // Check each real HTTP side independently: overall contains would allow swaps.
+                let visible = left.contains(&expected[0]) && right.contains(&expected[1]);
+                let correctly_owned =
+                    !left.contains(clues[order[1]]) && !right.contains(clues[order[0]]);
+                (
+                    visible && correctly_owned,
+                    json!({"expected_facts":expected,"request_sides":[left,right]}),
+                )
+            }
+        };
         anyhow::ensure!(
             self.model.errors.lock().unwrap().is_empty(),
             "script errors: {:?}",
@@ -273,55 +357,15 @@ impl Fx {
             model_calls == 1,
             "expected exactly one scripted request, got {model_calls}"
         );
-
-        let mut actual = Vec::new();
-        for doc in self.docs {
-            // Read each source's fact owner after production resolution/merging, including
-            // duplicate facts invalidated by merge deduplication: their moved subject
-            // still records source identity attribution.
-            // Missing/duplicate extraction is a harness/coverage failure, never known debt.
-            let owners: Vec<Uuid> = sqlx::query_scalar(
-                "SELECT DISTINCT COALESCE(e.merged_into,e.id) FROM facts f
-                 JOIN fact_evidence fe ON fe.fact_id=f.id JOIN entities e ON e.id=f.subject_id
-                 WHERE f.kb_id=$1 AND fe.document_id=$2 AND f.layer='open'
-                   AND f.phrase='works for'",
-            )
-            .bind(self.kb)
-            .bind(doc)
-            .fetch_all(&self.pool)
-            .await?;
-            anyhow::ensure!(
-                owners.len() == 1,
-                "source {doc} has {} fact owners",
-                owners.len()
-            );
-            actual.push(owners[0]);
-        }
-        let mut violations = Vec::new();
-        if case.gold[0] == case.gold[1] && actual[0] != actual[1] {
-            violations.push("false_split");
-        }
-        if case.gold[0] != case.gold[1] && actual[0] == actual[1] {
-            violations.push("false_merge");
-        }
-        let entities: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM entities WHERE kb_id=$1 AND merged_into IS NULL",
-        )
-        .bind(self.kb)
-        .fetch_one(&self.pool)
-        .await?;
         let pending_human: i64 = sqlx::query_scalar("SELECT count(*) FROM resolution_reviews WHERE kb_id=$1 AND stage='human' AND status='pending'")
             .bind(self.kb).fetch_one(&self.pool).await?;
-        let budget_violations = if pending_human > 0 {
-            vec!["unexpected_human_review"]
-        } else {
-            Vec::new()
-        };
+        anyhow::ensure!(
+            pending_human == 0,
+            "unexpected pending Human reviews: {pending_human}"
+        );
         Ok(
             json!({"id":case.id,"order":if reverse {"reverse"} else {"forward"},
-            "gold":case.gold,"actual":actual,"violations":violations,
-            "budget_violations":budget_violations,
-            "entities":entities,"pending_human":pending_human,"model_calls":model_calls}),
+            "passed":passed,"observation":observation,"pending_human":pending_human,"model_calls":model_calls}),
         )
     }
 
@@ -343,19 +387,18 @@ impl Fx {
 }
 
 #[tokio::test]
-async fn scripted_namesake_cases_report_gold_violations_without_relaxing_the_oracle(
-) -> anyhow::Result<()> {
+async fn scripted_namesake_cases_have_only_the_named_known_failures() -> anyhow::Result<()> {
     let Some(url) = utopia_store::test_db::url() else {
         return Ok(());
     };
     let pool = sqlx::PgPool::connect(&url).await?;
-    // CI migrates before workspace tests; this fixture does not race a global migration.
-    let strict = std::env::var("UTOPIA_NAMESAKE_STRICT").as_deref() == Ok("1");
-    let mut failures = Vec::new();
-    let mut total = 0;
-    let mut budget_total = 0;
+    // CI migrates first; this fixture must not race a global migration.
+    let mut mismatches = Vec::new();
+    let mut seen = Vec::new();
+    let mut failed = 0;
     for case in &CASES {
         for reverse in [false, true] {
+            let order = if reverse { "reverse" } else { "forward" };
             let org = Uuid::now_v7();
             let f = match Fx::new(&pool, case, org).await {
                 Ok(f) => f,
@@ -371,33 +414,36 @@ async fn scripted_namesake_cases_report_gold_violations_without_relaxing_the_ora
             f.cleanup().await?;
             let row = run.map_err(|_| anyhow::anyhow!("{} timed out", case.id))??;
             println!("NAMESAKE_CASE {row}");
-            let violations = row["violations"].as_array().unwrap();
-            let budget_violations = row["budget_violations"].as_array().unwrap();
-            total += violations.len();
-            budget_total += budget_violations.len();
-            // Improvements are accepted. A new type, control failure or more than one
-            // allowed failure is rejected; no assertion requires wrong behavior to remain.
-            let within_debt = violations.len() <= usize::from(case.debt.is_some())
-                && violations.iter().all(|v| v.as_str() == case.debt);
-            if !within_debt || (strict && !violations.is_empty()) || !budget_violations.is_empty() {
-                failures.push(format!(
-                    "{} / {}: gold={} budget={}",
-                    case.id, row["order"], row["violations"], row["budget_violations"]
+            let passed = row["passed"].as_bool().unwrap();
+            failed += usize::from(!passed);
+            let name = (case.id, order);
+            seen.push(name);
+            if KNOWN_FAILURES.contains(&name) == passed {
+                mismatches.push(format!(
+                    "{} / {order}: {}",
+                    case.id,
+                    if passed {
+                        "unexpected pass: remove this name with its fix"
+                    } else {
+                        "unlisted failure"
+                    }
                 ));
             }
         }
     }
+    anyhow::ensure!(
+        KNOWN_FAILURES.iter().all(|name| seen.contains(name)),
+        "unused known-failure name"
+    );
     println!(
         "NAMESAKE_SUMMARY {}",
-        json!({"cases":8,"gold_violations":total,
-        "budget_violations":budget_total,
-        "mode":if strict {"strict_gold"} else {"known_debt_ceiling"},
-        "gold_passed":total == 0,"unaccepted":failures})
+        json!({"cases":seen.len(),"failed_checks":failed,
+        "known_failures":KNOWN_FAILURES,"mismatches":mismatches})
     );
     anyhow::ensure!(
-        failures.is_empty(),
-        "namesake gold violations outside acceptance: {}",
-        failures.join("; ")
+        mismatches.is_empty(),
+        "namesake expectation mismatch: {}",
+        mismatches.join("; ")
     );
     Ok(())
 }

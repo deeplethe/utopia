@@ -86,50 +86,6 @@ jobs:
           UTOPIA_DATABASE_URL: postgres://utopia:utopia@localhost:5432/utopia
           UTOPIA_TEST_REQUIRE_DB: "1"
 
-      # Keep the current gold failures visible while a smaller fix is discussed.
-      # Budget success means no new/worse failures, not correct identity resolution.
-      - name: Fixed namesake cases (known-failure budget)
-        shell: bash
-        run: cargo test --locked -p utopia-server namesake_scripted_cases -- --nocapture 2>&1 | tee namesake-scripted-results.log
-        env:
-          UTOPIA_DATABASE_URL: postgres://utopia:utopia@localhost:5432/utopia
-          UTOPIA_TEST_REQUIRE_DB: "1"
-      - name: Report namesake gold disagreements
-        if: always()
-        run: |
-          python3 - <<'PY'
-          import json, os, pathlib
-          log = pathlib.Path('namesake-scripted-results.log')
-          rows = []
-          totals = []
-          if log.exists():
-              for line in log.read_text().splitlines():
-                  if 'NAMESAKE_CASE ' in line:
-                      rows.append(json.loads(line.partition('NAMESAKE_CASE ')[2]))
-                  if 'NAMESAKE_SUMMARY ' in line:
-                      totals.append(json.loads(line.partition('NAMESAKE_SUMMARY ')[2]))
-          summary = ['## Fixed namesake gold results', '',
-                     'Known-failure budget checks for regression; it does not certify identity correctness.', '',
-                     '| Case | Order | Gold violations | Budget violations | Entities | Human | Model calls |',
-                     '|---|---|---|---|---:|---:|---:|']
-          for row in rows:
-              summary.append(f"| {row['id']} | {row['order']} | {', '.join(row['violations']) or 'none'} | {', '.join(row['budget_violations']) or 'none'} | {row['entities']} | {row['pending_human']} | {row['model_calls']} |")
-          summary.extend(['', f"Gold failures: {sum(bool(r['violations']) for r in rows)} / {len(rows)} cases.", '',
-                          'Strict check: `UTOPIA_NAMESAKE_STRICT=1 cargo test -p utopia-server namesake_scripted_cases -- --nocapture`', ''])
-          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as output:
-              output.write('\n'.join(summary))
-          if len(rows) != 8 or len(totals) != 1 or totals[0]['cases'] != 8:
-              raise SystemExit('Incomplete namesake measurement; inspect the test log')
-          if totals[0]['unaccepted'] or totals[0]['budget_violations']:
-              raise SystemExit('Namesake regression exceeds the declared ceiling')
-          PY
-      - name: Preserve namesake measurement log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: namesake-scripted-results
-          path: namesake-scripted-results.log
-
   build:
     runs-on: ubuntu-latest
     steps:
