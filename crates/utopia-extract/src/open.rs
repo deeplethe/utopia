@@ -116,8 +116,6 @@ Output one JSON object and nothing else, shaped like this:\n\
 \n\
 1. \"e\" lists the things the passage talks about, one entry each: [name, kind, named]. Every \
 thing a statement refers to is listed here once, under exactly the name the statements use. \
-Literal values are not things to list here, including an identifier stated as a value: list \
-the thing whose identifier the passage gives, not its code as another entity. \
 named = 1 for a proper name or a fixed term: the name of one particular person, organization, \
 product, place, document, law or event, or a term that means the same thing in any document (a \
 disease, a drug, an industry, a product category, an indicator), written as the passage writes \
@@ -149,11 +147,7 @@ that appears in a qualifier alone is words there, not a listed thing: \"各部�
 基层单位开展宣传活动\" gives 各部门 —开展→ 宣传活动 with {\"走进\": \"学校、社区等基层单位\"}, \
 and neither 学校 nor 社区 is listed.\n\
    A statement with a value is what the passage says about one thing by itself: a figure with \
-its units, a percentage, an amount, a count, a title, a status, or an identifier assigned to it \
-(a reference number, registration code or serial number). An identifier is the literal value, \
-not a second thing listed in \"e\"; letters and digits in it do not make it an entity. This does \
-not turn a named product, document or project into a value when the sentence links to that \
-thing rather than stating its identifier. phrase is how the passage says \
+its units, a percentage, an amount, a count, a title, a status. phrase is how the passage says \
 what is measured or stated (\"area\", \"was completed\", \"joined\", \"占地面积\"); value is the \
 literal as written. Wording that names or describes something is not a value: that something \
 goes in \"e\" and is linked by a statement with an object. \"1,200 beekeepers joined\" is the \
