@@ -1807,8 +1807,7 @@ async fn descendants_of(conn: &mut PgConnection, kb_id: Uuid, root: Uuid) -> App
     Ok(rows.into_iter().map(|(id,)| id).collect())
 }
 
-/// 属性事实查询回来的一行：事实、主语、谓词、字面值、区间两端与精度、置信度，
-/// 以及主语当下的断言类型（规则要按主类过滤）
+/// 属性事实查询回来的一行：事实、主语、谓词、字面值、区间两端与精度、置信度和证据日期。
 type AttrFactRow = (
     Uuid,
     Uuid,
@@ -1819,7 +1818,6 @@ type AttrFactRow = (
     Option<String>,
     Option<String>,
     f32,
-    Option<Uuid>,
     Option<chrono::DateTime<chrono::Utc>>,
     Option<chrono::DateTime<chrono::Utc>>,
 );
@@ -1835,12 +1833,11 @@ async fn attribute_facts(
     Vec<utopia_reason::rules::AttrFact>,
     HashMap<Uuid, (Option<i64>, Option<i64>)>,
     HashMap<Uuid, PremiseMeta>,
-    HashMap<Uuid, Option<Uuid>>,
 )> {
     let rows: Vec<AttrFactRow> = sqlx::query_as(
         "SELECT f.id, f.subject_id, f.predicate_id, f.object_value,
                 f.valid_from, f.valid_to, f.valid_from_precision, f.valid_to_precision,
-                f.confidence, e.type_id, f.attested_from, f.attested_to
+                f.confidence, f.attested_from, f.attested_to
            FROM facts f
            JOIN entities e ON e.id = f.subject_id
           WHERE f.kb_id = $1
@@ -1856,21 +1853,7 @@ async fn attribute_facts(
     let mut facts = Vec::with_capacity(rows.len());
     let mut spans = HashMap::new();
     let mut meta = HashMap::new();
-    let mut type_of = HashMap::new();
-    for (
-        id,
-        subject,
-        predicate,
-        value,
-        from,
-        to,
-        fp,
-        tp,
-        conf,
-        type_id,
-        attested_from,
-        attested_to,
-    ) in rows
+    for (id, subject, predicate, value, from, to, fp, tp, conf, attested_from, attested_to) in rows
     {
         // 与公理那一路同一种读法（0022）：读数没日期就从它的文档起算。
         // 属性一律是状态（建属性时固定 state，界面也不给改）
@@ -1894,9 +1877,8 @@ async fn attribute_facts(
         });
         spans.insert(id, (f, t));
         meta.insert(id, (fp, tp, conf, fa, ta));
-        type_of.insert(subject, type_id);
     }
-    Ok((facts, spans, meta, type_of))
+    Ok((facts, spans, meta))
 }
 
 /// 推一遍，把派生事实落进账本。
@@ -2105,7 +2087,16 @@ async fn resolve(conn: &mut PgConnection, kb_id: Uuid) -> AppResult<Resolved> {
     // 落库那边的陈旧对账扫的是整张 `derived_facts`，两趟各做各的 diff 会把对方
     // 落的行每一轮都判成陈旧
     if !loaded.rules.is_empty() {
-        let (asserted, attr_spans, attr_meta, type_of) = attribute_facts(&mut *conn, kb_id).await?;
+        let (asserted, attr_spans, attr_meta) = attribute_facts(&mut *conn, kb_id).await?;
+        // 只读 Y 的连接规则不要求 X 有属性；主类范围必须独立从实体读取。
+        let entity_types: Vec<(Uuid, Uuid)> = sqlx::query_as(
+            "SELECT id, type_id FROM entities
+              WHERE kb_id = $1 AND merged_into IS NULL AND type_id IS NOT NULL",
+        )
+        .bind(kb_id)
+        .fetch_all(&mut *conn)
+        .await?;
+        let type_of: HashMap<Uuid, Uuid> = entity_types.into_iter().collect();
         asserted_ids.extend(asserted.iter().map(|f| f.id));
         // 前提的精度与置信度：落地那一段与不动点这一段共用，所以两份 meta 先合起来；
         // 区间也要——认出派生的哪一端是被前提的锚点顶上来的，靠的就是它
@@ -2186,16 +2177,17 @@ async fn resolve(conn: &mut PgConnection, kb_id: Uuid) -> AppResult<Resolved> {
             let mut fresh: Vec<(usize, utopia_reason::rules::RuleHit)> = Vec::new();
             capped_by_rule.clear();
             for (ri, lr) in loaded.rules.iter().enumerate() {
+                let matches_asserted_scope = |subject: &Uuid| {
+                    type_of
+                        .get(subject)
+                        .is_some_and(|t| lr.subject_types.contains(t))
+                };
                 // 主类是断言的：范围是个筛子，不带区间、不进前提
                 let mut by_assertion: Vec<utopia_reason::rules::AttrFact> = Vec::new();
                 // 只靠派生归类够得着的：范围变成一个条件（下面那段）
                 let mut by_conclusion: Vec<utopia_reason::rules::AttrFact> = Vec::new();
                 for f in &fact_pool {
-                    if type_of
-                        .get(&f.subject)
-                        .and_then(|t| *t)
-                        .is_some_and(|t| lr.subject_types.contains(&t))
-                    {
+                    if matches_asserted_scope(&f.subject) {
                         by_assertion.push(f.clone());
                     } else if derived_types
                         .get(&f.subject)
@@ -2204,12 +2196,24 @@ async fn resolve(conn: &mut PgConnection, kb_id: Uuid) -> AppResult<Resolved> {
                         by_conclusion.push(f.clone());
                     }
                 }
+                // X 从连接边枚举，只筛属性挡不住一组全部读取 Y 的条件。
+                let assertion_edges: Vec<_> = if let Some(join_predicate) = lr.rule.join_predicate {
+                    evaluation_edges
+                        .iter()
+                        .filter(|e| {
+                            e.predicate == join_predicate && matches_asserted_scope(&e.subject)
+                        })
+                        .cloned()
+                        .collect()
+                } else {
+                    Vec::new()
+                };
                 let (hits, rr) = utopia_reason::rules::evaluate_with_pool(
                     std::slice::from_ref(&lr.rule),
                     &by_assertion,
                     &fact_pool,
                     &spans,
-                    &evaluation_edges,
+                    &assertion_edges,
                 );
                 let mut capped = rr.capped;
                 fresh.extend(hits.into_iter().map(|h| (ri, h)));
