@@ -94,6 +94,7 @@ async fn an_empty_balance_stops_the_document_and_keeps_what_was_applied() -> any
             payload: json!({}),
             attempts: 1,
             max_attempts: 3,
+            locked_at: chrono::Utc::now(),
         };
         crate::alerting::observe_job_failure(&state, &job, &err).await;
         let alerts: Vec<String> = sqlx::query_scalar(

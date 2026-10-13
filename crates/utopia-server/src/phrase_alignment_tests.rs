@@ -332,6 +332,179 @@ fn none() -> Vec<Value> {
     vec![vote(None, None)]
 }
 
+#[tokio::test]
+async fn agreeing_votes_cannot_bind_a_direction_outside_the_declared_ends() -> anyhow::Result<()> {
+    for shape in ["forward-only", "reverse-only", "literal"] {
+        let Some(f) = Fx::new().await? else {
+            return Ok(());
+        };
+        let run = async {
+            let invalid = match shape {
+                "reverse-only" => {
+                    sqlx::query("UPDATE facts SET subject_id=object_id,object_id=subject_id WHERE kb_id=$1 AND layer='open'")
+                        .bind(f.kb).execute(&f.pool).await?;
+                    "forward"
+                }
+                "literal" => {
+                    sqlx::query("DELETE FROM relation_type_ranges WHERE relation_type_id=$1")
+                        .bind(f.based_in).execute(&f.pool).await?;
+                    sqlx::query("UPDATE relation_types SET kind='attribute' WHERE id=$1")
+                        .bind(f.based_in).execute(&f.pool).await?;
+                    sqlx::query("UPDATE facts SET object_id=NULL,object_value='{\"value\":\"London\"}' WHERE kb_id=$1 AND layer='open'")
+                        .bind(f.kb).execute(&f.pool).await?;
+                    "reverse"
+                }
+                _ => "reverse",
+            };
+            let answer = marked(Some("based_in"), Some(invalid), Some("end"));
+            f.script(vec![answer.clone(), answer, nothing_implied()]);
+            f.run().await?;
+            let b = f.binding().await?;
+            assert_eq!(b.status, "undecided", "{shape}: agreement is not structural validity");
+            assert!(b.relation_type_id.is_none() && b.direction.is_none() && b.marks.is_none());
+            let votes: Value = sqlx::query_scalar("SELECT votes FROM phrase_bindings WHERE kb_id=$1")
+                .bind(f.kb).fetch_one(&f.pool).await?;
+            assert_eq!(votes["reason"], "invalid_direction");
+            assert_eq!(votes["first"]["direction"], invalid);
+            assert_eq!(votes["second"]["direction"], invalid);
+            assert_eq!(f.typed().await?, 0);
+            assert_eq!(f.requests().len(), 2, "no implication question for an invalid binding");
+            assert!(!f.requeued().await?);
+            f.run().await?;
+            assert_eq!(f.requests().len(), 2, "unchanged undecided stays in review");
+            sqlx::query("UPDATE relation_types SET updated_at=clock_timestamp() WHERE id=$1")
+                .bind(f.based_in).execute(&f.pool).await?;
+            let allowed = if shape == "reverse-only" { "reverse" } else { "forward" };
+            let answer = vote(Some("based_in"), Some(allowed));
+            f.script(vec![answer.clone(), answer, nothing_implied()]);
+            f.run().await?;
+            let b = f.binding().await?;
+            assert_eq!((b.status.as_str(), b.direction.as_deref()), ("bound", Some(allowed)));
+            assert_eq!(f.typed().await?, 1, "a later valid decision still materializes");
+            assert!(!f.requeued().await?);
+            anyhow::Ok(())
+        }.await;
+        f.cleanup().await?;
+        run?;
+    }
+    Ok(())
+}
+
+// Reproduce an old accepted reverse binding whose fingerprint is already current,
+// including its materialized row. A version/fingerprint mismatch cannot rescue it.
+async fn cached_invalid_direction(f: &Fx, decider: &str) -> anyhow::Result<String> {
+    f.script(bound());
+    f.run().await?;
+    let basis = f.binding().await?.basis.unwrap();
+    let sig = phrase_bindings::signatures(&f.pool, f.kb).await?.remove(0);
+    phrase_bindings::decide(&f.pool, f.kb, &sig, Decision {
+        relation_type_id: Some(f.based_in), direction: Some("reverse"), status: "bound",
+        votes: &json!({"first":{"property":"based_in","direction":"reverse"},"second":{"property":"based_in","direction":"reverse"}}),
+        decided_by: decider, basis: (decider == "agent").then_some(basis.as_str()),
+        marks: Some("none"), marks_asked: true,
+    }).await?;
+    materialize::materialize(&f.pool, f.kb).await?;
+    assert_eq!(f.typed().await?, 1);
+    f.clear_jobs().await?;
+    Ok(basis)
+}
+
+#[tokio::test]
+async fn a_cached_invalid_direction_is_redecided_without_an_input_edit() -> anyhow::Result<()> {
+    let Some(f) = Fx::new().await? else {
+        return Ok(());
+    };
+    let run = async {
+        let basis = cached_invalid_direction(&f, "agent").await?;
+        f.script(bound());
+        // This cache also predates the marks question: repairing its direction
+        // must not be narrowed to a marks-only request by the unchanged basis.
+        sqlx::query("UPDATE phrase_bindings SET marks=NULL,marks_asked_at=NULL WHERE kb_id=$1")
+            .bind(f.kb).execute(&f.pool).await?;
+        f.run().await?;
+        let b = f.binding().await?;
+        assert_eq!((b.status.as_str(), b.direction.as_deref()), ("bound", Some("forward")));
+        assert_eq!(b.basis.as_deref(), Some(basis.as_str()));
+        assert_eq!(f.requests().len(), 4, "two fresh votes despite the unchanged fingerprint");
+        let correct: i64 = sqlx::query_scalar("SELECT count(*) FROM facts WHERE kb_id=$1 AND layer='typed' AND invalidated_at IS NULL AND subject_id=$2")
+            .bind(f.kb).bind(f.acme).fetch_one(&f.pool).await?;
+        assert_eq!(correct, 1, "the corrected projection follows the statement direction");
+        assert!(!f.requeued().await?);
+        anyhow::Ok(())
+    }.await;
+    f.cleanup().await?;
+    run
+}
+
+#[tokio::test]
+async fn an_unreadable_repair_cannot_keep_an_invalid_cached_projection() -> anyhow::Result<()> {
+    let Some(f) = Fx::new().await? else {
+        return Ok(());
+    };
+    let run = async {
+        let basis = cached_invalid_direction(&f, "agent").await?;
+        f.script(vec![json!({"unreadable":true})]);
+        f.run().await?;
+        let b = f.binding().await?;
+        assert_eq!(
+            b.status, "undecided",
+            "a failed model is not support for the old invalid direction"
+        );
+        assert_eq!(b.basis.as_deref(), Some(basis.as_str()));
+        assert_eq!(f.typed().await?, 0);
+        let votes: Value = sqlx::query_scalar("SELECT votes FROM phrase_bindings WHERE kb_id=$1")
+            .bind(f.kb)
+            .fetch_one(&f.pool)
+            .await?;
+        assert_eq!(votes["reason"], "invalid_direction");
+        assert_eq!(votes["previous"]["first"]["direction"], "reverse");
+        assert_eq!(f.requests().len(), 3);
+        f.clear_jobs().await?;
+        f.run().await?;
+        assert_eq!(
+            f.requests().len(),
+            3,
+            "the unresolved direction remains for a person"
+        );
+        assert!(!f.requeued().await?);
+        anyhow::Ok(())
+    }
+    .await;
+    f.cleanup().await?;
+    run
+}
+
+#[tokio::test]
+async fn an_inapplicable_direction_chosen_by_a_person_is_preserved() -> anyhow::Result<()> {
+    let Some(f) = Fx::new().await? else {
+        return Ok(());
+    };
+    let run = async {
+        cached_invalid_direction(&f, "person").await?;
+        f.run().await?;
+        let b = f.binding().await?;
+        assert_eq!(
+            (
+                b.status.as_str(),
+                b.direction.as_deref(),
+                b.decided_by.as_str()
+            ),
+            ("bound", Some("reverse"), "person")
+        );
+        assert_eq!(
+            f.requests().len(),
+            2,
+            "only the seed agent binding used the model"
+        );
+        assert_eq!(f.typed().await?, 1);
+        assert!(!f.requeued().await?);
+        anyhow::Ok(())
+    }
+    .await;
+    f.cleanup().await?;
+    run
+}
+
 /// 类别词对齐还排着时短语对齐不动手：两端的类还没定，判了也是重判。它给自己排一份半分钟
 /// 后的，类别词对齐收尾后照常判
 #[tokio::test]
@@ -716,7 +889,11 @@ async fn a_person_decision_made_during_the_request_is_not_overwritten() -> anyho
         f.model
             .hold
             .store(true, std::sync::atomic::Ordering::SeqCst);
-        f.script(none());
+        f.script(vec![
+            vote(Some("based_in"), Some("reverse")),
+            vote(Some("based_in"), Some("reverse")),
+            nothing_implied(),
+        ]);
         let state = f.state.clone();
         let kb = f.kb;
         let worker = tokio::spawn(async move { align_phrases_reasking(&state, kb, 0).await });
