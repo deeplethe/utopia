@@ -488,6 +488,29 @@ pub async fn mark_failed(pool: &PgPool, job: &Job, err: &anyhow::Error) -> AppRe
     Ok(())
 }
 
+/// `#1106` fallback：状态写回 DB 失败时，把当前行从 `running` 拨回
+/// `queued` 让下一轮重新认领并重试持久化。这条 path 故意只动
+/// `WHERE status = 'running' AND id = $1` 的那一行：避免把已经被
+/// worker 之外的途径（人手、`requeue_failed`）改过状态的同 id 行
+/// 再覆写一次；也避免把别人正在跑的另一处不在 running 的行抢过来。
+///
+/// `run_at = now()` 让它在下一轮循环立刻可领（不再等任何退避——
+/// 是写回失败不是任务失败；handler 已经把它算完了）。
+///
+/// 返回 `AppResult<()>`,不静默吃错:上游若也 fail,会留 `tracing::error!`
+/// 给人看。
+async fn requeue_running_after_write_failure(pool: &PgPool, id: i64) -> AppResult<()> {
+    sqlx::query(
+        "UPDATE jobs SET status = 'queued', locked_at = NULL, run_at = now(),
+                updated_at = now()
+         WHERE id = $1 AND status = 'running'",
+    )
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 /// worker 调度循环：运行中任务数低于目标并发就继续认领（有活立即续派），
 /// 空闲时等入队通知、2s 轮询兜底（#517）；每个任务在独立 tokio task 中执行，长抽取不再阻塞同步。
 /// `concurrency` 每轮热读——系统设置里改并发数即时生效。
@@ -558,7 +581,28 @@ where
                         }
                     };
                     if let Err(e) = outcome {
-                        tracing::error!(job_id = job.id, error = %e, "任务状态写回失败");
+                        // `#1106`：状态写回 DB 失败时，行会一直停在 `running`
+                        // ——直到 worker 重启、由启动时的孤儿回收（run_worker 顶
+                        // 端那一段）把它们回排。但那次重启会把同一份 handler **再
+                        // 跑一遍**，已经计算好的结果不在场，等于白干一次。我们在这
+                        // 里做内联回滚：尝试把这一行从 `running` 拨回 `queued`，
+                        // 让 worker 在下一轮循环里重新认领并把 status 持久化下
+                        // 去。handler 设计上都是幂等的（run_worker 顶部的注释），
+                        // 重跑结果会再次驱动 mark_done / mark_failed——这条
+                        // fallback 是把已经算好的结果「真正落到 DB 里」，不是
+                        // 再算一遍
+                        tracing::error!(job_id = job.id, kind = %job.kind, error = %e, "任务状态写回失败");
+                        if let Err(requeue_err) =
+                            requeue_running_after_write_failure(&pool, job.id).await
+                        {
+                            tracing::error!(
+                                job_id = job.id,
+                                kind = %job.kind,
+                                write_back_error = %e,
+                                requeue_error = %requeue_err,
+                                "内联回滚也失败；除非重启进程否则该任务将一直停在 running",
+                            );
+                        }
                     }
                     running.fetch_sub(1, Ordering::Relaxed);
                 });
