@@ -70,7 +70,7 @@ async fn accept(
 }
 async fn claim(pool: &PgPool, id: i64) -> anyhow::Result<jobs::Job> {
     // Restrict the production claim SQL to this test's job, never steal work.
-    Ok(sqlx::query_as("UPDATE jobs SET status='running', attempts=attempts+1, locked_at=now() WHERE id=$1 AND status='queued' RETURNING id,kind,payload,attempts,max_attempts")
+    Ok(sqlx::query_as("UPDATE jobs SET status='running', attempts=attempts+1, locked_at=now() WHERE id=$1 AND status='queued' RETURNING id,kind,payload,attempts,max_attempts,locked_at")
         .bind(id).fetch_one(pool).await?)
 }
 async fn handle(pool: &PgPool, kb: Uuid, job: &jobs::Job) -> anyhow::Result<()> {
