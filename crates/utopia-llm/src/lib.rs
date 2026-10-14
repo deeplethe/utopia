@@ -583,6 +583,55 @@ impl LlmClient {
         req
     }
 
+    /// Newer OpenAI reasoning models (o1, o3, GPT-5 family) renamed `max_tokens`
+    /// to `max_completion_tokens` and reject `temperature` values other than 1.
+    /// Detection uses the structured `error.param` / `error.code` fields rather
+    /// than free-text matching: the message wording varies by vendor, but those
+    /// fields are part of the protocol contract. Each adjustment applies at most
+    /// once — removing the already-applied key from `body` prevents an infinite
+    /// loop if the endpoint keeps rejecting.
+    async fn send_with_compat_retries(
+        &self,
+        body: &mut serde_json::Value,
+    ) -> anyhow::Result<reqwest::Response> {
+        loop {
+            let resp = self
+                .request("/chat/completions")
+                .json(&*body)
+                .send()
+                .await
+                .map_err(Unreachable)?;
+            let status = resp.status();
+            if status.is_success() {
+                return Ok(resp);
+            }
+            let retry_after = retry_after_of(resp.headers());
+            let raw = resp.text().await.map_err(Unreachable)?;
+            let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap_or_default();
+            let param = parsed["error"]["param"].as_str();
+            let code = parsed["error"]["code"].as_str();
+            if let Some(obj) = body.as_object_mut() {
+                if param == Some("max_tokens")
+                    && code == Some("unsupported_parameter")
+                    && obj.contains_key("max_tokens")
+                {
+                    let v = obj.remove("max_tokens").expect("checked above");
+                    obj.insert("max_completion_tokens".to_string(), v);
+                    tracing::info!(model = %self.model, "max_tokens → max_completion_tokens");
+                    continue;
+                }
+                if param == Some("temperature")
+                    && code == Some("unsupported_value")
+                    && obj.remove("temperature").is_some()
+                {
+                    tracing::info!(model = %self.model, "temperature rejected, retrying without it");
+                    continue;
+                }
+            }
+            return Err(failure("LLM", status, retry_after, &parsed, &raw));
+        }
+    }
+
     /// 非流式对话（连通性测试等轻量场景）。不传温度：请求体与从前一字不变，端点用它的缺省
     pub async fn chat(&self, messages: &[ChatMessage]) -> anyhow::Result<String> {
         self.chat_at(messages, None).await
@@ -600,17 +649,7 @@ impl LlmClient {
         if let Some(t) = temperature {
             body["temperature"] = json!(t);
         }
-        let resp = self
-            .request("/chat/completions")
-            .json(&body)
-            .send()
-            .await
-            .map_err(Unreachable)?;
-        let status = resp.status();
-        let retry_after = retry_after_of(resp.headers());
-        if !status.is_success() {
-            return Err(response_failure("LLM", status, retry_after, resp).await?);
-        }
+        let resp = self.send_with_compat_retries(&mut body).await?;
         let body: serde_json::Value = resp.json().await.map_err(Unreachable)?;
         log_usage(&self.model, &call_label(messages), &body);
         body["choices"][0]["message"]["content"]
@@ -672,18 +711,39 @@ impl LlmClient {
                 break resp;
             }
             let raw = resp.text().await.map_err(Unreachable)?;
-            let parsed = serde_json::from_str(&raw).unwrap_or_default();
-            if status == reqwest::StatusCode::BAD_REQUEST
-                && !lowered
-                && !says_context_too_long(&parsed, &err_detail(&parsed, &raw))
-            {
-                if let Some(lower) = stated_completion_ceiling(&err_detail(&parsed, &raw), ceiling)
+            let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap_or_default();
+            if status == reqwest::StatusCode::BAD_REQUEST {
+                let param = parsed["error"]["param"].as_str();
+                let code = parsed["error"]["code"].as_str();
+                if let Some(obj) = body.as_object_mut() {
+                    if param == Some("max_tokens")
+                        && code == Some("unsupported_parameter")
+                        && obj.contains_key("max_tokens")
+                    {
+                        let v = obj.remove("max_tokens").expect("checked above");
+                        obj.insert("max_completion_tokens".to_string(), v);
+                        tracing::info!(model = %self.model, "max_tokens → max_completion_tokens");
+                        continue;
+                    }
+                    if param == Some("temperature")
+                        && code == Some("unsupported_value")
+                        && obj.remove("temperature").is_some()
+                    {
+                        tracing::info!(model = %self.model, "temperature rejected, retrying without it");
+                        continue;
+                    }
+                }
+                if !lowered
+                    && !says_context_too_long(&parsed, &err_detail(&parsed, &raw))
                 {
-                    tracing::info!(model = %self.model, sent = ceiling, stated = lower, "端点说了自己的补全上限，按它重试并记住");
-                    self.completion_ceiling.fetch_min(lower, Ordering::Relaxed);
-                    ceiling = lower;
-                    lowered = true;
-                    continue;
+                    if let Some(lower) = stated_completion_ceiling(&err_detail(&parsed, &raw), ceiling)
+                    {
+                        tracing::info!(model = %self.model, sent = ceiling, stated = lower, "端点说了自己的补全上限，按它重试并记住");
+                        self.completion_ceiling.fetch_min(lower, Ordering::Relaxed);
+                        ceiling = lower;
+                        lowered = true;
+                        continue;
+                    }
                 }
             }
             return Err(failure("LLM", status, retry_after, &parsed, &raw));
