@@ -52,3 +52,27 @@ async fn granting_a_member_makes_them_admin() -> anyhow::Result<()> {
         .await?;
     run
 }
+
+#[tokio::test]
+async fn revoking_your_own_flag_is_refused_and_you_stay_admin() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let (org, admin, member) = org_with_admin_and_member(&pool).await?;
+
+    let run = async {
+        utopia_store::accounts::set_system_admin(&pool, member, admin, true).await?;
+        let refused = utopia_store::accounts::set_system_admin(&pool, admin, admin, false).await;
+        assert!(matches!(refused, Err(utopia_core::AppError::Validation(_))));
+        assert!(is_admin(&pool, admin).await?);
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+
+    sqlx::query("DELETE FROM organizations WHERE id = $1")
+        .bind(org)
+        .execute(&pool)
+        .await?;
+    run
+}
