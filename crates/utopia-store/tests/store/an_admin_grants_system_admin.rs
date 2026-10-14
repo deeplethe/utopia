@@ -25,10 +25,12 @@ async fn org_with_admin_and_member(pool: &PgPool) -> anyhow::Result<(Uuid, Uuid,
 }
 
 async fn is_admin(pool: &PgPool, id: Uuid) -> anyhow::Result<bool> {
-    Ok(sqlx::query_scalar("SELECT is_admin FROM users WHERE id = $1")
-        .bind(id)
-        .fetch_one(pool)
-        .await?)
+    Ok(
+        sqlx::query_scalar("SELECT is_admin FROM users WHERE id = $1")
+            .bind(id)
+            .fetch_one(pool)
+            .await?,
+    )
 }
 
 #[tokio::test]
@@ -88,7 +90,8 @@ async fn granting_a_deactivated_or_unknown_user_is_not_found() -> anyhow::Result
     let run = async {
         utopia_store::accounts::deactivate_user(&pool, member, admin).await?;
         for target in [member, Uuid::now_v7()] {
-            let missing = utopia_store::accounts::set_system_admin(&pool, target, admin, true).await;
+            let missing =
+                utopia_store::accounts::set_system_admin(&pool, target, admin, true).await;
             assert!(matches!(missing, Err(utopia_core::AppError::NotFound)));
         }
         assert!(!is_admin(&pool, member).await?);

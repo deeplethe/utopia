@@ -25,7 +25,9 @@ async fn only_a_system_admin_grants_the_flag_and_the_grant_is_audited() -> anyho
     let state = AppState::new(
         pool.clone(),
         &cfg,
-        Arc::new(utopia_search::SearchIndex::open(&dir.path().join("search"))?),
+        Arc::new(utopia_search::SearchIndex::open(
+            &dir.path().join("search"),
+        )?),
         "test-only".into(),
     );
     let result = async {
@@ -47,7 +49,9 @@ async fn only_a_system_admin_grants_the_flag_and_the_grant_is_audited() -> anyho
                     .header("authorization", format!("Bearer {token}"))
                     .header("content-type", "application/json")
                     .body(Body::from(json!({ "is_admin": true }).to_string()))?;
-                let response = super::router(state, &Default::default()).oneshot(request).await?;
+                let response = super::router(state, &Default::default())
+                    .oneshot(request)
+                    .await?;
                 anyhow::Ok(response.status())
             }
         };

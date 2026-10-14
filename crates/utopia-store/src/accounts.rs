@@ -343,13 +343,12 @@ pub async fn set_system_admin(
     if target == actor && !value {
         return Err(AppError::Validation("不能收回自己的系统管理员".into()));
     }
-    let res = sqlx::query(
-        "UPDATE users SET is_admin = $2 WHERE id = $1 AND deactivated_at IS NULL",
-    )
-    .bind(target)
-    .bind(value)
-    .execute(pool)
-    .await?;
+    let res =
+        sqlx::query("UPDATE users SET is_admin = $2 WHERE id = $1 AND deactivated_at IS NULL")
+            .bind(target)
+            .bind(value)
+            .execute(pool)
+            .await?;
     if res.rows_affected() == 0 {
         return Err(AppError::NotFound);
     }
