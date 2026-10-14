@@ -61,11 +61,9 @@ const CASES: [Case; 4] = [
 
 // #1136: a listed case MUST fail today; every other case MUST pass. A fix removes
 // the corresponding names with its code change, so success cannot silently go stale.
-const KNOWN_FAILURES: [(&str, &str); 4] = [
+const KNOWN_FAILURES: [(&str, &str); 2] = [
     ("resolver_passage_over_profile", "forward"),
     ("resolver_passage_over_profile", "reverse"),
-    ("adjudicator_literal_clues_reach_request", "forward"),
-    ("adjudicator_literal_clues_reach_request", "reverse"),
 ];
 
 struct Step {

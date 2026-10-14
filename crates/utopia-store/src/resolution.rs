@@ -1524,7 +1524,8 @@ async fn entity_fact_lines_many(
          CROSS JOIN LATERAL (
          SELECT CASE WHEN f.subject_id = requested.id THEN 'out' ELSE 'in' END AS direction,
                 COALESCE(r.label, f.phrase, fact_surface_predicate(f.id)) AS predicate_label,
-                o.canonical_name AS other_name,
+                -- 字面值的事实没有对端实体：值本身就是这一行要说的（职位、工号），不能读成「?」
+                COALESCE(o.canonical_name, left(f.object_value->>'value', 120)) AS other_name,
                 f.valid_from, f.valid_to, f.confidence, f.recorded_at
          FROM facts f
          LEFT JOIN relation_types r ON r.id = f.predicate_id
