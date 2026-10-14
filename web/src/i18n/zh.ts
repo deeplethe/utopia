@@ -617,6 +617,7 @@ export const zh: Strings = {
     ingestGuide: "阅读摄入接口指南 →",
     ingestGuideTitle: "摄入接口指南",
     endpointField: "接口地址",
+    feedPlaceholder: "https://your-service/utopia-feed",
     endpointCopied: "接口地址已复制",
     copyEndpoint: "点击复制完整地址",
     pushStatus: {
