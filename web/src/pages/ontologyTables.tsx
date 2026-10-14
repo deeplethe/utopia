@@ -567,7 +567,7 @@ export function OntologyTables({
                 v === "classes"
                   ? S.ontology.tabClasses
                   : v === "properties"
-                    ? S.ontology.tabProperties
+                    ? S.ontology.schemaTabRelations
                     : S.ontology.schemaTabAttributes,
               count: loading ? undefined : counts[v],
             }),
