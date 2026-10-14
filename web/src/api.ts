@@ -1840,6 +1840,12 @@ export const api = {
     request<{ ok: boolean }>(`/api/v1/admin/users/${userId}`, {
       method: "DELETE",
     }),
+  /** 授予或收回系统管理员（#1233） */
+  adminSetSystemAdmin: (userId: string, isAdmin: boolean) =>
+    request<{ ok: boolean }>(`/api/v1/admin/users/${userId}`, {
+      method: "PUT",
+      body: JSON.stringify({ is_admin: isAdmin }),
+    }),
   adminDataSources: () =>
     request<{ data_sources: DataSourceView[] }>("/api/v1/admin/data-sources"),
   adminCreateDataSource: (body: { name: string; conn_string: string }) =>

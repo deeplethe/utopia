@@ -2461,6 +2461,7 @@ export const en = {
   members: {
     title: "Deployment users",
     systemAdmin: "System admin",
+    systemAdminHint: "Opens Administration: deployment settings, accounts, data sources. You can't remove your own.",
     remove: "Remove",
     deactivate: "Deactivate",
     cancel: "Cancel",

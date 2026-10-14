@@ -2156,6 +2156,7 @@ export const zh: Strings = {
   members: {
     title: "部署用户",
     systemAdmin: "系统管理员",
+    systemAdminHint: "可进入系统管理：部署配置、账号、数据源。不能收回自己的。",
     remove: "移除",
     deactivate: "停用账号",
     cancel: "取消",
