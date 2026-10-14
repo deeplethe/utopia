@@ -1453,6 +1453,7 @@ export const zh: Strings = {
     delete: "删除",
     deleteBlocked: "在用中——无法删除",
     importShort: "导入",
+    exportShort: "导出",
     importTitle: "导入本体",
     importHint: "导入 OWL 或 RDFS 文件（.owl、.rdf、.ttl）。类与属性按 IRI 匹配，导入同一份词汇表的新版本会更新已有的，不会再进一份。",
     importPick: "选择文件",

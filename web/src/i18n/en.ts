@@ -1640,6 +1640,7 @@ export const en = {
     deleteBlocked: "In use — cannot delete",
     /* ---- OWL / RDFS 导入 ---- */
     importShort: "Import",
+    exportShort: "Export",
     importTitle: "Import an ontology",
     importHint: "Import an OWL or RDFS file (.owl, .rdf, .ttl). Classes and properties are matched by IRI, so importing a newer version of the same vocabulary updates what is already here.",
     importPick: "Choose file",

@@ -11,6 +11,7 @@ import {
   ArrowRight,
   CheckCheck,
   ChevronRight,
+  Download,
   Inbox,
   Link2,
   Network,
@@ -429,6 +430,12 @@ export function Ontology() {
           onClick={() => setSel({ kind: "import" })}
         >
           {S.ontology.importShort}
+        </RailItem>
+        <RailItem
+          icon={<Download size={14} />}
+          onClick={() => window.open(`/api/v1/kbs/${kb?.id}/export?format=turtle`)}
+        >
+          {S.ontology.exportShort}
         </RailItem>
         {/* 业务规则（0021）：本体说「有这么个类」，规则说「什么样的实体算它」。
             所以它归在本体这一页，而不是另开一处——判据与词汇是同一份契约 */}
