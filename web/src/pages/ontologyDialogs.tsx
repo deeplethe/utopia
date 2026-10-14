@@ -597,6 +597,7 @@ export function PropertyDialog({
 export function AttributeDialog({
   kbId,
   typeId,
+  allTypes,
   existing,
   onClose,
   onSaved,
@@ -604,7 +605,9 @@ export function AttributeDialog({
   onError,
 }: {
   kbId: string;
-  typeId: string;
+  /** null = 不是从某个类打开的（本体表格的属性页）：弹窗里自己选挂在哪个类 */
+  typeId: string | null;
+  allTypes: EntityTypeView[];
   existing: RelationTypeView | null;
   onClose: () => void;
   onSaved: () => void;
@@ -618,6 +621,8 @@ export function AttributeDialog({
   // 单值 = functional：新值经时态引擎闭合旧值（属性历史的来源）。多数属性如此，默认开
   const [single, setSingle] = useState(existing?.functional ?? true);
   const [description, setDescription] = useState(existing?.description ?? "");
+  const [host, setHost] = useState(typeId ?? "");
+  const hostOpts = useMemo(() => parentOptions(allTypes, undefined), [allTypes]);
 
   const save = useMutation({
     mutationFn: async (): Promise<unknown> =>
@@ -635,7 +640,7 @@ export function AttributeDialog({
             key,
             label,
             kind: "attribute",
-            domains: [typeId],
+            domains: [host],
             temporal: "state",
             functional: single,
             inverse_functional: false,
@@ -667,7 +672,7 @@ export function AttributeDialog({
       closeLabel={S.ui.close}
       saveLabel={S.ontology.save}
       cancelLabel={S.ontology.cancel}
-      canSave={!!label.trim() && (!!existing || !!key.trim())}
+      canSave={!!label.trim() && (!!existing || (!!key.trim() && !!host))}
       busy={save.isPending}
       onSave={() => save.mutate()}
       onCancel={onClose}
@@ -682,6 +687,17 @@ export function AttributeDialog({
           : undefined
       }
     >
+      {!existing && typeId === null && (
+        <Field label={S.ontology.attributeHost}>
+          <SearchSelect
+            value={host}
+            onChange={setHost}
+            options={hostOpts}
+            className="w-full"
+            placeholder={S.ontology.searchTypes}
+          />
+        </Field>
+      )}
       {existing ? (
         <Field label={S.ontology.label}>
           <Input

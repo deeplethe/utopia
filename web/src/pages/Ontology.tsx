@@ -128,7 +128,7 @@ type Edit =
       // 从一个类出发新建关系时带上它的 id，domain 预填成它
       initialDomain: string | null;
     }
-  | { kind: "attribute"; typeId: string; existing: RelationTypeView | null }
+  | { kind: "attribute"; typeId: string | null; existing: RelationTypeView | null }
   | { kind: "connect"; cls: EntityTypeView }
   | null;
 
@@ -582,6 +582,9 @@ export function Ontology() {
                   initialDomain: null,
                 })
               }
+              onCreateAttribute={() =>
+                setEdit({ kind: "attribute", typeId: null, existing: null })
+              }
             />
           ) : (
             <OntologySchemaGraph
@@ -787,6 +790,7 @@ export function Ontology() {
         <AttributeDialog
           kbId={kb.id}
           typeId={edit.typeId}
+          allTypes={entity_types}
           existing={edit.existing}
           onClose={() => setEdit(null)}
           onSaved={() => {
