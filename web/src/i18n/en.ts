@@ -679,6 +679,7 @@ export const en = {
     ingestGuide: "Read the ingest guide →",
     ingestGuideTitle: "Ingest interface guide",
     endpointField: "Endpoint URL",
+    feedPlaceholder: "https://your-service/utopia-feed",
     endpointCopied: "Endpoint URL copied",
     copyEndpoint: "Click to copy the full URL",
     // api 来源的推送状态（queued/running 不会出现，仅为类型完备）

@@ -1578,7 +1578,7 @@ function SourceModal({
               {field(
                 S.library.endpointField,
                 <Input className="w-full font-mono"
-                  placeholder="https://your-service/utopia-feed"
+                  placeholder={S.library.feedPlaceholder}
                   value={endpoint}
                   onChange={(e) => setEndpoint(e.target.value)}
                 />,
