@@ -876,9 +876,10 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/2.0/sql/statements"))
-            .respond_with(ResponseTemplate::new(503).set_body_string(
-                "Service Unavailable — warehouse suspended",
-            ))
+            .respond_with(
+                ResponseTemplate::new(503)
+                    .set_body_string("Service Unavailable — warehouse suspended"),
+            )
             .mount(&server)
             .await;
         let err = DatabricksEngine::new(conn(&server))

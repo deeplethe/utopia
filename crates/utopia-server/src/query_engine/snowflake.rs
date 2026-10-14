@@ -525,9 +525,9 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/api/v2/statements"))
-            .respond_with(ResponseTemplate::new(500).set_body_string(
-                "Internal error: warehouse suspended\n",
-            ))
+            .respond_with(
+                ResponseTemplate::new(500).set_body_string("Internal error: warehouse suspended\n"),
+            )
             .mount(&server)
             .await;
         let err = SnowflakeEngine::new(conn(&server))
