@@ -1,6 +1,6 @@
 # A source hands over its history
 
-Records: [0013] (connectors), [0023] and [0033] (RSS), [0039] (chunks), [0040] (origin and media),
+Records: [0013] (connectors), [0068] (Google Drive), [0023] and [0033] (RSS), [0039] (chunks), [0040] (origin and media),
 [0035] (vector index), [0036] d7 (schema documents), [0005] (sync alerts), [0022] and [0045] d3
 (document dates), [0016] E.
 
@@ -14,12 +14,14 @@ source, upload_time, none) is the document's own date; upload time is recorded t
 document date, so an upload-dated document counts as undated for attestation and ordering
 [0022, 0045, #714].
 
-**Connectors.** GitHub issues, Jira, Notion, RSS, WebDAV, S3 / Azure / GCS, and custom push with an
+**Connectors.** GitHub issues, Jira, Notion, Google Drive, RSS, WebDAV, S3 / Azure / GCS, and custom push with an
 `ingest_token`; the kinds come from one `SourceKind` enum that the allowlist, the dispatcher and the
 web list derive from; credentials never leave the server (`SOURCE_SECRET_KEYS`) and a blank field
 keeps the stored value; a truncated round says so [0013]. A ticket is one document whose body
 carries its history as dated declarative sentences and a `## History` list; GitHub fetches events
 per ticket; timestamps are written to the second [0013].
+
+**Google Drive.** A person connects it with OAuth and it reads Drive as them; the refresh token is a sealed source secret and the browser never holds a Google token; the flow is bound to the session that started it; the person picks folders and subfolders come along; Docs, Sheets and Slides are exported to DOCX, XLSX and PPTX; change is Drive's marker (`md5Checksum`, or `modifiedTime` for Google formats) because an export's bytes differ every time; "not in source" only after a complete walk [0068].
 
 **Statements.** A `statements` source takes the open extraction contract itself (`e`, `s`, `n`) on `POST /sources/{id}/statements`, with the `api` push's identity, versions, tombstones and run history; the payload is the document and its single chunk, and extraction parses the chunk instead of prompting a model, then runs the unchanged path, so a pushed statement is an open statement with the item as its evidence (null offsets) and reaches the typed graph only through alignment. The contract has no slot for a property or a class and unknown keys are refused; a second push under the same identity marks the earlier statements stale rather than closing them; tables belong on a mount, not here [0054].
 

@@ -19,6 +19,7 @@ export const CREATABLE_SOURCE_KINDS = [
   "gcs",
   "webdav",
   "notion",
+  "google_drive",
   "api",
   "statements",
   "custom",

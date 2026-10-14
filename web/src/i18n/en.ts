@@ -124,6 +124,13 @@ export const en = {
       "This data source is not granted to this workspace. Ask a deployment admin to grant it in Administration → Data sources.",
     memory_source_permanent:
       "The Memory source is part of the knowledge base and stays.",
+    google_drive_not_configured:
+      "Google Drive is not set up on this server. An administrator sets UTOPIA_GOOGLE_DRIVE_CLIENT_ID, _CLIENT_SECRET and _REDIRECT_URI.",
+    google_drive_not_connected: "Connect a Google account first.",
+    google_drive_unavailable: "Google Drive could not be read.",
+    google_drive_busy: "Too many Google Drive connections are in progress. Try again in a few minutes.",
+    google_drive_too_many_folders: "Choose at most 50 folders. Choose a common parent instead.",
+    google_drive_invalid_folder: "That is not a Google Drive folder id.",
     source_name_required: "Give this source a name.",
     bad_cron: "That cron expression could not be parsed.",
     bad_cron_fields:
@@ -636,6 +643,7 @@ export const en = {
       gcs: "Google Cloud Storage",
       webdav: "WebDAV",
       notion: "Notion",
+      google_drive: "Google Drive",
     },
     sourceKindHints: {
       folder: "Holds the files you upload: add, drag in and remove them here.",
@@ -667,6 +675,10 @@ export const en = {
         "Syncs the pages a Notion integration can see — share a page with the integration " +
         "and it appears here. Dated by when the page was last edited, which is the page's " +
         "own clock rather than ours.",
+      google_drive:
+        "Syncs the folders you choose from your Google Drive, shared drives included. " +
+        "**You connect with your own Google account**, read-only; Docs, Sheets and Slides " +
+        "arrive as Word, Excel and PowerPoint files. Dated by each file's last modification.",
       api: "External systems push JSON documents here, authenticated with this source's own token.",
       statements:
         "Your system pushes statements already in the extraction contract; no model reads them. Send events, not the state of a table.",
@@ -743,6 +755,31 @@ export const en = {
     davPassField: "Password",
     notionTokenField: "Internal integration token",
     notionQueryField: "Search term (optional — empty takes every shared page)",
+    googleDrive: {
+      createHint: "After creating the source, connect a Google account and choose the folders.",
+      notConfigured:
+        "Google Drive is not set up on this server. An administrator sets UTOPIA_GOOGLE_DRIVE_CLIENT_ID, _CLIENT_SECRET and _REDIRECT_URI.",
+      account: "Google account",
+      connect: "Connect Google Drive",
+      reconnect: "Reconnect",
+      disconnect: "Disconnect",
+      waiting: "Finish in the Google window…",
+      connectedAs: (email: string) => `Connected as ${email}`,
+      connectedNoEmail: "Connected",
+      notConnected: "Not connected. Syncing reads Drive with the permissions of whoever connects it.",
+      folders: "Folders to sync",
+      foldersHint: "Subfolders are included. Files outside these folders are never read.",
+      myDrive: "My Drive",
+      sharedWithMe: "Shared with me",
+      top: "Google Drive",
+      empty: "No folders here.",
+      open: "Open",
+      noneSelected: "No folders chosen yet.",
+      remove: "Remove",
+      saveFolders: "Save folders and sync",
+      saved: "Folders saved. A sync has started.",
+      disconnected: "Google Drive disconnected.",
+    },
     tokenField: "GitHub token (optional, never shown again)",
     includePullRequests: "Treat pull requests as tickets too",
     interval: "Sync schedule",
