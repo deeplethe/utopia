@@ -332,3 +332,18 @@ pub async fn reactivate_user(pool: &PgPool, target: Uuid) -> AppResult<()> {
     }
     Ok(())
 }
+
+/// 授予或收回系统管理员（`users.is_admin`）。
+pub async fn set_system_admin(
+    pool: &PgPool,
+    target: Uuid,
+    _actor: Uuid,
+    value: bool,
+) -> AppResult<()> {
+    sqlx::query("UPDATE users SET is_admin = $2 WHERE id = $1")
+        .bind(target)
+        .bind(value)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
