@@ -9,7 +9,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { Check, ChevronDown, Layers, Plus } from "lucide-react";
+import { ChevronDown, Layers, Plus } from "lucide-react";
 import { api, type Kb } from "../api";
 import { S } from "../i18n";
 import { Button, Input, Row } from "../ui";
@@ -18,6 +18,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { KbMenuList } from "./KbMenuList";
 import { fetchMe } from "../authSession";
 
 export function KbSwitcher({
@@ -92,22 +93,15 @@ export function KbSwitcher({
             />
           </div>
           <div className="u-scroll max-h-80 overflow-y-auto">
-            {shown.map((k) => (
-              <Row
-                key={k.id}
-                density="menu"
-                className="gap-3 px-4 py-2 text-body"
-                trailing={
-                  k.id === kb?.id ? <Check size={13} className="text-ink-2" /> : undefined
-                }
-                onClick={() => {
-                  dismiss();
-                  if (k.id !== kb?.id) onChange(k.id);
-                }}
-              >
-                <span className="truncate">{k.name}</span>
-              </Row>
-            ))}
+            <KbMenuList
+              kbs={shown}
+              currentId={kb?.id}
+              grouped={!needle}
+              onPick={(id) => {
+                dismiss();
+                if (id !== kb?.id) onChange(id);
+              }}
+            />
             {shown.length === 0 && (
               <p className="px-4 py-3 text-body text-ink-2">{S.nav.noKbMatch}</p>
             )}
