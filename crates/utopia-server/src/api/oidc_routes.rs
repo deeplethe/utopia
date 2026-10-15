@@ -382,6 +382,20 @@ struct Claims {
     #[serde(default)]
     azp: Option<String>,
     aud: Value,
+    #[serde(default)]
+    email: Option<String>,
+    #[serde(default)]
+    email_verified: bool,
+    #[serde(default)]
+    name: Option<String>,
+}
+
+/// 能自动开户或按 email 关联的那个 email：身份提供方核实过，而且域名在允许名单里。
+/// 名单空着就永远是 `None`——默认仍然只认本人绑定过的 subject
+fn provisioned_email(claims: &Claims, allowed_domains: &[String]) -> Option<String> {
+    let email = claims.email.as_deref()?.trim().to_lowercase();
+    let (_, domain) = email.rsplit_once('@')?;
+    (claims.email_verified && allowed_domains.iter().any(|d| d == domain)).then_some(email)
 }
 
 /// 按 `kid` 找钥匙；令牌不带 `kid` 时，只有 JWKS 里恰好一把 RSA 钥匙才用它
@@ -898,6 +912,26 @@ mod tests {
         assert!(super::force_allowed(key).await);
         assert!(!super::force_allowed(key).await);
         assert!(super::force_allowed("https://id.example.test/another").await);
+    }
+
+    #[test]
+    fn only_a_verified_email_in_an_allowed_domain_gets_an_account() {
+        let claims = |email: &str, verified: bool| {
+            serde_json::from_value::<super::Claims>(serde_json::json!({
+                "sub": "person-1", "iat": 0, "aud": "utopia-test",
+                "email": email, "email_verified": verified,
+            }))
+            .unwrap()
+        };
+        let allowed = vec!["re-cinq.com".to_string()];
+        assert_eq!(
+            super::provisioned_email(&claims("Ann@Re-Cinq.com", true), &allowed),
+            Some("ann@re-cinq.com".to_string())
+        );
+        assert_eq!(super::provisioned_email(&claims("ann@re-cinq.com", false), &allowed), None);
+        assert_eq!(super::provisioned_email(&claims("ann@gmail.com", true), &allowed), None);
+        assert_eq!(super::provisioned_email(&claims("ann@evil-re-cinq.com", true), &allowed), None);
+        assert_eq!(super::provisioned_email(&claims("ann@re-cinq.com", true), &[]), None);
     }
 
     fn config() -> super::Config {
