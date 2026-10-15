@@ -8,7 +8,7 @@ use utopia_core::models::Role;
 use uuid::Uuid;
 
 use super::graph_routes::require_kb;
-use crate::auth::AuthUser;
+use crate::auth::{AuthUser, SessionOrToken};
 use crate::error::ApiResult;
 use crate::state::AppState;
 
@@ -1395,12 +1395,16 @@ pub struct DecideAlignmentKindWordReq {
 /// 人定一个类别词绑到哪个类（#725 对齐队列）。绑上的类写到它名下的实体上；两端的类变了，
 /// 短语签名跟着变，所以再排一次短语对齐——与判定同一事务排下（`decide_and_apply_human`），
 /// 提交之后再排的话，进程在两步之间退出就只剩判定。
+///
+/// 写令牌也能定（0014 决定 6）：判定记在发令牌的人名下，与网页上点的一样
 pub async fn decide_alignment_kind_word(
     State(state): State<AppState>,
-    AuthUser(user): AuthUser,
+    caller: SessionOrToken,
     Path((kb_id, kind_word)): Path<(Uuid, String)>,
     Json(req): Json<DecideAlignmentKindWordReq>,
 ) -> ApiResult<Json<serde_json::Value>> {
+    caller.require_write(Some(kb_id))?;
+    let user = caller.user;
     require_kb(&state, &user, kb_id, Role::Editor).await?;
     let class = match req
         .class

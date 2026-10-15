@@ -1,6 +1,6 @@
 # 0014 · Identity from the person, scope from the token
 
-- **Status**: Implemented (#180) · open: `can_write` is hard-coded false
+- **Status**: Implemented · 2026-10-15 · #180, #318, #1243 · open: tokens across workspaces
 - **Written**: 2026-09-01 · condensed into English 2026-09-03
 - **Related**: migration `0014_data_source_grants` gave data sources a grant layer; this is the same question where a machine knocks. [0004](0004-language-and-localization.md) has the server speak English only, MCP error codes included. [0015](0015-recording-a-sentence-is-not-asserting-a-fact.md) removes the main objection to opening `remember` over MCP.
 
@@ -54,6 +54,30 @@ push documents in.
    `require_kb`; a token revoked mid-session fails on its next call. Each call writes an audit
    row (`mcp.tool_called`, target = the token), so attribution is real.
 
+6. **A write token may set up a base** (added 2026-10-15, #1243). A repository mirrored into
+   Utopia gets a base and a `statements` source; the push is the source key's job (0054), but
+   creating the base and the source took a session, so a backend either held someone's
+   seven-day JWT or a person did it by hand for each repository. Five routes now also take a
+   personal token with `write` scope, acting as its owner: creating a base in a workspace,
+   creating a source, reading a source's push key, importing an ontology, and deciding where a
+   kind word binds. Listing a workspace's bases takes any token, so a client can find a base by
+   name before it creates one. The reasons above hold unchanged. The actor is still the living
+   person (`audit_events.actor_id` is theirs, as from a session); the person's role is still
+   the ceiling, checked by the same `require_kb` and workspace role as before, so a token whose
+   owner is not a workspace admin creates no base; writing must still be ticked, and a
+   read-only token is refused with `token_read_only`; a token limited by `kb_ids` reaches only
+   those bases, and it cannot create one, since a base that does not exist yet is in no list
+   (`token_kb_out_of_scope`); revocation and expiry are judged in SQL on every request. Nothing
+   here is a base-level machine token or a service account. One extractor, `SessionOrToken`,
+   takes either credential, and only these routes and document content (0052) use it; `AuthUser`
+   still reads every bearer as a JWT, so the routes behind it stay session-only until someone
+   has a reason to open one and says it here.
+
+   Not done: rotating or deleting a source, changing a base's settings or members, and every
+   other write still take a session. A token does not create workspaces or tokens. Audit rows
+   from these routes name the person but not the token that acted for them; MCP's
+   `mcp.tool_called` does.
+
 ## Dead ends
 
 - **Base-level machine tokens**, one per base and unrelated to a person. It would be a third
@@ -71,6 +95,10 @@ push documents in.
 - 2026-09-02: the placeholder crate `utopia-mcp` advertised three tools that never existed;
   the server lives in `utopia-server/src/api/mcp.rs`. Deleted with `utopia-graph` and
   `utopia-connectors` ([0016](0016-close-the-open-seams-before-cutting-new-ones.md) A2).
+
+- 2026-10-15: the status line still said `can_write` was hard-coded false. #318 had already
+  computed it from the token's scope and the person's role, and `remember` has been reachable
+  over MCP with a write token since then. The line now names what is open.
 
 ## Open questions
 

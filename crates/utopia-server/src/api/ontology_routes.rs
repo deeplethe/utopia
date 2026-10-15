@@ -9,7 +9,7 @@ use utopia_core::models::Role;
 use utopia_core::AppError;
 use uuid::Uuid;
 
-use crate::auth::AuthUser;
+use crate::auth::{AuthUser, SessionOrToken};
 use crate::error::ApiResult;
 use crate::state::AppState;
 
@@ -605,12 +605,15 @@ pub async fn preview_import(
     Ok(Json(json!({ "filename": filename, "plan": plan })))
 }
 
+/// 写令牌也能导（0014 决定 6）：新库的本体与库一起由同一个客户端搭好
 pub async fn apply_import(
     State(state): State<AppState>,
-    AuthUser(user): AuthUser,
+    caller: SessionOrToken,
     Path(kb_id): Path<Uuid>,
     multipart: axum::extract::Multipart,
 ) -> ApiResult<Json<serde_json::Value>> {
+    caller.require_write(Some(kb_id))?;
+    let user = caller.user;
     require_kb(&state, &user, kb_id, Role::Editor).await?;
     let (filename, bytes) = read_upload(multipart).await?;
     // 导入会改判据（公理链、domain/range、父边）：先把旧本体下会检出的违规

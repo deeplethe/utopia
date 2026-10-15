@@ -134,6 +134,22 @@ pub(crate) fn decode_user_id(state: &AppState, token: &str) -> Result<Uuid, AppE
     Ok(data.claims.sub)
 }
 
+/// 请求带来的凭据：Cookie `utopia_token` 优先，其次 `Authorization: Bearer`。
+fn presented_credential(parts: &Parts) -> Result<String, AppError> {
+    CookieJar::from_headers(&parts.headers)
+        .get(COOKIE_NAME)
+        .map(|c| c.value().to_string())
+        .or_else(|| {
+            parts
+                .headers
+                .get(axum::http::header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.strip_prefix("Bearer "))
+                .map(|v| v.to_string())
+        })
+        .ok_or(AppError::Unauthorized)
+}
+
 /// 已登录用户提取器：Cookie `utopia_token` 或 `Authorization: Bearer`。
 pub struct AuthUser(pub User);
 
@@ -144,25 +160,82 @@ impl FromRequestParts<AppState> for AuthUser {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        let jar = CookieJar::from_headers(&parts.headers);
-        let token = jar
-            .get(COOKIE_NAME)
-            .map(|c| c.value().to_string())
-            .or_else(|| {
-                parts
-                    .headers
-                    .get(axum::http::header::AUTHORIZATION)
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|v| v.strip_prefix("Bearer "))
-                    .map(|v| v.to_string())
-            })
-            .ok_or(AppError::Unauthorized)?;
-
+        let token = presented_credential(parts)?;
         let user_id = decode_user_id(state, &token)?;
         let user = utopia_store::accounts::find_user_by_id(&state.pool, user_id)
             .await?
             .ok_or(AppError::Unauthorized)?;
         Ok(AuthUser(user))
+    }
+}
+
+/// 会话或个人令牌，二者都落到同一个 `User` 上（0014 决定 6，#1243）。
+///
+/// **不替换 `AuthUser`。** `AuthUser` 把每个 Bearer 都当 JWT 解，令牌在那几百条
+/// 路由上一律是 401——那是有意的：哪条路由准令牌进来，要在 0014 里说出理由。
+/// 用这个提取器的只有文档原件（0052）和「把一个库搭起来」那几条。
+///
+/// 令牌只收窄：`pat` 在的时候，路由先问 [`Self::require_write`] 或
+/// [`Self::reaches`]，角色照旧由 `require_kb` 与工作区角色判。
+pub struct SessionOrToken {
+    pub user: User,
+    /// None = 网页会话，不收窄任何东西
+    pub pat: Option<utopia_store::tokens::Authenticated>,
+}
+
+impl FromRequestParts<AppState> for SessionOrToken {
+    type Rejection = ApiErr;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let raw = presented_credential(parts)?;
+        // 过期与撤销在 `authenticate` 的 SQL 里判；停用的人 `find_user_by_id` 挡住
+        let (user_id, pat) = if raw.starts_with(utopia_store::tokens::PREFIX) {
+            let pat = utopia_store::tokens::authenticate(&state.pool, raw.trim()).await?;
+            (pat.user_id, Some(pat))
+        } else {
+            (decode_user_id(state, &raw)?, None)
+        };
+        let user = utopia_store::accounts::find_user_by_id(&state.pool, user_id)
+            .await?
+            .ok_or(AppError::Unauthorized)?;
+        Ok(Self { user, pat })
+    }
+}
+
+impl SessionOrToken {
+    /// 令牌有没有把这个库排除掉。会话什么都不排除；这不是权限，权限归角色
+    pub fn reaches(&self, kb_id: Uuid) -> bool {
+        self.pat.as_ref().is_none_or(|pat| pat.covers(kb_id))
+    }
+
+    /// 令牌准不准往这个库里写。`None` 是一个还不存在的库：限定过 `kb_ids` 的令牌
+    /// 列表里不可能有它，所以建库只给不限库的令牌。
+    ///
+    /// 两种拒绝各带 code：它们都是「换一枚令牌就行」，与角色不够的 403 不是一回事
+    pub fn require_write(&self, kb_id: Option<Uuid>) -> Result<(), AppError> {
+        let Some(pat) = &self.pat else {
+            return Ok(());
+        };
+        if !pat.can_write() {
+            return Err(AppError::CodedForbidden {
+                code: "token_read_only",
+                message: "This token is read-only; issue one with the write scope".into(),
+            });
+        }
+        let in_scope = match kb_id {
+            Some(kb_id) => pat.covers(kb_id),
+            None => pat.kb_ids.is_none(),
+        };
+        if !in_scope {
+            return Err(AppError::CodedForbidden {
+                code: "token_kb_out_of_scope",
+                message: "This token reaches only the knowledge bases it lists".into(),
+            });
+        }
+        Ok(())
     }
 }
 
