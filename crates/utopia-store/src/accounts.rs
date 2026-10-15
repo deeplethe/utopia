@@ -354,3 +354,20 @@ pub async fn set_system_admin(
     }
     Ok(())
 }
+
+/// 单点登录允许自动开户时，用身份提供方核实过的 email 找账号；找不到就按注册的
+/// 规则开一个（默认工作区的 viewer；部署里还没人时就是首个管理员）。
+///
+/// 开出来的账号**没有可用的密码**：`!` 不是合法的哈希，密码登录永远验不过。
+pub async fn account_for_sso(pool: &PgPool, email: &str, display_name: &str) -> AppResult<User> {
+    let existing: Option<User> = sqlx::query_as(
+        "SELECT * FROM users WHERE lower(email) = lower($1) AND deactivated_at IS NULL",
+    )
+    .bind(email)
+    .fetch_optional(pool)
+    .await?;
+    match existing {
+        Some(user) => Ok(user),
+        None => Ok(register(pool, email, "!", display_name, None, true).await?.user),
+    }
+}
