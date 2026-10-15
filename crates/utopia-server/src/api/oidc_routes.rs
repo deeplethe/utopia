@@ -61,6 +61,9 @@ struct Config {
     /// `exchange` 收哪些 client 的 ID token。空 = 不开放换会话。与 Utopia 共用一个
     /// client 的部署把 Utopia 自己的 client id 写进来
     exchange_audiences: Vec<String>,
+    /// 这些域名里核实过的 email 首次登录时按 email 关联已有账号，没有就开一个
+    /// （`UTOPIA_OIDC_ALLOWED_DOMAINS`）。空 = 只认本人绑定过的 subject
+    allowed_domains: Vec<String>,
     /// 本地开发：允许 issuer 与各端点走回环地址上的明文 HTTP。只认 localhost /
     /// 127.0.0.1 / ::1，公网地址照旧只能 HTTPS
     loopback_http: bool,
@@ -86,6 +89,12 @@ fn config() -> Result<Config, AppError> {
             .map(str::trim)
             .filter(|a| !a.is_empty())
             .map(String::from)
+            .collect(),
+        allowed_domains: std::env::var("UTOPIA_OIDC_ALLOWED_DOMAINS")
+            .unwrap_or_default()
+            .split(',')
+            .map(|d| d.trim().to_lowercase())
+            .filter(|d| !d.is_empty())
             .collect(),
         loopback_http: std::env::var("UTOPIA_OIDC_ALLOW_LOOPBACK_HTTP")
             .is_ok_and(|v| matches!(v.trim(), "1" | "true")),
@@ -538,14 +547,9 @@ pub async fn exchange(
         );
     }
 
-    let user_id: Option<Uuid> = sqlx::query_scalar(
-        "SELECT i.user_id FROM oidc_identities i JOIN users u ON u.id = i.user_id
-          WHERE i.issuer = $1 AND i.subject = $2 AND u.deactivated_at IS NULL",
-    )
-    .bind(&c.issuer)
-    .bind(&claims.sub)
-    .fetch_optional(&s.pool)
-    .await?;
+    let user_id = account_of(&s, &c, &claims)
+        .await
+        .map_err(|r| AppError::invalid("oidc_unavailable", r.reason))?;
     let user_id = user_id.ok_or_else(|| {
         AppError::invalid(
             "oidc_unlinked",
@@ -703,15 +707,7 @@ async fn finish(
             Ok(Done::Linked)
         }
         None => {
-            let user_id: Option<Uuid> = sqlx::query_scalar(
-                "SELECT i.user_id FROM oidc_identities i JOIN users u ON u.id = i.user_id
-                  WHERE i.issuer = $1 AND i.subject = $2 AND u.deactivated_at IS NULL",
-            )
-            .bind(&c.issuer)
-            .bind(&claims.sub)
-            .fetch_optional(&s.pool)
-            .await?;
-            let user_id = user_id.ok_or_else(|| {
+            let user_id = account_of(s, &c, &claims).await?.ok_or_else(|| {
                 refuse("unlinked", format!("subject {} is not linked", claims.sub))
             })?;
             let _ = utopia_store::audit::record(
@@ -727,6 +723,35 @@ async fn finish(
             Ok(Done::SignedIn(user_id))
         }
     }
+}
+
+/// 这个 subject 登进哪个账号：本人绑定过的优先；没绑定、而 email 落在允许的域名里，
+/// 就按 email 找账号（找不到开一个）并替他绑上
+async fn account_of(s: &AppState, c: &Config, claims: &Claims) -> Result<Option<Uuid>, Refusal> {
+    let linked: Option<Uuid> = sqlx::query_scalar(
+        "SELECT i.user_id FROM oidc_identities i JOIN users u ON u.id = i.user_id
+          WHERE i.issuer = $1 AND i.subject = $2 AND u.deactivated_at IS NULL",
+    )
+    .bind(&c.issuer)
+    .bind(&claims.sub)
+    .fetch_optional(&s.pool)
+    .await?;
+    let Some(email) = linked
+        .is_none()
+        .then(|| provisioned_email(claims, &c.allowed_domains))
+        .flatten()
+    else {
+        return Ok(linked);
+    };
+    let name = claims
+        .name
+        .clone()
+        .unwrap_or_else(|| email.split('@').next().unwrap_or_default().to_string());
+    let user = utopia_store::accounts::account_for_sso(&s.pool, &email, &name)
+        .await
+        .map_err(|e| refuse("unavailable", format!("provision: {e}")))?;
+    link(s, c, user.id, &claims.sub).await?;
+    Ok(Some(user.id))
 }
 
 async fn link(s: &AppState, c: &Config, user_id: Uuid, subject: &str) -> Result<(), Refusal> {
@@ -928,10 +953,22 @@ mod tests {
             super::provisioned_email(&claims("Ann@Re-Cinq.com", true), &allowed),
             Some("ann@re-cinq.com".to_string())
         );
-        assert_eq!(super::provisioned_email(&claims("ann@re-cinq.com", false), &allowed), None);
-        assert_eq!(super::provisioned_email(&claims("ann@gmail.com", true), &allowed), None);
-        assert_eq!(super::provisioned_email(&claims("ann@evil-re-cinq.com", true), &allowed), None);
-        assert_eq!(super::provisioned_email(&claims("ann@re-cinq.com", true), &[]), None);
+        assert_eq!(
+            super::provisioned_email(&claims("ann@re-cinq.com", false), &allowed),
+            None
+        );
+        assert_eq!(
+            super::provisioned_email(&claims("ann@gmail.com", true), &allowed),
+            None
+        );
+        assert_eq!(
+            super::provisioned_email(&claims("ann@evil-re-cinq.com", true), &allowed),
+            None
+        );
+        assert_eq!(
+            super::provisioned_email(&claims("ann@re-cinq.com", true), &[]),
+            None
+        );
     }
 
     fn config() -> super::Config {
@@ -941,6 +978,7 @@ mod tests {
             secret: None,
             redirect: "https://utopia.example.test/api/v1/auth/oidc/callback".into(),
             exchange_audiences: vec!["sibling-app".into(), "utopia-test".into()],
+            allowed_domains: vec![],
             loopback_http: false,
         }
     }

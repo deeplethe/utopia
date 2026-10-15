@@ -368,6 +368,8 @@ pub async fn account_for_sso(pool: &PgPool, email: &str, display_name: &str) -> 
     .await?;
     match existing {
         Some(user) => Ok(user),
-        None => Ok(register(pool, email, "!", display_name, None, true).await?.user),
+        None => Ok(register(pool, email, "!", display_name, None, true)
+            .await?
+            .user),
     }
 }

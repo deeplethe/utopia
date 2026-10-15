@@ -47,6 +47,7 @@ async fn exchange_maps_only_linked_active_people_and_spends_each_token_once() ->
 
     let (org, user) = (Uuid::now_v7(), Uuid::now_v7());
     let subject = format!("person-{user}");
+    let bea_email = format!("{}@example.test", Uuid::now_v7().simple());
     let dir = tempfile::tempdir()?;
     let cfg = utopia_core::config::AppConfig {
         data_dir: dir.path().to_string_lossy().into_owned(),
@@ -140,10 +141,47 @@ async fn exchange_maps_only_linked_active_people_and_spends_each_token_once() ->
             .await?;
         let (status, body) = exchange(sign(&subject)?).await?;
         anyhow::ensure!(body["code"] == "oidc_unlinked", "deactivated: {status} {body}");
+
+        // 允许名单里的域名：核实过的 email 关联已有账号，没有就开一个，之后按 subject 认人
+        std::env::set_var("UTOPIA_OIDC_ALLOWED_DOMAINS", "example.test");
+        let sign_email = |sub: &str, email: &str, verified: bool| {
+            let now = chrono::Utc::now().timestamp();
+            encode(
+                &header,
+                &json!({"iss": issuer, "aud": "sibling-app", "sub": sub, "iat": now, "exp": now + 300, "jti": Uuid::now_v7(), "email": email, "email_verified": verified, "name": "Bea"}),
+                &key,
+            )
+        };
+        let ann = Uuid::now_v7();
+        sqlx::query("INSERT INTO users(id,org_id,email,password_hash,display_name) VALUES($1,$2,$3,'unused','Ann')")
+            .bind(ann)
+            .bind(org)
+            .bind(format!("{ann}@example.test"))
+            .execute(&pool)
+            .await?;
+        let user_of = |body: &Value| crate::auth::decode_user_id(&state, body["token"].as_str().unwrap_or_default());
+
+        let (status, body) = exchange(sign_email(&format!("sub-{ann}"), &format!("{ann}@EXAMPLE.test"), true)?).await?;
+        anyhow::ensure!(status == StatusCode::OK && user_of(&body)? == ann, "existing by email: {status} {body}");
+
+        let bea_sub = format!("sub-{}", Uuid::now_v7());
+        let (status, body) = exchange(sign_email(&bea_sub, &bea_email, true)?).await?;
+        anyhow::ensure!(status == StatusCode::OK, "opened: {status} {body}");
+        let bea = user_of(&body)?;
+        let (_, body) = exchange(sign_email(&bea_sub, "changed@elsewhere.test", false)?).await?;
+        anyhow::ensure!(user_of(&body)? == bea, "linked by subject afterwards: {body}");
+
+        let (status, body) = exchange(sign_email("sub-unverified", &format!("{}@example.test", Uuid::now_v7()), false)?).await?;
+        anyhow::ensure!(body["code"] == "oidc_unlinked", "unverified: {status} {body}");
         anyhow::Ok(())
     }
     .await;
+    std::env::remove_var("UTOPIA_OIDC_ALLOWED_DOMAINS");
     server.abort();
+    sqlx::query("DELETE FROM users WHERE email = $1")
+        .bind(&bea_email)
+        .execute(&pool)
+        .await?;
     sqlx::query("DELETE FROM organizations WHERE id=$1")
         .bind(org)
         .execute(&pool)

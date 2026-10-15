@@ -6,10 +6,12 @@ use uuid::Uuid;
 /// 一个比库里其它组织都早的组织，开户会落进它的默认工作区
 async fn earliest_org(pool: &PgPool) -> anyhow::Result<(Uuid, Uuid)> {
     let (org, ws) = (Uuid::now_v7(), Uuid::now_v7());
-    sqlx::query("INSERT INTO organizations (id, name, created_at) VALUES ($1, 'sso-test', '2000-01-01')")
-        .bind(org)
-        .execute(pool)
-        .await?;
+    sqlx::query(
+        "INSERT INTO organizations (id, name, created_at) VALUES ($1, 'sso-test', '2000-01-01')",
+    )
+    .bind(org)
+    .execute(pool)
+    .await?;
     sqlx::query("INSERT INTO workspaces (id, org_id, name, created_at) VALUES ($1, $2, 'sso-ws', '2000-01-01')")
         .bind(ws)
         .bind(org)
@@ -77,10 +79,19 @@ async fn an_unknown_email_opens_a_viewer_account_without_a_password() -> anyhow:
             .fetch_one(&pool)
             .await?;
         assert_eq!(
-            (opened.email.as_str(), opened.display_name.as_str(), opened.is_admin, opened.org_id, role.as_str()),
+            (
+                opened.email.as_str(),
+                opened.display_name.as_str(),
+                opened.is_admin,
+                opened.org_id,
+                role.as_str()
+            ),
             (email.as_str(), "Bea", false, org, "viewer")
         );
-        assert!(!hash.starts_with("$argon2"), "an SSO account must not have a usable password");
+        assert!(
+            !hash.starts_with("$argon2"),
+            "an SSO account must not have a usable password"
+        );
         Ok::<_, anyhow::Error>(())
     }
     .await;
