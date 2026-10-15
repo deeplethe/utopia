@@ -1,4 +1,4 @@
-type Grouped = { group?: string };
+type Grouped = { value: string; group?: string };
 
 export type HeadedRow<T> =
   | { kind: "heading"; name: string }
