@@ -38,6 +38,13 @@ pub struct SyncStats {
     pub discovered: usize,
     pub queued_for_content: usize,
     pub content_terminal: usize,
+    /// 本轮因为触顶而被丢在外面的条目数（`discovered > MAX_NEW_PER_SYNC`）。
+    /// `sync_source` 看到这个标志就把这次跑标为「未完成」：`finish_run` 写
+    /// `failed` 而不是 `ok`，让 `last_successful_sync_start` 沿用上一条成功的。
+    /// 不这么做的话下一轮用 `since = 这一次的 started_at` 重新发，端点按
+    /// `since` 排除已经把 `last_change` 写在那条 started_at 之前的剩余条目，
+    /// 增量游标就悄悄把那一段漏过去（#1212）
+    pub truncated: bool,
 }
 
 #[derive(Debug)]
@@ -101,6 +108,45 @@ pub async fn sync_source(state: &AppState, source_id: Uuid) -> anyhow::Result<()
     };
 
     match outcome {
+        Ok(stats) if stats.truncated => {
+            // #1212：触顶的那一段没读完。把这次跑标为 failed（不是 ok），
+            // `last_successful_sync_start` 不会前进，下一轮用同一条 since 重发
+            // ——剩余条目还在端点里。但这一轮已经 ingest 进来的 created/updated
+            // 仍然在 created_docs/updated_docs 里留下记录，便于审计
+            let err_msg = format!(
+                "items beyond per-sync cap ({} > {}); \
+                 checkpoint not advanced, the next sync will re-fetch this window",
+                stats.discovered, MAX_NEW_PER_SYNC
+            );
+            utopia_store::sources::finish_run(
+                &state.pool,
+                run_id,
+                source_id,
+                Some(&err_msg),
+                stats.created as i32,
+                stats.updated as i32,
+            )
+            .await?;
+            utopia_store::sources::finish_sync(
+                &state.pool,
+                source_id,
+                Some(&err_msg),
+                stats.total() as i32,
+            )
+            .await?;
+            state.emit_source(source.kb_id);
+            tracing::warn!(
+                %source_id,
+                kind = %source.kind,
+                created = stats.created,
+                updated = stats.updated,
+                discovered = stats.discovered,
+                queued_for_content = stats.queued_for_content,
+                content_terminal = stats.content_terminal,
+                "来源同步触顶,checkpoint 未前进,下一轮重试同一窗口"
+            );
+            Ok(())
+        }
         Ok(stats) => {
             utopia_store::sources::finish_run(
                 &state.pool,
@@ -983,6 +1029,15 @@ async fn sync_custom(
         .ok_or_else(|| anyhow::anyhow!("Response is missing the items[] array"))?;
 
     let mut stats = SyncStats::default();
+    // #1212：端点返回的条目数 ≥ MAX_NEW_PER_SYNC 时，触顶的那条没法判断
+    // 是「正好 N」还是「N+ 还没到」。截断而不告诉调用方的话，下一轮的
+    // `since` 会把 `last_change` 早于本轮 started_at 的剩余条目过滤掉，
+    // 增量游标就悄悄把那一段漏过去。把 truncated 标上，让 `sync_source`
+    // 把这次跑标为 failed（`last_successful_sync_start` 不前进），下一轮
+    // 用同一 since 重新拉——剩余的还在
+    if items.len() > MAX_NEW_PER_SYNC {
+        stats.truncated = true;
+    }
     let mut seen_keys: Vec<String> = Vec::new();
     for item in items.iter().take(MAX_NEW_PER_SYNC) {
         let Some(id) = item["id"].as_str().map(str::trim).filter(|s| !s.is_empty()) else {

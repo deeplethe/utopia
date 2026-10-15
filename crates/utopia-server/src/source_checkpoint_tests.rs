@@ -135,3 +135,129 @@ async fn retry_keeps_updates_from_the_previous_successful_run_window() -> anyhow
 async fn updates_during_a_successful_sync_remain_in_the_next_window() -> anyhow::Result<()> {
     retry_reads_the_uncovered_window(true, false).await
 }
+
+/// #1212：端点一次返回的条目数 ≥ `MAX_NEW_PER_SYNC` 时，本轮要标为 `failed` 而不是
+/// `ok` —— `last_successful_sync_start` 不能前进，下一轮用同一 since 重发，剩下
+/// 的条目还在端点里。把这一段钉下来：触顶就该让调度看到、让运维看到，而不是悄悄
+/// 把窗口漏过去
+#[tokio::test]
+async fn a_truncated_batch_marks_the_run_failed_and_holds_the_checkpoint() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = sqlx::PgPool::connect(&url).await?;
+    let (org, ws, kb, source) = (
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+    );
+    sqlx::query("INSERT INTO organizations(id,name) VALUES($1,'truncation-test')")
+        .bind(org)
+        .execute(&pool)
+        .await?;
+    sqlx::query("INSERT INTO workspaces(id,org_id,name) VALUES($1,$2,'truncation-test')")
+        .bind(ws)
+        .bind(org)
+        .execute(&pool)
+        .await?;
+    sqlx::query(
+        "INSERT INTO knowledge_bases(id,workspace_id,name) VALUES($1,$2,'truncation-test')",
+    )
+    .bind(kb)
+    .bind(ws)
+    .execute(&pool)
+    .await?;
+
+    // 上一轮成功——它把 last_successful_sync_start 钉在 started，触顶那一轮必须不动它
+    let prior_started = chrono::Utc::now() - chrono::Duration::hours(2);
+    let prior_run = utopia_store::sources::start_run(&pool, source).await?;
+    utopia_store::sources::finish_run(&pool, prior_run, source, None, 0, 0).await?;
+    sqlx::query("UPDATE source_sync_runs SET started_at=$2 WHERE id=$1")
+        .bind(prior_run)
+        .bind(prior_started)
+        .execute(&pool)
+        .await?;
+
+    let server = MockServer::start().await;
+    sqlx::query(
+        "INSERT INTO sources(id,kb_id,kind,name,config) VALUES($1,$2,'custom','fixture',$3)",
+    )
+    .bind(source)
+    .bind(kb)
+    .bind(serde_json::json!({"endpoint":server.uri()}))
+    .execute(&pool)
+    .await?;
+
+    // 触顶：返回 MAX_NEW_PER_SYNC + 1 条，distinct id / distinct content
+    let items: Vec<serde_json::Value> = (0..201u32)
+        .map(|i| {
+            serde_json::json!({
+                "id": format!("item-{i}"),
+                "title": format!("Item {i}"),
+                "content": format!("Body {i}"),
+            })
+        })
+        .collect();
+    wiremock::Mock::given(method("GET"))
+        .respond_with(
+            wiremock::ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"items": items})),
+        )
+        .mount(&server)
+        .await;
+
+    let dir = std::env::temp_dir().join(format!("utopia-truncation-{source}"));
+    let cfg = utopia_core::config::AppConfig {
+        data_dir: dir.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let search = Arc::new(utopia_search::SearchIndex::open(&dir.join("search"))?);
+    let state = crate::state::AppState::new(pool.clone(), &cfg, search, "test-only".into());
+
+    let result = async {
+        // 跑 sync_source：返回 Ok，但 `finish_run` 应当以 'failed' 写
+        sync_source(&state, source).await?;
+        // 这一轮 ingest 进来的 created/updated 应该正常记在 sources.last_sync_added
+        // 与 source_sync_runs.created_docs 里——partial work 仍可见
+        let src = utopia_store::sources::get(&pool, source).await?;
+        assert_eq!(
+            src.last_sync_status, "failed",
+            "触顶的那一轮不能记为 'ok'，否则 last_successful_sync_start 会前进、剩余条目被增量游标漏过去"
+        );
+        assert!(
+            src.last_sync_error
+                .as_deref()
+                .unwrap_or("")
+                .contains("beyond per-sync cap"),
+            "last_sync_error 应当说明触顶，operator 看了才知道为什么 failed: {:?}",
+            src.last_sync_error
+        );
+        // 关键：last_successful_sync_start 仍然指 prior_started，没被触顶这一轮
+        // 推进。下一轮用同一 since 重新拉，剩余的 200+ 条还在
+        let after: Option<chrono::DateTime<chrono::Utc>> = sqlx::query_scalar(
+            "SELECT max(started_at) FROM source_sync_runs WHERE source_id = $1 AND status = 'ok'",
+        )
+        .bind(source)
+        .fetch_one(&pool)
+        .await?;
+        let after = after.expect("应该至少有一行 status='ok' 的 prior_started 留下的记录");
+        assert!(
+            (after - prior_started).num_seconds().abs() <= 1,
+            "触顶那一轮不该把 last_successful_sync_start 推过 prior_started: prior={prior_started} after={after}"
+        );
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    sqlx::query("DELETE FROM knowledge_bases WHERE id=$1")
+        .bind(kb)
+        .execute(&pool)
+        .await?;
+    sqlx::query("DELETE FROM organizations WHERE id=$1")
+        .bind(org)
+        .execute(&pool)
+        .await?;
+    drop(state);
+    let _ = std::fs::remove_dir_all(dir);
+    result
+}
