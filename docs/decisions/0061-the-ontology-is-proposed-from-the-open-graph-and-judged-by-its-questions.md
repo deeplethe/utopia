@@ -95,80 +95,43 @@ or version identity is added.
 ## Cut 2 negative expectations — proposed 2026-10-12
 
 The [review of #1184](https://github.com/deeplethe/utopia/pull/1184#pullrequestreview-5479816945)
-found a missing expectation: a person cannot say that a statement should bind to
-no property. The example was `不再负责` bound to `responsibleFor`. The first
-slice requires a property even when any binding would contradict the person's
-expectation. This revision proposes that contract before its implementation;
-the preceding slices remain implemented as described above.
+found that a person cannot say a statement should bind to no property. The
+example, `不再负责` bound to `responsibleFor`, motivates a human expectation,
+not a rule that every negation or ending must be unbound. This contract must
+land before implementation; the preceding slices remain implemented.
 
 **An expectation says either bound or none.** Extend the existing Editor POST
-with optional `expected_binding`, whose values are `bound` and `none`; omission
-means `bound` so existing clients keep their request shape. A bound request
-requires `relation_type_id` and `direction` and keeps their current validation.
-A none request contains `{statement_id, expected_binding: "none"}`; its property
-and direction are omitted or null. Reject unknown expectation values, a bound
-request missing either target field, and a none request supplying either field.
-Do not interpret an accidentally missing property as a negative expectation.
-Both requests still require a live open statement in the same base and Editor
-access. Adoption continues to write positive cases only.
+with optional `expected_binding`, either `bound` or `none`; omission means
+`bound` and preserves existing requests. Bound requires `relation_type_id`
+and `direction` with their current validation. None uses
+`{statement_id, expected_binding: "none"}`, with both target fields omitted or
+null. Reject unknown expectation values, incomplete bound targets, and any
+non-null target on a none request. A missing property alone is not a negative
+expectation. Both kinds require a live open statement in the same base and
+Editor access. Adoption continues to write positive cases only.
 
-**Store absence explicitly, without a synthetic property.** Make
-`expected_property_id` and `expected_direction` nullable together, with a check
-that either both are null or a property and a forward/reverse direction are
-present. Existing rows keep their values. Keep the existing positive uniqueness
-constraint and add a partial unique index on `(kb_id, statement_id)` for rows
-whose expected property is null: PostgreSQL's ordinary unique constraint does
-not deduplicate null targets. Repeated negative confirmation must return the
-original case and retain its actor and origin, including concurrent requests.
-The same-base foreign keys and ownership guard remain. Deleting a target
-property removes its positive cases; a negative case has no target to delete.
-Choose the forward migration number against current main and dev when the
-implementation is ready; do not edit migration 0109.
+**Absence has no synthetic property.** For a negative case,
+`expected_property_id` and `expected_direction` are both null; for a positive
+case both remain present. Preserve existing rows, same-base isolation, and
+ownership checks. Repeated confirmation of the same negative expectation,
+including concurrent requests, returns the original case with its actor and
+origin. Deleting a target property removes its positive cases; a negative case
+has no target to delete.
 
-The Viewer GET derives and returns `expected_binding` from the stored target.
-Negative rows return null target IDs, labels, keys and direction. Its property
-join must be a left join so those cases remain visible. The document action
-offers an explicit choice between a property binding and no property binding;
-the latter requires no property selection, including in a base without any
-properties. The workbench labels that expectation rather than showing an empty
-property cell. Refresh and evidence navigation retain their current behaviour.
+**Compare committed decisions, not just target IDs.** A negative case passes
+only on an explicit `none` decision. `bound` and `undecided` fail; no decision
+leaves the case unchecked. A null actual property alone does not pass, since
+undecided decisions also have no property. A person's explicit none decision
+passes a negative case and fails a positive one. Comparisons retain the actual
+decision and its time separately from the check time, in the existing binding
+transaction; no evaluator, extra job, or binding status is added.
 
-**Compare only committed decisions.** For a negative case, `status = 'none'`
-passes; an agent's `bound` or `undecided` decision fails. Without a decision,
-the case remains unchecked. In particular, a null actual property alone is not
-success: it also occurs when alignment is undecided. A person's explicit none
-decision satisfies a negative expectation; it still fails a positive one.
-The #1103 exception that a person's bound signature always passes remains in
-force for both expectation kinds. Report `human_bound` and the actual property
-even when a human binding protects a negative case from failure. That result
-must be labelled as a preserved human decision, never an independent machine
-match. Whether this exception should instead be limited to positive cases is
-a review question, not an implicit change to the accepted rule.
-
-The existing binding transaction records the comparison and its two times.
-An initial comparison retains the decision's original time. A none decision
-has no target property, but `phrase_bindings::stale` already reconsiders none
-and undecided signatures when a property is created or updated. Reuse that
-path and verify it through the ordinary alignment job. A failed model call or
-a list refresh must not produce a new comparison from an old agent decision.
-No evaluator, evaluation job, version identity or new binding status is added.
-
-**A negative case is an assertion by a person, not a negation detector.** An
-ending can legitimately bind to a state property with an end mark. The review's
-phrase motivates the ability to express an expectation, not a rule that every
-negated or ended relationship must be unbound. Real-model acceptance must keep
-the source text, the reviewed property definition and the expected reading
-together, and include a valid ending as a control. Cases still observe the
-signature-level alignment decision; this slice does not introduce a separate
-per-statement aligner or score semantic accuracy through protected human cases.
-
-Implementation acceptance covers the ordinary migration from existing cases,
-negative confirmation and retry attribution, same-base and role checks,
-invalid mixed requests, visibility and evidence links, none/bound/undecided
-comparisons, preserved human bindings, and re-decision after a property edit.
-Database tests must run with `UTOPIA_TEST_REQUIRE_DB=1`; the UI supplies both
-English and Chinese strings. Class/type expectations remain a separate slice:
-they observe `type_bindings`, whose kind-word signature is not a phrase binding.
+**The human-bound exception applies only to positive cases.** Positive cases
+retain the existing exception and report `human_bound`, not an independent
+match. A negative expectation conflicting with a person's bound signature
+fails and explicitly reports a conflict with the human binding, including the
+actual property and direction. A failed case does not overwrite the person's
+binding: it makes the disagreement visible for a person to resolve.
 
 ## Status history
 
