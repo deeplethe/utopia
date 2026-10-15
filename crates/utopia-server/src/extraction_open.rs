@@ -1150,6 +1150,21 @@ pub(crate) async fn run_open(
         serde_json::json!({ "kb_id": kb_id }),
     )
     .await?;
+    // 推送来的文档（0054）：短语正好是一条声明了的关系的签名，本体当场判（#1242）；再排一份
+    // 物化，绑着的签名下新来的陈述不等对齐器跑完就成类型化行——没配对话模型的库，对齐器
+    // 一次也不会跑完。排着就不重复：连推一百篇只算一遍
+    if pushed {
+        let bound = crate::phrase_alignment::bind_declared(pool, kb_id, document_id).await?;
+        if bound > 0 {
+            tracing::info!(%document_id, bound, "推送的短语按声明的关系绑上");
+        }
+        utopia_store::jobs::enqueue_unless_queued(
+            pool,
+            utopia_store::phrase_bindings::MATERIALIZE_KIND,
+            serde_json::json!({ "kb_id": kb_id }),
+        )
+        .await?;
+    }
     // 队列里多了东西才叫醒人：Review 的计数与对话里那张确认卡都靠这一声
     if pending_count > 0 {
         tracing::info!(%document_id, pending_count, "记忆抽出的陈述进了待确认队列");

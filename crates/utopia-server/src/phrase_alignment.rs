@@ -163,6 +163,115 @@ fn invalid_agent_direction(
             })
 }
 
+/// 这条关系叫这个短语：键或标签归一后与它相等（同类别词的归一）。像不算——
+/// 「validated by tests」不是 validated_by，那是模型的题
+fn named_by(p: &RelationTypeView, phrase: &str) -> bool {
+    phrase_bindings::normalize(&p.key) == phrase || phrase_bindings::normalize(&p.label) == phrase
+}
+
+/// 签名的短语正好是一条声明了的关系（#1242）：它叫这个短语，主语的类落在声明的域里、
+/// 宾语的类落在值域里（经继承也算），只认正向。域或值域没声明的不算——没声明是「不限」，
+/// 不是「就是它」；一端没有类的也不算。叫这个短语、两端也都对得上的不止一条，谁也不认：
+/// 两条关系叫得一样，该由人或模型来挑
+fn declared<'a>(
+    sig: &PhraseSignature,
+    props: &'a [RelationTypeView],
+    closure: &Closure,
+) -> Option<&'a RelationTypeView> {
+    if sig.object_is_value {
+        return None;
+    }
+    let mut fitting = props.iter().filter(|p| {
+        p.kind == "relation"
+            && !p.domains.is_empty()
+            && !p.ranges.is_empty()
+            && named_by(p, &sig.phrase)
+            && fits_direction(p, sig, closure, Direction::Forward).is_some()
+    });
+    let only = fitting.next()?;
+    fitting.next().is_none().then_some(only)
+}
+
+/// 对齐器不再判的判定：人的；本体判的、此刻仍是它声明的那条关系的。本体判的行没有指纹，
+/// 按指纹比永远「过期」——不先放过它，每轮都会把它送去问模型、收尾时又以为变了再排一份
+fn settled(
+    b: &phrase_bindings::Binding,
+    sig: &PhraseSignature,
+    props: &[RelationTypeView],
+    closure: &Closure,
+) -> bool {
+    b.decided_by == "person"
+        || (b.decided_by == "ontology"
+            && b.relation_type_id.is_some()
+            && declared(sig, props, closure).map(|p| p.id) == b.relation_type_id)
+}
+
+/// 推送来的文档抽完（0054）：它的陈述落在的签名里，短语正好是一条声明了的关系的，由本体
+/// 直接绑上，记成本体判的（#1242）。不问模型，没配对话模型也照判；别的签名照旧留给对齐器。
+/// 判定照旧是签名上的一行（0044 决定 3），人看得见、改得了；人的判定不动（`decide_on`
+/// 的规矩），已经由本体按同一条关系判过的不重写——判定时刻和回归记录不该随每次推送翻新。
+/// 返回写下的判定数
+pub(crate) async fn bind_declared(
+    pool: &sqlx::PgPool,
+    kb_id: Uuid,
+    document_id: Uuid,
+) -> anyhow::Result<usize> {
+    let props = utopia_store::ontology::relation_type_views(pool, kb_id).await?;
+    let keys: HashSet<SignatureKey> =
+        phrase_bindings::signature_keys_of_document(pool, kb_id, document_id)
+            .await?
+            .into_iter()
+            .filter(|(phrase, ..)| props.iter().any(|p| named_by(p, phrase)))
+            .collect();
+    // 多数推送没有一个短语叫得出关系的名字：库级的签名就不必数了
+    if keys.is_empty() {
+        return Ok(0);
+    }
+    let classes = utopia_store::graph::entity_types(pool, kb_id).await?;
+    let closure = closures(classes.iter().map(|c| (c.id, c.parents.as_slice())));
+    let existing: HashMap<_, _> = phrase_bindings::bindings(pool, kb_id)
+        .await?
+        .into_iter()
+        .map(|b| (b.key(), b))
+        .collect();
+    let mut written = 0;
+    for s in phrase_bindings::signatures(pool, kb_id)
+        .await?
+        .iter()
+        .filter(|s| keys.contains(&s.key()))
+    {
+        let Some(p) = declared(s, &props, &closure) else {
+            continue;
+        };
+        if existing
+            .get(&s.key())
+            .is_some_and(|b| settled(b, s, &props, &closure))
+        {
+            continue;
+        }
+        if phrase_bindings::decide(
+            pool,
+            kb_id,
+            s,
+            Decision {
+                relation_type_id: Some(p.id),
+                direction: Some(Direction::Forward.as_str()),
+                status: "bound",
+                votes: &serde_json::json!({ "reason": "declared_relation" }),
+                decided_by: "ontology",
+                basis: None,
+                marks: None,
+                marks_asked: false,
+            },
+        )
+        .await?
+        {
+            written += 1;
+        }
+    }
+    Ok(written)
+}
+
 /// 签名的键：短语 + 两端的类 + 宾语是不是字面值（与 `PhraseSignature::key` 同形）
 type SignatureKey = (String, Option<Uuid>, Option<Uuid>, bool);
 /// 每条签名此刻的候选与指纹
@@ -614,14 +723,14 @@ async fn align_phrases_locked(
     let short = shortlist(state, settings, kb_id, &sigs, &full).await?;
     let considered = consider(&sigs, &props, &closure, &versions, Some(&short));
     // 过期 = 存下的指纹和此刻的不一样（没有指纹的是这一列出现前判的，各重判一次）。
-    // 不再按时间戳：父边的增删、请求途中的编辑（#795）时间戳看不见。人的判定不重判。
-    // 绑到状态属性、从没问过一刻标哪一端的代理判定也问（`awaits_marks`，#966）
+    // 不再按时间戳：父边的增删、请求途中的编辑（#795）时间戳看不见。人的判定、本体仍认的
+    // 判定（`settled`）不重判。绑到状态属性、从没问过一刻标哪一端的代理判定也问（`awaits_marks`，#966）
     let todo: Vec<&PhraseSignature> = sigs
         .iter()
         .filter(|s| match existing.get(&s.key()) {
             None => true,
             Some(b) => {
-                b.decided_by != "person"
+                !settled(b, s, &props, &closure)
                     && (b.basis.as_deref() != Some(considered[&s.key()].1.as_str())
                         || awaits_marks(b, &props)
                         || invalid_agent_direction(b, s, &props, &closure))
@@ -1267,7 +1376,7 @@ async fn align_phrases_locked(
         sigs.iter().any(|s| match now.get(&s.key()) {
             None => !attempted.contains(&s.key()),
             Some(b) => {
-                b.decided_by != "person"
+                !settled(b, s, &props, &closure)
                     && b.basis.as_deref() != Some(now_considered[&s.key()].1.as_str())
             }
         })
@@ -1321,6 +1430,10 @@ async fn align_phrases_locked(
 #[cfg(test)]
 #[path = "phrase_alignment_tests.rs"]
 mod lifecycle_tests;
+
+#[cfg(test)]
+#[path = "phrase_alignment_declared_tests.rs"]
+mod declared_tests;
 
 #[cfg(test)]
 mod tests {

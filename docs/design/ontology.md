@@ -96,6 +96,13 @@ if that basis still matches the rows when it is written; otherwise it is discard
 word asked again [0053 revision, #795]. Cosmetic edits to a candidate class still count as a
 change.
 
+**A pushed phrase that names a declared relation binds without the model** [0044 revision, #1242].
+A signature from a document a `statements` source pushed (0054) whose phrase equals the key or label
+of exactly one declared relation, with the subject's class in its declared domain and the object's in
+its declared range, is bound when the document's extraction finishes, `decided_by = 'ontology'`; the
+extraction then queues `materialize`. A person's decision stands over it, and the aligner re-decides
+it only once the relation stops declaring it. Anything short of that equality goes to the aligner.
+
 **A shape of statement can imply a fact of another property** [0044 decision 3, migration 0073].
 An implication rule is keyed like a binding (a signature) or by a kind word, names the property it
 concludes, and takes its object from the statement's own object or from a *reading* of the object's
