@@ -28,3 +28,18 @@ export function kbGroups(kbs: Kb[]): KbEntry[] {
   }
   return entries;
 }
+
+/** 给多选下拉用的选项：同组的挨在一起，`label` 留全名（搜索与已选的芯片都用它），
+ *  `short` 是组名下面那一行显示的名字 */
+export function kbOptions(kbs: Kb[]) {
+  return kbGroups(kbs).flatMap((entry) =>
+    entry.kind === "kb"
+      ? [{ value: entry.kb.id, label: entry.kb.name }]
+      : entry.items.map((item) => ({
+          value: item.kb.id,
+          label: item.kb.name,
+          group: entry.name,
+          short: item.label,
+        })),
+  );
+}
