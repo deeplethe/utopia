@@ -89,6 +89,7 @@ pub async fn sync_source(state: &AppState, source_id: Uuid) -> anyhow::Result<()
         }
         Some(SourceKind::Webdav) => sync_webdav(state, &source).await,
         Some(SourceKind::Notion) => sync_notion(state, &source).await,
+        Some(SourceKind::GoogleDrive) => sync_google_drive(state, &source).await,
         // 被动容器：folder / api / memory / upload 没有拉取语义
         Some(
             SourceKind::Folder
@@ -1190,6 +1191,114 @@ async fn sync_notion(state: &AppState, source: &Source) -> anyhow::Result<SyncSt
     if !unread.is_empty() {
         anyhow::bail!(
             "{} Notion page(s) synced; {} could not be read and keep their stored content: {}",
+            stats.total(),
+            unread.len(),
+            unread
+                .iter()
+                .take(3)
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join("; ")
+        );
+    }
+    Ok(stats)
+}
+
+/// Google Drive 同步：走遍选中的文件夹，把读得出来的文件摄进来（0068）。
+///
+/// `doc_time` 取 `modifiedTime`，理由同 Notion：那是内容最后一次改动的时刻。
+/// 标记没变、文档还在的文件连下载都省了，见 `google_drive` 的模块注释。
+///
+/// **对账只在遍历完整时做**：到了上限、或有选中的文件夹打不开时，没看见的东西
+/// 不等于没了，只把这一轮看见的摘掉 missing 标记
+async fn sync_google_drive(state: &AppState, source: &Source) -> anyhow::Result<SyncStats> {
+    use crate::google_drive;
+
+    let cfg = google_drive::oauth_config().ok_or_else(|| {
+        anyhow::anyhow!(
+            "Google Drive is not configured on this server (UTOPIA_GOOGLE_DRIVE_CLIENT_ID)"
+        )
+    })?;
+    let refresh = source.config["refresh_token"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "google_drive source is not connected: connect a Google account in its settings"
+            )
+        })?;
+    let folders = google_drive::selected_folders(&source.config);
+    if folders.is_empty() {
+        anyhow::bail!("google_drive source has no folders selected");
+    }
+
+    let drive = google_drive::Drive::connect(&cfg, refresh).await?;
+    let listing = drive.walk(&folders).await?;
+    if listing.truncated {
+        tracing::warn!("文件数或目录深度到达单次上限，其余留给下一次同步");
+    }
+
+    let known = google_drive::markers(&state.pool, source.id).await?;
+    let mut stats = SyncStats::default();
+    let mut seen_keys = Vec::with_capacity(listing.files.len());
+    let mut seen_ids = Vec::with_capacity(listing.files.len());
+    let mut unread: Vec<String> = Vec::new();
+    for f in &listing.files {
+        let key = f.external_key();
+        seen_keys.push(key.clone());
+        seen_ids.push(f.id.clone());
+        let marker = f.marker();
+        if known.get(&f.id) == Some(&marker) {
+            let live = utopia_store::documents::find_by_external_key(&state.pool, source.id, &key)
+                .await?
+                .is_some_and(|d| d.deleted_at.is_none());
+            if live {
+                continue;
+            }
+        }
+        // 读不出来的文件跳过，库里已有的原样留着，其余照常同步——同 Notion
+        let content = match drive.content(f).await {
+            Ok(c) => c,
+            Err(error) => {
+                tracing::warn!(id = %f.id, error = %format!("{error:#}"), "google drive file could not be read, leaving the stored document as it is");
+                unread.push(format!("{}: {error:#}", f.name));
+                continue;
+            }
+        };
+        let action = ingest_item(
+            state,
+            source.kb_id,
+            source.id,
+            &key,
+            &content.filename,
+            content.mime,
+            &content.bytes,
+            f.modified,
+        )
+        .await?;
+        google_drive::remember(&state.pool, source.id, &f.id, &marker).await?;
+        stats.absorb(action);
+    }
+
+    if listing.truncated || !listing.unreachable.is_empty() {
+        utopia_store::documents::clear_missing_keys(&state.pool, source.id, &seen_keys).await?;
+    } else {
+        utopia_store::documents::reconcile_missing(&state.pool, source.id, &seen_keys).await?;
+        google_drive::forget_others(&state.pool, source.id, &seen_ids).await?;
+    }
+
+    if !listing.unreachable.is_empty() {
+        anyhow::bail!(
+            "{} file(s) synced; {} selected folder(s) could not be opened (deleted, or no longer shared with the connected account): {}",
+            stats.total(),
+            listing.unreachable.len(),
+            listing.unreachable.join(", ")
+        );
+    }
+    if !unread.is_empty() {
+        anyhow::bail!(
+            "{} file(s) synced; {} could not be read and keep their stored content: {}",
             stats.total(),
             unread.len(),
             unread
