@@ -369,7 +369,11 @@ pub(super) fn base_tools() -> serde_json::Value {
                     in order, by the document_id shown in search_chunks results. Use it whenever \
                     a search hit looks like the right document but the excerpt does not contain \
                     the answer — action items, decisions and lists usually sit past the excerpt \
-                    or in a section that did not match the query.",
+                    or in a section that did not match the query. Pass `chunk_seq` to read one \
+                    section at a time when a single section is long enough that the joined result \
+                    ran into the 24,000-character budget — `chunk_seq` is zero-based, and you can \
+                    also pass `offset` (a character count within that section) to skip past the part \
+                    you have already read.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -377,6 +381,21 @@ pub(super) fn base_tools() -> serde_json::Value {
                             "type": "string",
                             "format": "uuid",
                             "description": "Document id (uuid) from a search_chunks result line."
+                        },
+                        "chunk_seq": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Zero-based section index. Omit to read the whole document \
+                                (subject to the 24,000-character budget). Set to read just one section \
+                                — usually the one the answer sits in — without paying the budget \
+                                for sections before or after it."
+                        },
+                        "offset": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Character offset to start at within the chosen section. \
+                                Use with `chunk_seq` to continue reading past the response size limit \
+                                (the response tells you how many characters remain in the section)."
                         }
                     },
                     "required": ["document_id"]

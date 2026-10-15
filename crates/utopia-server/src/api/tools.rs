@@ -9,7 +9,7 @@
 //! 随对话策略走；这里只管拿到参数之后干什么。
 
 use serde_json::json;
-use utopia_core::models::{ChunkView, DataSourceView, EntityFact, GraphChange};
+use utopia_core::models::{ChunkView, DataSourceView, Document, EntityFact, GraphChange};
 use uuid::Uuid;
 
 use crate::retrieval;
@@ -374,6 +374,12 @@ pub async fn search_chunks(
 /// 一篇文档的全文。**search_chunks 够不到的东西全在这里**：它只回前六条命中、
 /// 每条切在 800 字上，答案落在第 801 字或落在没排上的那一块时，检索本身没错，
 /// 错在没有第二步。
+///
+/// `chunk_seq`（可选）只取那一片断而不是把全文拼起来——一片断体量小，不需要
+/// `DOCUMENT_CHARS` 截断也不会超长返回。配合 `offset`（按字符）让 Chat 读完一篇
+/// 长 Markdown 表：先 `get_document(document_id, chunk_seq=0)`，再 `offset=已收字数`、
+/// `chunk_seq+=1` 接下一片断。`#1209` 之前没有这一步，工具告诉模型截断 800 字就
+/// 没收口了
 pub async fn get_document(
     ctx: &ToolCtx<'_>,
     sink: &mut ToolSink,
@@ -418,7 +424,21 @@ pub async fn get_document(
                 .error();
             }
         };
+    if chunks.is_empty() {
+        return ToolResult::new(
+            format!("\"{}\" — no text", doc.filename),
+            Step::new("document", doc.filename.as_str(), "no sections")
+                .count(0)
+                .json(),
+        );
+    }
 
+    // `chunk_seq` 指定：取单片断并支持 `offset` 续读
+    if let Some(seq) = args["chunk_seq"].as_u64() {
+        return get_document_chunk(&doc, &chunks, seq as usize, args["offset"].as_u64());
+    }
+
+    // 不指定：把全文按 DOCUMENT_CHARS 拼起来（旧行为）
     let mut lines = Vec::new();
     let mut used = 0usize;
     let mut omitted = 0usize;
@@ -472,6 +492,78 @@ pub async fn get_document(
             format!("{} sections", chunks.len()),
         )
         .count(chunks.len())
+        .json(),
+    )
+}
+
+/// 单片断读：让 Chat 拼回全文时能续读，而不必把 24k 字符先吃掉再决定要不要看
+/// 后面的内容
+fn get_document_chunk(
+    doc: &utopia_core::models::Document,
+    chunks: &[ChunkView],
+    seq: usize,
+    offset: Option<u64>,
+) -> ToolResult {
+    let Some(c) = chunks.iter().find(|c| c.seq == seq as i32) else {
+        return ToolResult::new(
+            format!(
+                "section index out of range (asked {seq}, document has {} section(s))",
+                chunks.len()
+            ),
+            Step::new("document", doc.filename.as_str(), "out_of_range").json(),
+        )
+        .error();
+    };
+    let body = c.text.trim();
+    let total = body.chars().count();
+    let start = offset.unwrap_or(0) as usize;
+    if start >= total {
+        return ToolResult::new(
+            format!(
+                "offset past end of section (asked {start}, section {seq} has {total} chars)"
+            ),
+            Step::new("document", doc.filename.as_str(), "offset_past_end").json(),
+        )
+        .error();
+    }
+    let chunk_text: String = body.chars().skip(start).collect();
+    // 一次读一片断没有 24k 截断——整片断体量可控。但 `offset` 加上后单次返回
+    // 仍可能相当大，留个合理上限避免无意的全片断 dump
+    const CHUNK_PAYLOAD: usize = 16_000;
+    let (returned, more) = if chunk_text.chars().count() > CHUNK_PAYLOAD {
+        let s: String = chunk_text.chars().take(CHUNK_PAYLOAD).collect();
+        let rest = chunk_text.chars().count() - CHUNK_PAYLOAD;
+        (s, Some(rest))
+    } else {
+        (chunk_text, None)
+    };
+    let when = doc
+        .doc_time
+        .map(crate::time_text::instant)
+        .unwrap_or_else(|| "no date".to_string());
+    let header = format!(
+        "\"{}\" ({when}) — section {} ({} chars total, starting at {}):",
+        doc.filename,
+        seq + 1,
+        total,
+        start
+    );
+    let mut text = format!("{header}\n{returned}");
+    if let Some(rest) = more {
+        // `offset += CHUNK_PAYLOAD` 接下一次，或用 chunk_seq+=1 跳到下一片断
+        text.push_str(&format!(
+            "\n… truncated, {rest} chars remaining; pass offset={} or chunk_seq={}",
+            start + CHUNK_PAYLOAD,
+            seq + 1
+        ));
+    }
+    ToolResult::new(
+        text,
+        Step::new(
+            "document",
+            doc.filename.as_str(),
+            format!("section {}", seq + 1),
+        )
         .json(),
     )
 }
