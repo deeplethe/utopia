@@ -22,3 +22,13 @@ it("groups bases sharing the text before the slash under that name", () => {
     },
   ]);
 });
+
+it("places a group where its first member was and splits only on the first slash", () => {
+  const [a, lore, b, deep, floor] = [kb("alpha"), kb("re-cinq/lore"), kb("beta"), kb("x/y/z"), kb("re-cinq/floor")];
+  expect(kbGroups([a, lore, b, deep, floor])).toEqual([
+    { kind: "kb", kb: a },
+    { kind: "group", name: "re-cinq", items: [{ kb: lore, label: "lore" }, { kb: floor, label: "floor" }] },
+    { kind: "kb", kb: b },
+    { kind: "group", name: "x", items: [{ kb: deep, label: "y/z" }] },
+  ]);
+});
