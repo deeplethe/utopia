@@ -280,8 +280,8 @@ fn form_encode(s: &str) -> String {
     url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
 }
 
-pub async fn status() -> Json<Value> {
-    Json(json!({"enabled": config().is_ok()}))
+pub async fn status(State(s): State<AppState>) -> Json<Value> {
+    Json(json!({"enabled": config().is_ok(), "password_login": s.password_login}))
 }
 
 #[derive(Deserialize)]

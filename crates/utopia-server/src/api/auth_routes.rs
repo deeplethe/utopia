@@ -50,6 +50,7 @@ pub async fn register(
     jar: CookieJar,
     Json(req): Json<RegisterReq>,
 ) -> ApiResult<(CookieJar, Json<serde_json::Value>)> {
+    password_login_enabled(&state)?;
     validate_register(&req)?;
     let hash = auth::hash_password(&req.password)?;
     let org_name = req
@@ -124,6 +125,7 @@ pub async fn login(
     jar: CookieJar,
     Json(req): Json<LoginReq>,
 ) -> ApiResult<(CookieJar, Json<serde_json::Value>)> {
+    password_login_enabled(&state)?;
     let email = req.email.trim();
     let user = utopia_store::accounts::find_user_by_email(&state.pool, email).await?;
     // 邮箱存在与否的分支要走一样的代码路径：少了 argon2 的那一支能通过
@@ -252,4 +254,15 @@ pub async fn change_password(
     )
     .await;
     Ok(Json(json!({ "ok": true })))
+}
+
+fn password_login_enabled(state: &AppState) -> Result<(), AppError> {
+    if state.password_login {
+        Ok(())
+    } else {
+        Err(AppError::invalid(
+            "password_login_disabled",
+            "Password sign-in is turned off on this deployment; sign in with SSO",
+        ))
+    }
 }
