@@ -10,7 +10,7 @@ use utopia_core::models::{Role, SOURCE_SECRET_KEYS};
 use uuid::Uuid;
 
 use super::graph_routes::require_kb;
-use crate::auth::AuthUser;
+use crate::auth::{AuthUser, SessionOrToken};
 use crate::error::ApiResult;
 use crate::state::AppState;
 
@@ -84,12 +84,27 @@ pub struct CreateBody {
     pub sync_cron: Option<String>,
 }
 
+/// 写令牌也能建（0014 决定 6）：给一个镜像仓库配 `statements` 来源，不该要人
+/// 一个个手点。
+///
+/// 令牌只建 `statements`：`url`/`rss`/`custom` 一建好服务器就按时去拉（`custom`
+/// 还带着存下的凭据），漏出去的 CI 令牌不该能让服务器定时去敲任意地址。会话照旧建什么都行
 pub async fn create(
     State(state): State<AppState>,
-    AuthUser(user): AuthUser,
+    caller: SessionOrToken,
     Path(kb_id): Path<Uuid>,
     Json(body): Json<CreateBody>,
 ) -> ApiResult<Json<serde_json::Value>> {
+    caller.require_write(Some(kb_id))?;
+    if caller.pat.is_some() && body.kind != "statements" {
+        return Err(utopia_core::AppError::CodedForbidden {
+            code: "token_source_kind",
+            message: "A token creates only statements sources; other kinds take a session".into(),
+        }
+        .into());
+    }
+    let token_id = caller.token_id();
+    let user = caller.user;
     require_kb(&state, &user, kb_id, Role::Editor).await?;
     validate_rss_config(&body.kind, &body.config)?;
     let source = utopia_store::sources::create(
@@ -128,7 +143,10 @@ pub async fn create(
         "source.created",
         "source",
         Some(source.id),
-        json!({ "kind": source.kind, "name": source.name }),
+        utopia_store::audit::via_token(
+            json!({ "kind": source.kind, "name": source.name }),
+            token_id,
+        ),
     )
     .await;
     Ok(Json(
@@ -143,12 +161,15 @@ fn has_push_token(source: &utopia_core::models::Source) -> bool {
 }
 
 /// 查看推送密钥（Editor；列表响应从不携带，查看走这里）。
+///
+/// 令牌要 write：密钥能往库里推东西，读令牌拿到它就等于绕过了自己的 scope
 pub async fn get_token(
     State(state): State<AppState>,
-    AuthUser(user): AuthUser,
+    caller: SessionOrToken,
     Path((kb_id, source_id)): Path<(Uuid, Uuid)>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    require_kb(&state, &user, kb_id, Role::Editor).await?;
+    caller.require_write(Some(kb_id))?;
+    require_kb(&state, &caller.user, kb_id, Role::Editor).await?;
     let source = source_in_kb(&state, kb_id, source_id).await?;
     if !has_push_token(&source) {
         return Err(utopia_core::AppError::NotFound.into());
