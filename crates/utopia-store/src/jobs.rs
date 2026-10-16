@@ -187,6 +187,35 @@ pub async fn enqueue_with_max_attempts_tx(
     Ok(id)
 }
 
+/// 同 [`enqueue_with_max_attempts_tx`]，但 `after` 之后才到期。从插入这一刻
+/// （`clock_timestamp()`）算起：`now()` 是事务开始的时刻，事务长了，提交时延迟已经用掉
+pub async fn enqueue_with_max_attempts_after_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    kind: &str,
+    payload: serde_json::Value,
+    max_attempts: i32,
+    after: Duration,
+) -> AppResult<i64> {
+    if !(1..=32).contains(&max_attempts) {
+        return Err(utopia_core::AppError::Validation(
+            "max_attempts must be between 1 and 32".into(),
+        ));
+    }
+    let (id,): (i64,) = sqlx::query_as(
+        "INSERT INTO jobs (kind, payload, max_attempts, run_at)
+         VALUES ($1, $2, $3, clock_timestamp() + make_interval(secs => $4))
+         RETURNING id",
+    )
+    .bind(kind)
+    .bind(payload)
+    .bind(max_attempts)
+    .bind(after.as_secs_f64())
+    .fetch_one(&mut **tx)
+    .await?;
+    notify_worker_tx(tx).await?;
+    Ok(id)
+}
+
 /// Wake idle workers only after the transaction containing the job is committed.
 /// PostgreSQL delivers `NOTIFY` at commit, so a worker can never wake up before
 /// the row it needs to claim is visible.

@@ -541,15 +541,17 @@ pub async fn stored_proposals(
 pub struct DecideProposalReq {
     pub section: String,
     pub key: String,
-    /// adopted | rejected
+    /// 只收 rejected；采纳走 `/ontology/proposals/adopt`
     pub status: String,
-    /// 拒绝的理由（0061：下一轮代理读得到）。采纳时忽略
+    /// 拒绝的理由（0061：下一轮代理读得到）
     #[serde(default)]
     pub reason: Option<String>,
 }
 
-/// 一条提案有人表态了。**改状态不删行**：采纳发生过、拒绝也发生过，
-/// 而拒绝留痕正是下一轮 Suggest 不再把它刷回待看的依据。
+/// 拒绝一条提案。**改状态不删行**：拒绝留痕正是下一轮代理不再把它刷回待看的依据。
+///
+/// 从前这里也收 adopted，只把状态改成采纳，元素、回归用例、对齐一样都没有。采纳要把
+/// 这些和状态一起提交，只有 `/ontology/proposals/adopt` 做得到（0061 决定 3）
 pub async fn decide_proposal(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
@@ -557,35 +559,25 @@ pub async fn decide_proposal(
     Json(req): Json<DecideProposalReq>,
 ) -> ApiResult<Json<serde_json::Value>> {
     require_kb(&state, &user, kb_id, Role::Editor).await?;
-    if !matches!(req.status.as_str(), "adopted" | "rejected") {
-        return Err(AppError::invalid("bad_status", "status 只能是 adopted 或 rejected").into());
-    }
-    let reason = req
-        .reason
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
-    if req.status == "rejected" && reason.is_some() {
-        utopia_store::ontology::reject_proposal(
-            &state.pool,
-            kb_id,
-            &req.section,
-            &req.key,
-            reason,
-            user.id,
+    if req.status == "adopted" {
+        return Err(AppError::invalid(
+            "adoption_endpoint",
+            "Adopt a proposal through /ontology/proposals/adopt; this endpoint only rejects",
         )
-        .await?;
-    } else {
-        utopia_store::ontology::decide_proposal(
-            &state.pool,
-            kb_id,
-            &req.section,
-            &req.key,
-            &req.status,
-            user.id,
-        )
-        .await?;
+        .into());
     }
+    if req.status != "rejected" {
+        return Err(AppError::invalid("bad_status", "status 只能是 rejected").into());
+    }
+    utopia_store::ontology::reject_proposal(
+        &state.pool,
+        kb_id,
+        &req.section,
+        &req.key,
+        req.reason.as_deref(),
+        user.id,
+    )
+    .await?;
     Ok(Json(json!({ "ok": true })))
 }
 

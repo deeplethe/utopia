@@ -153,8 +153,8 @@ fn validate_key(key: &str) -> AppResult<()> {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub async fn create_entity_type(
-    pool: &PgPool,
+pub async fn create_entity_type<'a>(
+    pool: impl sqlx::Acquire<'a, Database = sqlx::Postgres>,
     kb_id: Uuid,
     key: &str,
     label: &str,
@@ -165,6 +165,7 @@ pub async fn create_entity_type(
 ) -> AppResult<Uuid> {
     validate_key(key)?;
     validate_shape(shape)?;
+    let mut tx = pool.begin().await?;
     let id = Uuid::now_v7();
     sqlx::query(
         "INSERT INTO entity_types (id, kb_id, key, label, color, shape, description)
@@ -177,7 +178,7 @@ pub async fn create_entity_type(
     .bind(color)
     .bind(shape)
     .bind(description)
-    .execute(pool)
+    .execute(&mut *tx)
     .await
     .map_err(|e| match &e {
         sqlx::Error::Database(db) if db.is_unique_violation() => {
@@ -185,7 +186,8 @@ pub async fn create_entity_type(
         }
         _ => AppError::Db(e),
     })?;
-    set_parents(&mut *pool.acquire().await?, kb_id, id, parents).await?;
+    set_parents(&mut tx, kb_id, id, parents).await?;
+    tx.commit().await?;
     Ok(id)
 }
 
@@ -455,8 +457,8 @@ async fn validate_property_links(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub async fn create_relation_type(
-    pool: &PgPool,
+pub async fn create_relation_type<'a>(
+    pool: impl sqlx::Acquire<'a, Database = sqlx::Postgres>,
     kb_id: Uuid,
     key: &str,
     label: &str,
@@ -476,9 +478,10 @@ pub async fn create_relation_type(
         ));
     }
     validate_attribute_fields(kind, domains, datatype)?;
+    let mut tx = pool.begin().await?;
     let label = &lower_camel(label);
     // 新建的行 id 还不存在，指向自己无从谈起——所以 self_id 传 None
-    validate_property_links(&mut *pool.acquire().await?, kb_id, None, kind, ax).await?;
+    validate_property_links(&mut tx, kb_id, None, kind, ax).await?;
     let is_attr = kind == "attribute";
     let id = Uuid::now_v7();
     sqlx::query(
@@ -509,7 +512,7 @@ pub async fn create_relation_type(
     // 属性不带这两条（上面已经拦了非空的情况，这里是兜底）
     .bind(if is_attr { None } else { ax.inverse_of })
     .bind(if is_attr { None } else { ax.sub_property_of })
-    .execute(pool)
+    .execute(&mut *tx)
     .await
     .map_err(|e| match &e {
         sqlx::Error::Database(db) if db.is_unique_violation() => {
@@ -518,13 +521,8 @@ pub async fn create_relation_type(
         _ => AppError::Db(e),
     })?;
     // attribute 不写 range：它的值域是字面量类型，落在 datatype 上
-    set_domains_ranges(
-        &mut *pool.acquire().await?,
-        id,
-        domains,
-        if is_attr { &[] } else { ranges },
-    )
-    .await?;
+    set_domains_ranges(&mut tx, id, domains, if is_attr { &[] } else { ranges }).await?;
+    tx.commit().await?;
     Ok(id)
 }
 
@@ -1817,7 +1815,10 @@ pub async fn signatures_already_proposed(
     .await?)
 }
 
-/// 一条提案被拒了，连理由。改状态不删行（同 `decide_proposal`）
+/// 一条提案被拒了，连理由（没写就空着）。
+///
+/// **改状态而不是删行**：拒绝发生过，跟 `fact_adoptions`、`entity_retypes` 同一条路。
+/// 留痕还有个当下就用得着的作用——代理下一轮不会把它刷回待看。
 pub async fn reject_proposal(
     pool: &PgPool,
     kb_id: Uuid,
@@ -1841,7 +1842,7 @@ pub async fn reject_proposal(
     Ok(())
 }
 
-/// 一条还开着的提案，按键取（采纳时要读它的 payload）
+/// 一条还开着的提案，按键取（代理把这一轮的 map_to 并进上一轮的时候读它）
 pub async fn open_proposal(
     pool: &PgPool,
     kb_id: Uuid,
@@ -1869,34 +1870,6 @@ pub async fn open_proposals(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<StoredP
     .bind(kb_id)
     .fetch_all(pool)
     .await?)
-}
-
-/// 一条提案被采纳或拒绝了。
-///
-/// **改状态而不是删行**：采纳发生过、拒绝也发生过。跟 `fact_adoptions`、
-/// `entity_retypes` 同一条路。拒绝留痕还有个当下就用得着的作用——下一轮
-/// Suggest 不会把它刷回待看。
-pub async fn decide_proposal(
-    pool: &PgPool,
-    kb_id: Uuid,
-    section: &str,
-    key: &str,
-    status: &str,
-    actor: Uuid,
-) -> AppResult<()> {
-    sqlx::query(
-        "UPDATE ontology_proposals
-            SET status = $4, decided_by = $5, decided_at = now()
-          WHERE kb_id = $1 AND section = $2 AND key = $3 AND status = 'open'",
-    )
-    .bind(kb_id)
-    .bind(section)
-    .bind(key)
-    .bind(status)
-    .bind(actor)
-    .execute(pool)
-    .await?;
-    Ok(())
 }
 
 /// 这些类的全部祖先（不含自己）。沿 `subClassOf` 上溯，多继承与菱形都走得通。
@@ -2061,23 +2034,4 @@ pub async fn agent_proposal_report(pool: &PgPool, kb_id: Uuid) -> AppResult<Agen
     .bind(kb_id)
     .fetch_one(pool)
     .await?)
-}
-
-/// 采纳时人改过：记下来，占比才算得出
-pub async fn mark_proposal_edited(
-    pool: &PgPool,
-    kb_id: Uuid,
-    section: &str,
-    key: &str,
-) -> AppResult<()> {
-    sqlx::query(
-        "UPDATE ontology_proposals SET edited = true
-          WHERE kb_id = $1 AND section = $2 AND key = $3",
-    )
-    .bind(kb_id)
-    .bind(section)
-    .bind(key)
-    .execute(pool)
-    .await?;
-    Ok(())
 }
