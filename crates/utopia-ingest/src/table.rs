@@ -216,7 +216,10 @@ fn grid(tbl: &Selection<'_>) -> Vec<Row> {
             let span = attr_usize(&cell, "colspan");
             let rowspan = attr_usize(&cell, "rowspan");
             let c = Cell {
-                text: clean(&cell.text()),
+                // `text()` 只把文字节点首尾相接，10<br>20 读成 1020；`formatted_text()` 在
+                // <br>、<p>、<div>、<li> 这类地方断行，行内的 <b>、<span> 照旧相接，
+                // `clean` 再把断行并成一个空格
+                text: clean(&cell.formatted_text()),
                 span,
                 pad: padding_left(&style),
                 col,
@@ -824,6 +827,20 @@ mod tests {
             "<table><tr><td>Other</td><td>112</td><td>—</td><td>31</td><td>—</td></tr></table>";
         let md = render(html);
         assert!(md.contains("| Other | 112 | — | 31 | — |"), "{md}");
+    }
+
+    /// 格子里的 <br>、<p>、<div>、<li> 隔开两边的字，和 Word（#813）、幻灯片（#1042）的格子
+    /// 一样：两个读数 10 和 20 不能读成 1020，列头「Depth」「(m)」不能粘成「Depth(m)」。
+    /// 行内的 <b> 照旧不隔开
+    #[test]
+    fn a_line_break_inside_a_cell_keeps_the_words_on_either_side_apart() {
+        let html = "<table><tr><th>Well</th><th>Depth<br>(m)</th><th>Readings</th></tr>\
+                    <tr><td><p>North</p><p>Field</p></td><td>1200</td><td>10<br>20</td></tr>\
+                    <tr><td><div>South</div><div>Ridge</div></td><td><b>9</b>50</td><td><ul><li>7</li><li>9</li></ul></td></tr></table>";
+        let md = render(html);
+        assert!(md.contains("| Well | Depth (m) | Readings |"), "{md}");
+        assert!(md.contains("| North Field | 1200 | 10 20 |"), "{md}");
+        assert!(md.contains("| South Ridge | 950 | 7 9 |"), "{md}");
     }
 
     #[test]
