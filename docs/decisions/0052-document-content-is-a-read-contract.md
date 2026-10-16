@@ -16,13 +16,19 @@ still be served.
 
 ## Decision
 
-Add two Viewer-level reads:
+Add three Viewer-level reads:
 
 * `GET /api/v1/documents/{id}/content[?version=N]` serves one retained
   original. No query means the current version; a version number addresses a
   recorded ledger row.
 * `GET /api/v1/documents/{id}/versions` returns the ledger's `version`,
   `sha256`, `size_bytes`, and `ingested_at`.
+* `GET /api/v1/kbs/{kb_id}/sources/{source_id}/documents/by-external-id?external_id=…`
+  (#1276) finds an `api` or `statements` source's document by the identity it
+  was pushed under and returns its metadata, the current version's content as
+  text, and the list `versions` returns. A tombstoned identity is `404` unless
+  `include_missing=true`; a deleted one is `404`, and since purge erases the
+  identity, so is a purged one.
 
 Content is addressed by document identity, not blob identity. The handler
 selects and locks the document plus its ledger row, reads the immutable blob
@@ -38,17 +44,18 @@ MIME. This is an explicit compatibility boundary, not a claim that old uploads
 carried metadata history.
 
 Deletion is reversible and bytes remain readable. Purge is final: its
-tombstone answers `410 Gone` on both routes. A ledger row whose blob is absent
-is not a normal missing resource; it is an internal invariant failure and
-answers `500`. This keeps a storage fault distinguishable from a bad document
+tombstone answers `410 Gone` on both routes addressed by document id. A ledger
+row whose blob is absent is not a normal missing resource; it is an internal
+invariant failure and answers `500`. This keeps a storage fault distinguishable from a bad document
 ID or version.
 
 ## Access
 
-Both routes reuse the Viewer authorization rule. They accept a web session or
-a `utp_pat_` personal access token. Token KB scoping is still a separate
+All three routes reuse the Viewer authorization rule. They accept a web session
+or a `utp_pat_` personal access token. Token KB scoping is still a separate
 narrowing check; a scoped token receives the same `404` as an inaccessible
-document. Source ingest tokens remain rejected as credentials.
+document. Source ingest tokens remain rejected as credentials, so a leaked push
+key stays push-only.
 
 ## Limits
 

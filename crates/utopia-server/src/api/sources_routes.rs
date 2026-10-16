@@ -47,7 +47,7 @@ fn push_key_matches(stored: Option<&str>, offered: &str) -> bool {
 /// `require_kb` 只查人对库的权限；来源 id 是另一个维度——不比对的话，A 库的
 /// Editor 拿着 B 库来源的 id 就能同步、清理、删除它。不属于就当不存在（404），
 /// 与 `get_token` 一直以来的做法一致
-async fn source_in_kb(
+pub(crate) async fn source_in_kb(
     state: &AppState,
     kb_id: Uuid,
     source_id: Uuid,
