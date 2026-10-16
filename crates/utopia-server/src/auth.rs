@@ -206,6 +206,11 @@ impl FromRequestParts<AppState> for SessionOrToken {
 }
 
 impl SessionOrToken {
+    /// 代人行事的那枚令牌；会话是 None。审计行靠它分得出是哪一枚（0014 决定 6）
+    pub fn token_id(&self) -> Option<Uuid> {
+        self.pat.as_ref().map(|pat| pat.token_id)
+    }
+
     /// 令牌有没有把这个库排除掉。会话什么都不排除；这不是权限，权限归角色
     pub fn reaches(&self, kb_id: Uuid) -> bool {
         self.pat.as_ref().is_none_or(|pat| pat.covers(kb_id))

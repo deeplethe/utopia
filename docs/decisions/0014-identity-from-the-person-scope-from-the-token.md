@@ -56,27 +56,32 @@ push documents in.
 
 6. **A write token may set up a base** (added 2026-10-15, #1243). A repository mirrored into
    Utopia gets a base and a `statements` source; the push is the source key's job (0054), but
-   creating the base and the source took a session, so a backend either held someone's
-   seven-day JWT or a person did it by hand for each repository. Five routes now also take a
-   personal token with `write` scope, acting as its owner: creating a base in a workspace,
-   creating a source, reading a source's push key, importing an ontology, and deciding where a
-   kind word binds. Listing a workspace's bases takes any token, so a client can find a base by
-   name before it creates one. The reasons above hold unchanged. The actor is still the living
-   person (`audit_events.actor_id` is theirs, as from a session); the person's role is still
-   the ceiling, checked by the same `require_kb` and workspace role as before, so a token whose
-   owner is not a workspace admin creates no base; writing must still be ticked, and a
-   read-only token is refused with `token_read_only`; a token limited by `kb_ids` reaches only
-   those bases, and it cannot create one, since a base that does not exist yet is in no list
+   creating the base and the source took a session, so a backend either held someone's seven-day
+   JWT or a person did it by hand for each repository. Five routes now also take a personal
+   token with `write` scope, acting as its owner: creating a base in a workspace, creating a
+   source, reading a source's push key, importing an ontology, and deciding where a kind word
+   binds. Listing a workspace's bases takes any token, so a client can find a base by name
+   before it creates one. The reasons above hold unchanged. The actor is still the living person
+   (`audit_events.actor_id` is theirs, as from a session); the person's role is still the
+   ceiling, checked by the same `require_kb` and workspace role as before, so a token whose
+   owner is not a workspace admin creates no base, and a system admin's write token acts as
+   Owner in every base, as the admin does; writing must still be ticked, and a read-only token
+   is refused with `token_read_only`; a token limited by `kb_ids` reaches only those bases, and
+   it cannot create one, since a base that does not exist yet is in no list
    (`token_kb_out_of_scope`); revocation and expiry are judged in SQL on every request. Nothing
-   here is a base-level machine token or a service account. One extractor, `SessionOrToken`,
-   takes either credential, and only these routes and document content (0052) use it; `AuthUser`
-   still reads every bearer as a JWT, so the routes behind it stay session-only until someone
-   has a reason to open one and says it here.
+   here is a base-level machine token or a service account. A token creates only `statements`
+   sources: a `url`, `rss` or `custom` source starts the server fetching on a schedule, with
+   stored credentials for `custom`, which would turn a leaked CI token into a way to make the
+   server call any address; other kinds from a token are refused with `token_source_kind`, and a
+   session still creates every kind. The audit rows these routes write (`source.created`,
+   `alignment.kind_word_decided`, `ontology.imported`) carry the acting token's id as
+   `detail.token_id`, so before revoking a leaked token an admin can see what it did (decision
+   5). One extractor, `SessionOrToken`, takes either credential, and only these routes and
+   document content (0052) use it; `AuthUser` still reads every bearer as a JWT, so the routes
+   behind it stay session-only until someone has a reason to open one and says it here.
 
    Not done: rotating or deleting a source, changing a base's settings or members, and every
-   other write still take a session. A token does not create workspaces or tokens. Audit rows
-   from these routes name the person but not the token that acted for them; MCP's
-   `mcp.tool_called` does.
+   other write still take a session. A token does not create workspaces or tokens.
 
 ## Dead ends
 

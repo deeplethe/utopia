@@ -1404,6 +1404,7 @@ pub async fn decide_alignment_kind_word(
     Json(req): Json<DecideAlignmentKindWordReq>,
 ) -> ApiResult<Json<serde_json::Value>> {
     caller.require_write(Some(kb_id))?;
+    let token_id = caller.token_id();
     let user = caller.user;
     require_kb(&state, &user, kb_id, Role::Editor).await?;
     let class = match req
@@ -1443,7 +1444,10 @@ pub async fn decide_alignment_kind_word(
         "alignment.kind_word_decided",
         "type_binding",
         None,
-        json!({ "kind_word": kind_word, "class": req.class }),
+        utopia_store::audit::via_token(
+            json!({ "kind_word": kind_word, "class": req.class }),
+            token_id,
+        ),
     )
     .await;
     state.emit_review(kb_id);

@@ -613,6 +613,7 @@ pub async fn apply_import(
     multipart: axum::extract::Multipart,
 ) -> ApiResult<Json<serde_json::Value>> {
     caller.require_write(Some(kb_id))?;
+    let token_id = caller.token_id();
     let user = caller.user;
     require_kb(&state, &user, kb_id, Role::Editor).await?;
     let (filename, bytes) = read_upload(multipart).await?;
@@ -625,7 +626,7 @@ pub async fn apply_import(
     let was_detected = utopia_store::reasoning::detection_keys(&mut baseline_tx, kb_id).await?;
     baseline_tx.commit().await?;
     let (import_id, plan) =
-        match crate::owl_import::apply(&state, kb_id, user.id, &filename, &bytes).await {
+        match crate::owl_import::apply(&state, kb_id, user.id, token_id, &filename, &bytes).await {
             Ok(v) => v,
             Err(e) => {
                 // apply 是多笔提交：中途失败时一部分判据已经落了。尽力对账——

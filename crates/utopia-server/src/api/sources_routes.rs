@@ -85,7 +85,10 @@ pub struct CreateBody {
 }
 
 /// 写令牌也能建（0014 决定 6）：给一个镜像仓库配 `statements` 来源，不该要人
-/// 一个个手点
+/// 一个个手点。
+///
+/// 令牌只建 `statements`：`url`/`rss`/`custom` 一建好服务器就按时去拉（`custom`
+/// 还带着存下的凭据），漏出去的 CI 令牌不该能让服务器定时去敲任意地址。会话照旧建什么都行
 pub async fn create(
     State(state): State<AppState>,
     caller: SessionOrToken,
@@ -93,6 +96,14 @@ pub async fn create(
     Json(body): Json<CreateBody>,
 ) -> ApiResult<Json<serde_json::Value>> {
     caller.require_write(Some(kb_id))?;
+    if caller.pat.is_some() && body.kind != "statements" {
+        return Err(utopia_core::AppError::CodedForbidden {
+            code: "token_source_kind",
+            message: "A token creates only statements sources; other kinds take a session".into(),
+        }
+        .into());
+    }
+    let token_id = caller.token_id();
     let user = caller.user;
     require_kb(&state, &user, kb_id, Role::Editor).await?;
     validate_rss_config(&body.kind, &body.config)?;
@@ -132,7 +143,10 @@ pub async fn create(
         "source.created",
         "source",
         Some(source.id),
-        json!({ "kind": source.kind, "name": source.name }),
+        utopia_store::audit::via_token(
+            json!({ "kind": source.kind, "name": source.name }),
+            token_id,
+        ),
     )
     .await;
     Ok(Json(

@@ -122,11 +122,20 @@ impl Fixture {
     }
 
     async fn create_source(&self, kb: Uuid, token: &str) -> anyhow::Result<(StatusCode, Value)> {
+        self.create_source_of_kind(kb, token, "statements").await
+    }
+
+    async fn create_source_of_kind(
+        &self,
+        kb: Uuid,
+        token: &str,
+        kind: &str,
+    ) -> anyhow::Result<(StatusCode, Value)> {
         self.send(
             "POST",
             &format!("/kbs/{kb}/sources"),
             token,
-            Some(json!({ "kind": "statements", "name": "ci" })),
+            Some(json!({ "kind": kind, "name": "ci" })),
         )
         .await
     }
@@ -186,6 +195,9 @@ async fn a_live_write_token_of_a_workspace_admin_sets_up_a_base_and_a_dead_one_d
     };
     let result = async {
         let token = f.token(f.admin, "write", None).await;
+        let token_id = utopia_store::tokens::authenticate(&f.pool, &token)
+            .await?
+            .token_id;
 
         let (status, kb) = f.create_kb(&token, "lore-mirror").await?;
         anyhow::ensure!(status == StatusCode::OK, "{status} {kb}");
@@ -225,6 +237,14 @@ async fn a_live_write_token_of_a_workspace_admin_sets_up_a_base_and_a_dead_one_d
                 ],
             "{actors:?}"
         );
+        // 哪一枚令牌代人做的（决定 5 靠它）：记在 detail 里
+        let detail: Value = sqlx::query_scalar(
+            "SELECT detail FROM audit_events WHERE kb_id = $1 AND action = 'source.created'",
+        )
+        .bind(kb)
+        .fetch_one(&f.pool)
+        .await?;
+        anyhow::ensure!(detail["token_id"] == json!(token_id), "{detail}");
 
         // 同一个人、同一条刚走通的路：过期的与撤销的令牌照旧挡在门外
         let (_, expired) = utopia_store::tokens::issue(
@@ -243,6 +263,33 @@ async fn a_live_write_token_of_a_workspace_admin_sets_up_a_base_and_a_dead_one_d
             let (status, body) = f.create_source(kb, &token).await?;
             anyhow::ensure!(status == StatusCode::UNAUTHORIZED, "{status} {body}");
         }
+        anyhow::Ok(())
+    }
+    .await;
+    f.cleanup().await?;
+    result
+}
+
+#[tokio::test]
+async fn a_write_token_creating_a_url_source_is_refused_with_token_source_kind(
+) -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    let result = async {
+        let kb = f.seeded_kb("pull").await?;
+        let token = f.token(f.admin, "write", None).await;
+
+        let (status, body) = f.create_source_of_kind(kb, &token, "url").await?;
+        anyhow::ensure!(
+            status == StatusCode::FORBIDDEN && body["code"] == "token_source_kind",
+            "{status} {body}"
+        );
+        let sources: i64 = sqlx::query_scalar("SELECT count(*) FROM sources WHERE kb_id = $1")
+            .bind(kb)
+            .fetch_one(&f.pool)
+            .await?;
+        anyhow::ensure!(sources == 0, "{sources} sources");
         anyhow::Ok(())
     }
     .await;

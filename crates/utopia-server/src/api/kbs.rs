@@ -85,6 +85,7 @@ pub async fn create(
     Json(req): Json<CreateKbReq>,
 ) -> ApiResult<Json<KnowledgeBase>> {
     caller.require_write(None)?;
+    let token_id = caller.token_id();
     let user = caller.user;
     let name = req.name.trim();
     if name.is_empty() || name.chars().count() > 64 {
@@ -129,7 +130,7 @@ pub async fn create(
     }
     utopia_store::access::set_kb_member(&state.pool, kb.id, user.id, "admin", Some(user.id))
         .await?;
-    install_packs(&state, kb.id, user.id, &req.ontology_packs).await?;
+    install_packs(&state, kb.id, user.id, token_id, &req.ontology_packs).await?;
     let kb = utopia_store::kbs::get(&state.pool, kb.id).await?;
     Ok(Json(kb))
 }
@@ -410,6 +411,7 @@ pub(super) async fn install_packs(
     state: &AppState,
     kb_id: Uuid,
     actor: Uuid,
+    via_token: Option<Uuid>,
     pack_ids: &[String],
 ) -> ApiResult<()> {
     if pack_ids.is_empty() {
@@ -422,7 +424,7 @@ pub(super) async fn install_packs(
         packs.push((pack, crate::ontology_packs::bytes(pack)?));
     }
     for (pack, bytes) in &packs {
-        crate::owl_import::apply(state, kb_id, actor, pack.filename, bytes)
+        crate::owl_import::apply(state, kb_id, actor, via_token, pack.filename, bytes)
             .await
             .map_err(|e| AppError::Other(anyhow::anyhow!("装本体包 {} 失败：{e}", pack.id)))?;
     }
