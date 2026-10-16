@@ -528,10 +528,12 @@ async fn handle_push(
     .await
     .map_err(|e| PushError::Failed(e.to_string()))?
     .action;
-    // 失而复得：曾被墓碑标记的身份再次正常推送，摘掉 missing 标记
-    utopia_store::documents::clear_missing_keys(&state.pool, source.id, &[key])
-        .await
-        .map_err(|e| PushError::Failed(e.to_string()))?;
+    // 失而复得：曾被墓碑标记的身份再次正常推送，摘掉 missing 标记；重复的推送什么也没落，不摘
+    if !matches!(action, crate::ingest_sources::IngestAction::Duplicate(_)) {
+        utopia_store::documents::clear_missing_keys(&state.pool, source.id, &[key])
+            .await
+            .map_err(|e| PushError::Failed(e.to_string()))?;
+    }
     Ok(action)
 }
 
@@ -828,9 +830,11 @@ async fn handle_statements_push(
     .await
     .map_err(|e| PushError::Failed(e.to_string()))?
     .action;
-    utopia_store::documents::clear_missing_keys(&state.pool, source.id, &[key])
-        .await
-        .map_err(|e| PushError::Failed(e.to_string()))?;
+    if !matches!(action, crate::ingest_sources::IngestAction::Duplicate(_)) {
+        utopia_store::documents::clear_missing_keys(&state.pool, source.id, &[key])
+            .await
+            .map_err(|e| PushError::Failed(e.to_string()))?;
+    }
     Ok(action)
 }
 

@@ -158,7 +158,8 @@ pub enum IngestAction {
 }
 
 /// 身份从哪来。`Path`：来源按位置认文档，同内容出现在新位置就是移动/改名，历史跟着走；
-/// `Declared`：调用方亲口给了 ID，身份就是它，绝不把另一个 ID 的文档改成它。
+/// `Declared`：调用方亲口给了 ID，身份就是它，绝不把另一个活着的 ID 的文档改成它；
+/// 只有已被墓碑标记的那篇可以接手（改名）。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Identity {
     Path,
@@ -293,6 +294,16 @@ pub async fn ingest_item_with_outcome(
     }
 
     if let Some(doc) = existing {
+        // 新内容已被库里另一篇占着：先答重复，免得下面恢复回收站、重建索引之后才发现
+        if doc.sha256 != sha256 {
+            if let Some(holder) =
+                utopia_store::documents::find_by_kb_sha(&state.pool, kb_id, &sha256).await?
+            {
+                return Ok(IngestOutcome {
+                    action: IngestAction::Duplicate(holder.id),
+                });
+            }
+        }
         // Ordinary source reappearance retains upstream restore semantics,
         // including search and derivation repair, before comparing content.
         let revived = doc.deleted_at.is_some();
@@ -347,13 +358,11 @@ pub async fn ingest_item_with_outcome(
         });
     }
 
-    // 同内容出现在新路径：识别为移动/改名，不重跑管道
-    let moved = match identity {
-        Identity::Path => {
-            utopia_store::documents::find_by_source_sha(&state.pool, source_id, &sha256).await?
-        }
-        Identity::Declared => None,
-    };
+    // 同内容出现在新路径：识别为移动/改名，不重跑管道。声明的 ID 只接手已被墓碑标记的那篇
+    // （先墓碑旧 ID、再推新 ID = 改名），活着的绝不改走
+    let moved = utopia_store::documents::find_by_source_sha(&state.pool, source_id, &sha256)
+        .await?
+        .filter(|doc| identity == Identity::Path || doc.missing_since.is_some());
     if let Some(doc) = moved {
         utopia_store::documents::update_location(&state.pool, doc.id, filename, external_key)
             .await?;
