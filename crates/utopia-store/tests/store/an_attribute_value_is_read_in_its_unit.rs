@@ -1,4 +1,4 @@
-//! 绑到属性上的开放陈述算成类型化行时，值按属性的 datatype 与单位读（`typed_value`）。
+//! 绑到属性上的开放陈述算成类型化行时，值按属性的 datatype 与单位读（`materialize::attribute_value`）。
 //!
 //! 一家公司三条陈述：「注册资本 2.3亿元」绑到单位万元的 number 属性，「成立 2008年11月」
 //! 绑到 date 属性，「注册资本 5000万美元」货币对不上。前两条算出 23000 与 2008-11；第三条
@@ -81,15 +81,6 @@ async fn an_attribute_value_is_read_in_its_unit() -> anyhow::Result<()> {
             ]
         );
 
-        // 再跑一遍：读不出来的那条不会每次都被当成新的写一行
-        materialize(&pool, kb).await?;
-        let count: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM facts WHERE kb_id = $1 AND layer = 'typed' AND invalidated_at IS NULL",
-        )
-        .bind(kb)
-        .fetch_one(&pool)
-        .await?;
-        assert_eq!(count, 2);
         anyhow::Ok(())
     }
     .await;

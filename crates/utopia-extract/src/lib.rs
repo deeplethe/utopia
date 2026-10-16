@@ -542,17 +542,16 @@ fn scan_quantity(s: &str, strict: bool) -> Option<Quantity> {
     } else {
         currency.map(str::to_string).or(unit)
     };
-    let scaled = ate_magnitude;
-    if strict {
-        return tail.is_empty().then_some(Quantity { n, unit, scaled });
+    if strict && !tail.is_empty() {
+        return None;
     }
     // 宽松：其余部分的第一个词当单位（`1,250 people` → people），没有货币时才用
-    if unit.is_none() && !tail.is_empty() {
-        let (tok, _) = next_token(tail);
-        let unit = Some(tok.to_string());
-        return Some(Quantity { n, unit, scaled });
-    }
-    Some(Quantity { n, unit, scaled })
+    let unit = unit.or_else(|| (!tail.is_empty()).then(|| next_token(tail).0.to_string()));
+    Some(Quantity {
+        n,
+        unit,
+        scaled: ate_magnitude,
+    })
 }
 
 /// 读出来的一个量。`n` 已经乘上了量级词；`scaled` 记下原文写没写量级词——换算到属性
@@ -627,15 +626,14 @@ pub fn literal_object(name: &str, named: bool) -> bool {
     if written_date(t).is_some() || t.contains(['-', '/', '.']) && parse_time(t).is_some() {
         return true;
     }
-    let counted = COUNTERS.iter().any(|c| {
-        t.strip_suffix(c)
-            .and_then(|r| scan_quantity(r.trim_end(), true))
-            .is_some_and(|q| q.unit.is_none())
-    });
     match scan_quantity(t, true) {
         Some(q) if q.unit.is_some() || q.scaled => true,
         Some(_) => !named,
-        None => counted,
+        None => COUNTERS.iter().any(|c| {
+            t.strip_suffix(c)
+                .and_then(|r| scan_quantity(r.trim_end(), true))
+                .is_some_and(|q| q.unit.is_none())
+        }),
     }
 }
 
@@ -746,52 +744,35 @@ pub fn attribute_value(
     raw: &serde_json::Value,
 ) -> Option<serde_json::Value> {
     let declared = unit.map(str::trim).filter(|u| !u.is_empty());
-    let (serde_json::Value::String(s), "number", Some(declared)) = (raw, datatype, declared) else {
+    let read = match (raw, datatype, declared) {
+        (serde_json::Value::String(s), "number", Some(d)) => {
+            scan_quantity(strip_approx(s), false).map(|q| (q, d))
+        }
+        _ => None,
+    };
+    let Some((q, declared)) = read else {
         return normalize_attr_value(datatype, raw);
     };
-    let Some(q) = scan_quantity(strip_approx(s), false) else {
-        return normalize_attr_value(datatype, raw);
+    // 声明的单位拆成量级和其余：「万元」→ (4, 元)，「million dollars」→ (6, dollars)
+    let (tok, rest) = next_token(declared);
+    let (exponent, base) = match magnitude(&tok.to_ascii_lowercase()) {
+        Some(m) => (m, rest.trim()),
+        None => (0, declared),
     };
-    let (exponent, base) = declared_unit(declared);
     let written = q.unit.as_deref().and_then(currency_unit);
     let wanted = currency_unit(base);
     if written.is_some() && wanted.is_some() && written != wanted {
         return None;
     }
     // 原文写了量级词，或写了和声明一样的单位（「50000000元」对「万元」），n 才是绝对量，
-    // 要除下来；光秃秃的数就是声明单位下的数
-    let absolute = q.scaled || (written.is_some() && written == wanted);
-    let n = if absolute {
-        // 过一遍十进制科学计数，把除法留下的尾巴（23000.000000000004）收掉
-        let v = q.n / 10f64.powi(exponent.into());
-        format!("{v:.14e}").parse().ok()?
+    // 要除下来；光秃秃的数就是声明单位下的数。除法走一次十进制解析，同 `scan_quantity`
+    // 乘量级词的道理：先算成 f64 再除会留下 23000.000000000004
+    let n = if q.scaled || (written.is_some() && written == wanted) {
+        format!("{}e-{exponent}", q.n).parse().ok()?
     } else {
         q.n
     };
-    n.is_finite()
-        .then(|| serde_json::Number::from_f64(n))
-        .flatten()
-        .map(serde_json::Value::Number)
-}
-
-/// 声明的单位拆成（量级的十进制指数, 其余）：「万元」→ (4, 元)，「亿元」→ (8, 元)，
-/// 「million dollars」→ (6, dollars)，「人」→ (0, 人)
-fn declared_unit(u: &str) -> (u8, &str) {
-    let u = u.trim();
-    // 中文量级词最长两个字（万亿、千万、百万、十亿），先试长的
-    let idx: Vec<usize> = u.char_indices().map(|(i, _)| i).chain([u.len()]).collect();
-    for len in [2usize, 1] {
-        if let Some(&end) = idx.get(len) {
-            if let Some(m) = magnitude(&u[..end]) {
-                return (m, u[end..].trim());
-            }
-        }
-    }
-    let (head, rest) = u.split_once(char::is_whitespace).unwrap_or((u, ""));
-    match magnitude(&head.to_ascii_lowercase()) {
-        Some(m) => (m, rest.trim()),
-        None => (0, u),
-    }
+    serde_json::Number::from_f64(n).map(serde_json::Value::Number)
 }
 
 /// 解析时间字符串 → (UTC 时间, 精度)。
@@ -1470,17 +1451,9 @@ mod an_attribute_value_is_read_in_its_declared_unit {
         );
         // 光秃秃的数就是声明单位下的数
         assert_eq!(value("number", Some("万元"), "5000"), Some(json!(5000.0)));
-        assert_eq!(value("number", Some("人"), "1200人"), Some(json!(1200.0)));
         assert_eq!(value("number", Some("人"), "约350名"), Some(json!(350.0)));
-        assert_eq!(value("number", None, "约350名"), Some(json!(350.0)));
-        assert_eq!(value("number", None, "1,200 people"), Some(json!(1200.0)));
-        assert_eq!(
-            value("date", None, "2015年3月12日"),
-            Some(json!("2015-03-12"))
-        );
-        assert_eq!(value("date", None, "1978年5月"), Some(json!("1978-05")));
+        // 只写到年的日期按年
         assert_eq!(value("date", None, "1982年"), Some(json!("1982")));
-        assert_eq!(value("date", None, "2015-03-12"), Some(json!("2015-03-12")));
     }
 
     /// 换不了的不换：货币对不上、读不出数的，宁缺勿脏

@@ -23,6 +23,7 @@ use utopia_core::AppResult;
 use uuid::Uuid;
 
 use crate::graph::{insert_fact_on, FactObject, Validity};
+use serde_json::Value;
 
 /// 陈述与绑定对得上的条件：短语归一后相等，两端的类相同（空也相同），宾语是不是字面值相同。
 /// `s` 是开放陈述（facts），`se`/`oe` 是它两端的实体，`b` 是 phrase_bindings
@@ -43,6 +44,10 @@ const MOMENT_UNREAD: &str =
        AND EXISTS (SELECT 1 FROM relation_types rt
                     WHERE rt.id = b.relation_type_id AND rt.temporal = 'state')
        AND b.marks IS DISTINCT FROM 'start' AND b.marks IS DISTINCT FROM 'end')";
+
+/// 属性的 datatype 与单位，值按它们读（[`attribute_value`]）；`rt` 是绑到或蕴含的那条属性，
+/// 是关系时 datatype 为 NULL，值原样写
+const SHAPE: &str = "CASE WHEN rt.kind = 'attribute' THEN rt.datatype END AS datatype, rt.unit";
 
 /// 一轮重算写了什么。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -81,7 +86,7 @@ struct Due {
     marks: Option<String>,
     /// 绑到的属性的时间语义
     temporal: Option<String>,
-    /// 绑到的是属性时它的 datatype 与单位（关系是 NULL）：值按它们读（[`typed_value`]）
+    /// 绑到的是属性时它的 datatype 与单位，值按它们读（[`attribute_value`]）
     datatype: Option<String>,
     unit: Option<String>,
 }
@@ -254,16 +259,12 @@ async fn materialize_in_tx(
                 s.valid_from, s.valid_from_precision, s.valid_from_grade,
                 s.valid_to, s.valid_to_precision,
                 s.attested_from, s.confidence, b.marks,
-                (SELECT rt.temporal FROM relation_types rt WHERE rt.id = b.relation_type_id)
-                    AS temporal,
-                (SELECT rt.datatype FROM relation_types rt
-                  WHERE rt.id = b.relation_type_id AND rt.kind = 'attribute') AS datatype,
-                (SELECT rt.unit FROM relation_types rt
-                  WHERE rt.id = b.relation_type_id AND rt.kind = 'attribute') AS unit
+                rt.temporal, {SHAPE}
            FROM facts s
            JOIN entities se ON se.id = s.subject_id
       LEFT JOIN entities oe ON oe.id = s.object_id
            JOIN phrase_bindings b ON {MATCH}
+           JOIN relation_types rt ON rt.id = b.relation_type_id
           WHERE s.kb_id = $1 AND s.layer = 'open' AND s.invalidated_at IS NULL
             AND b.status = 'bound'
             AND (b.direction = 'forward' OR s.object_id IS NOT NULL)
@@ -345,7 +346,8 @@ async fn materialize_in_tx(
                 .await?
             }
             (false, None, Some(value)) => {
-                let Some(value) = typed_value(value, d.datatype.as_deref(), d.unit.as_deref())
+                // 读不成属性的 datatype：陈述留在开放图谱里，这一对不写
+                let Some(value) = attribute_value(value, d.datatype.as_deref(), d.unit.as_deref())
                 else {
                     continue;
                 };
@@ -517,12 +519,6 @@ struct Implied {
     unit: Option<String>,
 }
 
-/// 结论属性的 datatype 与单位（结论是关系时 NULL），两条隐含查询共用
-const CONCLUDED_SHAPE: &str = "(SELECT rt.datatype FROM relation_types rt
-                  WHERE rt.id = r.conclude_property_id AND rt.kind = 'attribute') AS datatype,
-                (SELECT rt.unit FROM relation_types rt
-                  WHERE rt.id = r.conclude_property_id AND rt.kind = 'attribute') AS unit";
-
 async fn imply_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     kb_id: Uuid,
@@ -536,8 +532,9 @@ async fn imply_in_tx(
                 CASE WHEN r.reading IS NULL THEN s.object_id ELSE pr.entity_id END AS object_id,
                 CASE WHEN r.reading IS NULL THEN s.object_value ELSE pr.value END AS object_value,
                 s.valid_from, s.valid_from_precision, s.valid_from_grade, s.valid_to, s.valid_to_precision,
-                s.attested_from, s.confidence, {CONCLUDED_SHAPE}
+                s.attested_from, s.confidence, {SHAPE}
            FROM implication_rules r
+           JOIN relation_types rt ON rt.id = r.conclude_property_id
            JOIN facts s ON s.kb_id = r.kb_id AND s.layer = 'open' AND s.invalidated_at IS NULL
            JOIN entities se ON se.id = s.subject_id
       LEFT JOIN entities oe ON oe.id = s.object_id
@@ -550,8 +547,7 @@ async fn imply_in_tx(
             -- 规则没有 marks（#966）：一刻的陈述蕴含一条状态属性时，读法未知，不算隐含行。
             -- 用 IS NOT DISTINCT FROM：只有起点的陈述上 `=` 是 NULL，NOT 之后照样把它排掉
             AND NOT (s.valid_from IS NOT NULL AND s.valid_to IS NOT DISTINCT FROM s.valid_from
-                     AND EXISTS (SELECT 1 FROM relation_types rt
-                                  WHERE rt.id = r.conclude_property_id AND rt.temporal = 'state'))
+                     AND rt.temporal = 'state')
             AND NOT EXISTS (SELECT 1 FROM errata_actions ea
                              WHERE ea.statement_id = s.id AND ea.predicate_id = r.conclude_property_id
                                AND ea.status = 'applied' AND ea.action IN ('retract', 'revise'))
@@ -571,8 +567,9 @@ async fn imply_in_tx(
                 pr.entity_id AS object_id, pr.value AS object_value,
                 NULL::timestamptz AS valid_from, NULL::text AS valid_from_precision, NULL::text AS valid_from_grade,
                 NULL::timestamptz AS valid_to, NULL::text AS valid_to_precision,
-                NULL::timestamptz AS attested_from, 0.9::real AS confidence, {CONCLUDED_SHAPE}
+                NULL::timestamptz AS attested_from, 0.9::real AS confidence, {SHAPE}
            FROM implication_rules r
+           JOIN relation_types rt ON rt.id = r.conclude_property_id
            JOIN entities e ON e.kb_id = r.kb_id AND e.merged_into IS NULL AND {KIND} = r.phrase
            JOIN phrase_readings pr ON pr.kb_id = r.kb_id AND pr.reading = r.reading AND pr.phrase = r.phrase
           WHERE r.kb_id = $1 AND r.status = 'approved' AND r.trigger = 'kind_word' AND r.reading IS NOT NULL
@@ -596,15 +593,16 @@ async fn imply_in_tx(
             to_precision: d.valid_to_precision.as_deref(),
             attested_at: d.attested_from,
         };
-        let value = match &d.object_value {
-            Some(v) if d.object_id.is_none() => {
-                typed_value(v, d.datatype.as_deref(), d.unit.as_deref())
-            }
-            _ => None,
-        };
-        let object = match (d.object_id, &value) {
+        let value;
+        let object = match (d.object_id, &d.object_value) {
             (Some(o), _) => FactObject::Entity(o),
-            (None, Some(v)) => FactObject::Value(v),
+            (None, Some(v)) => {
+                let Some(v) = attribute_value(v, d.datatype.as_deref(), d.unit.as_deref()) else {
+                    continue;
+                };
+                value = v;
+                FactObject::Value(&value)
+            }
             _ => continue,
         };
         // 一个东西不蕴含自己：读数把「Virginia」读成「United States」是对的，把「France」
@@ -659,27 +657,23 @@ async fn imply_in_tx(
     Ok(implied)
 }
 
-/// 开放陈述的值（`{"value": "2.3亿元"}`）落到属性上时的样子：`value` 那一格按属性的
-/// datatype 与单位读成数、日期、真假（[`utopia_extract::attribute_value`]），其余键照抄。
-/// 绑到关系上的值（datatype 是 NULL）原样留着。
+/// 开放陈述的值（`{"value": "2.3亿元"}`）落到属性上的样子：`value` 那一格按 datatype 与单位读成
+/// 数、日期、真假（[`utopia_extract::attribute_value`]），其余键照抄；绑到关系上的值原样留着。
 ///
-/// **读不出来就不写**（None）。从前这里照抄原文的字：声明了 number、单位万元的「注册
-/// 资本」上躺着 `"2.3亿元"`，导出成 `"2.3亿元"^^xsd:decimal`，比较、对账、规则全都对不上。
-/// 读不出来的陈述还在开放图谱里，原文的字一个没丢
-fn typed_value(
-    raw: &serde_json::Value,
-    datatype: Option<&str>,
-    unit: Option<&str>,
-) -> Option<serde_json::Value> {
+/// **读不出来就不写**（None）。从前照抄原文的字：声明了 number、单位万元的「注册资本」上躺着
+/// `"2.3亿元"`，导出成 `"2.3亿元"^^xsd:decimal`，比较、对账、规则全都对不上。读不出来的陈述
+/// 还在开放图谱里，原文的字一个没丢。只在这里读、不在 `insert_fact_on` 的门上读：人和勘误
+/// 会在日期属性上写相对的日期（`relative`），那是另一种值
+fn attribute_value(raw: &Value, datatype: Option<&str>, unit: Option<&str>) -> Option<Value> {
     let Some(datatype) = datatype else {
         return Some(raw.clone());
     };
-    let Some(written) = raw.get("value") else {
-        return utopia_extract::attribute_value(datatype, unit, raw)
-            .map(|v| serde_json::json!({ "value": v }));
+    let read = utopia_extract::attribute_value(datatype, unit, raw.get("value").unwrap_or(raw))?;
+    let mut out = if raw.is_object() {
+        raw.clone()
+    } else {
+        serde_json::json!({})
     };
-    let read = utopia_extract::attribute_value(datatype, unit, written)?;
-    let mut out = raw.clone();
     out["value"] = read;
     Some(out)
 }

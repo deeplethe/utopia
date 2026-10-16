@@ -113,7 +113,7 @@ async fn call_and_parse_one_chunk(
         let cut_by_ceiling = reply.hit_token_ceiling();
         (reply.text, cut_by_ceiling)
     };
-    let extraction = match utopia_extract::open::parse_open_response(&reply_text) {
+    let mut extraction = match utopia_extract::open::parse_open_response(&reply_text) {
         Ok(x) => x,
         Err(e) => {
             tracing::warn!(%document_id, seq = chunk.seq, error = %e, hit_token_ceiling = cut_by_ceiling, "开放抽取回复解析失败，跳过该分块");
@@ -143,6 +143,20 @@ async fn call_and_parse_one_chunk(
             return Ok(None);
         }
     };
+    // 模型把值写成了宾语的，挪回值并各记一笔；推送来的是契约，不动（0054）
+    if !pushed {
+        for name in utopia_extract::open::values_are_not_things(&mut extraction) {
+            drop_signal(
+                state,
+                kb_id,
+                document_id,
+                reason::OBJECT_IS_VALUE,
+                "kept, with the object read as a value",
+                Some(&name),
+            )
+            .await;
+        }
+    }
     if extraction.truncated {
         drop_signal(
             state,
