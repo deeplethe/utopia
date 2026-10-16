@@ -282,7 +282,13 @@ pub async fn replace_content_and_enqueue_processing(
     .bind(sha256)
     .bind(doc_time)
     .execute(&mut *tx)
-    .await?;
+    .await
+    .map_err(|e| match &e {
+        sqlx::Error::Database(db) if db.is_unique_violation() => AppError::Conflict(format!(
+            "File already exists (identical content): {filename}"
+        )),
+        _ => AppError::Db(e),
+    })?;
     sqlx::query(
         "INSERT INTO document_versions (id, document_id, version, sha256, size_bytes, doc_time)
          VALUES ($1, $2,
@@ -731,6 +737,21 @@ pub async fn find_by_source_sha(
               WHERE source_id = $1 AND sha256 = $2 AND deleted_at IS NULL LIMIT 1",
     )
     .bind(source_id)
+    .bind(sha256)
+    .fetch_optional(pool)
+    .await?)
+}
+
+/// 库里占着这份内容的那篇文档（`documents_kb_sha_idx` 管的范围：未清除的，含回收站里的）。
+pub async fn find_by_kb_sha(
+    pool: &PgPool,
+    kb_id: Uuid,
+    sha256: &str,
+) -> AppResult<Option<Document>> {
+    Ok(sqlx::query_as(
+        "SELECT * FROM documents WHERE kb_id = $1 AND sha256 = $2 AND purged_at IS NULL",
+    )
+    .bind(kb_id)
     .bind(sha256)
     .fetch_optional(pool)
     .await?)

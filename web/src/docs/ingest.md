@@ -107,7 +107,7 @@ The response tells you what happened:
 { "action": "created" }
 ```
 
-`created` · `updated` · `moved` (same content, new name) · `unchanged` · `marked_missing`.
+`created` · `updated` · `moved` (same content, new name; only without `external_id`) · `unchanged` · `marked_missing` · `duplicate` (the base already holds this exact content as another document, named by `duplicate_of`; nothing was created or changed).
 
 Example with curl:
 
