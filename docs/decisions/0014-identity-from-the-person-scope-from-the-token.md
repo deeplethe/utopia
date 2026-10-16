@@ -77,8 +77,9 @@ push documents in.
    `alignment.kind_word_decided`, `ontology.imported`) carry the acting token's id as
    `detail.token_id`, so before revoking a leaked token an admin can see what it did (decision
    5). One extractor, `SessionOrToken`, takes either credential, and only these routes and
-   document content (0052) use it; `AuthUser` still reads every bearer as a JWT, so the routes
-   behind it stay session-only until someone has a reason to open one and says it here.
+   document content (0052, including the read by a pushed document's `external_id`) use it;
+   `AuthUser` still reads every bearer as a JWT, so the routes behind it stay session-only
+   until someone has a reason to open one and says it here.
 
    Not done: rotating or deleting a source, changing a base's settings or members, and every
    other write still take a session. A token does not create workspaces or tokens.
@@ -104,6 +105,8 @@ push documents in.
 - 2026-10-15: the status line still said `can_write` was hard-coded false. #318 had already
   computed it from the token's scope and the person's role, and `remember` has been reachable
   over MCP with a write token since then. The line now names what is open.
+- 2026-10-16: document content (0052) gained a read of a pushed document by its `external_id`
+  (#1276); it takes `SessionOrToken` like the other content reads, so decision 6 names it.
 
 ## Open questions
 

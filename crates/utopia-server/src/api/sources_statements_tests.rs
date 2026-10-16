@@ -97,6 +97,7 @@ struct Fixture {
     app: axum::Router,
     org: Uuid,
     kb: Uuid,
+    user: Uuid,
     source: Uuid,
     api_source: Uuid,
     token: String,
@@ -157,6 +158,7 @@ impl Fixture {
             app,
             org,
             kb,
+            user,
             source,
             api_source,
             token,
@@ -216,6 +218,32 @@ impl Fixture {
         let bytes = to_bytes(response.into_body(), 1 << 20).await?;
         let value: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
         Ok((status, value))
+    }
+
+    /// 以编辑者的读令牌按 external_id 读回 statements 来源的文档；`query` 原样拼进 URL
+    async fn read_back(
+        &self,
+        kb_ids: Option<&[Uuid]>,
+        query: &str,
+    ) -> anyhow::Result<(StatusCode, Value)> {
+        let (_, token) =
+            utopia_store::tokens::issue(&self.pool, self.user, "ci", "read", kb_ids, None).await?;
+        let path = format!("{}/documents/by-external-id?{query}", self.source);
+        let response = self
+            .app
+            .clone()
+            .oneshot(
+                Request::get(format!("/api/v1/kbs/{}/sources/{path}", self.kb))
+                    .header("Authorization", format!("Bearer {token}"))
+                    .body(Body::empty())?,
+            )
+            .await?;
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), 1 << 20).await?;
+        Ok((
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        ))
     }
 
     async fn cleanup(self) -> anyhow::Result<()> {
@@ -575,5 +603,63 @@ async fn the_same_payload_under_a_new_identity_is_a_second_observation() -> anyh
             "each observation keeps its own date"
         );
     }
+    f.cleanup().await
+}
+
+/// 推上去的身份按 external_id 读得回来（#1276）：读令牌拿到当前正文与两个版本；
+/// 限定到别的库的令牌和读不到的文档一样是 404
+#[tokio::test]
+async fn a_read_token_reads_an_updated_identity_back_and_one_for_another_base_gets_404(
+) -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    for place in ["kitchen table", "counter"] {
+        let (status, body) = f
+            .push(f.source, &f.token, &observation("08:14:03", place))
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+    let (status, body) = f.read_back(Some(&[f.kb]), "external_id=obs-000412").await?;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let content: Value = serde_json::from_str(body["content"].as_str().unwrap_or_default())?;
+    assert_eq!(content["e"][1][0], "counter", "the current content");
+    let versions: Vec<&Value> = body["versions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|v| &v["version"])
+        .collect();
+    assert_eq!(
+        (&body["external_id"], &body["version"], versions),
+        (&json!("obs-000412"), &json!(2), vec![&json!(1), &json!(2)])
+    );
+    let (status, body) = f
+        .read_back(Some(&[Uuid::now_v7()]), "external_id=obs-000412")
+        .await?;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    f.cleanup().await
+}
+
+/// 墓碑标记过的身份默认读不到（404），`include_missing=true` 才连标记一起读回
+#[tokio::test]
+async fn a_tombstoned_identity_reads_back_only_with_include_missing() -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    for body in [
+        observation("08:14:03", "kitchen table"),
+        json!({ "external_id": "obs-000412", "deleted": true }),
+    ] {
+        let (status, body) = f.push(f.source, &f.token, &body).await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+    let (status, body) = f.read_back(None, "external_id=obs-000412").await?;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    let (status, body) = f
+        .read_back(None, "external_id=obs-000412&include_missing=true")
+        .await?;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body["missing_since"].is_string(), "{body}");
     f.cleanup().await
 }
