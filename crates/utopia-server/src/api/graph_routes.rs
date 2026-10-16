@@ -6,7 +6,8 @@ use utopia_core::models::Role;
 use utopia_core::AppError;
 use uuid::Uuid;
 
-use crate::auth::AuthUser;
+use super::documents_routes::require_reader_kb;
+use crate::auth::{AuthUser, SessionOrToken};
 use crate::error::ApiResult;
 use crate::state::AppState;
 
@@ -134,11 +135,11 @@ pub struct EntitySearchQuery {
 
 pub async fn search_entities(
     State(state): State<AppState>,
-    AuthUser(user): AuthUser,
+    reader: SessionOrToken,
     Path(kb_id): Path<Uuid>,
     Query(query): Query<EntitySearchQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    require_kb(&state, &user, kb_id, Role::Viewer).await?;
+    require_reader_kb(&state, &reader, kb_id).await?;
     // 先校验时刻：一个写错的 `as_of` 配空查询也该回 400，而不是看起来成功
     let as_of = parse_instant("as_of", query.as_of.as_deref())?;
     if query.q.trim().is_empty() {
@@ -167,11 +168,11 @@ pub struct EntityDetailQuery {
 
 pub async fn entity_detail(
     State(state): State<AppState>,
-    AuthUser(user): AuthUser,
+    reader: SessionOrToken,
     Path((kb_id, entity_id)): Path<(Uuid, Uuid)>,
     Query(q): Query<EntityDetailQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    require_kb(&state, &user, kb_id, Role::Viewer).await?;
+    require_reader_kb(&state, &reader, kb_id).await?;
     let as_of = parse_instant("as_of", q.as_of.as_deref())?;
     // 世界轴不过滤（at = None）：面板要的是整条时间线，「此刻成立」那一档由前端
     // 按 holds_from / holds_to 分出来（0022）
@@ -450,10 +451,10 @@ pub async fn update_fact_time(
 
 pub async fn fact_evidence(
     State(state): State<AppState>,
-    AuthUser(user): AuthUser,
+    reader: SessionOrToken,
     Path((kb_id, fact_id)): Path<(Uuid, Uuid)>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    require_kb(&state, &user, kb_id, Role::Viewer).await?;
+    require_reader_kb(&state, &reader, kb_id).await?;
     let evidence = utopia_store::graph::fact_evidence(&state.pool, kb_id, fact_id).await?;
     Ok(Json(json!({ "evidence": evidence })))
 }
@@ -558,11 +559,11 @@ fn default_history_per() -> i64 {
 /// 与 entity_detail（有效时间轴，只看现行）互补。
 pub async fn entity_history(
     State(state): State<AppState>,
-    AuthUser(user): AuthUser,
+    reader: SessionOrToken,
     Path((kb_id, entity_id)): Path<(Uuid, Uuid)>,
     Query(q): Query<HistoryQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    require_kb(&state, &user, kb_id, Role::Viewer).await?;
+    require_reader_kb(&state, &reader, kb_id).await?;
     let per = q.per.clamp(1, 200);
     let page = q.page.max(0);
     let (events, total) =
