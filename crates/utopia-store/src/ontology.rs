@@ -273,6 +273,16 @@ pub fn lower_camel(label: &str) -> String {
     out
 }
 
+/// `temporal` 只有三个值（0031）：单条建、单条改、批量建、重导入更新都走这一句
+fn validate_temporal(temporal: &str) -> AppResult<()> {
+    if !matches!(temporal, "state" | "event" | "eternal") {
+        return Err(AppError::Validation(
+            "temporal must be state / event / eternal".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_key(key: &str) -> AppResult<()> {
     let ok = !key.is_empty()
         && key.len() <= 40
@@ -608,11 +618,7 @@ pub async fn create_relation_type<'a>(
     unit: Option<&str>,
 ) -> AppResult<Uuid> {
     validate_key(key)?;
-    if !matches!(temporal, "state" | "event" | "eternal") {
-        return Err(AppError::Validation(
-            "temporal must be state / event / eternal".into(),
-        ));
-    }
+    validate_temporal(temporal)?;
     validate_attribute_fields(kind, domains, datatype)?;
     let mut tx = pool.begin().await?;
     let label = &lower_camel(label);
@@ -826,11 +832,7 @@ pub async fn update_relation_type(
     }
     // 改名也归一：不然界面上改一次就能把小驼峰改回 "access to"
     let label = &lower_camel(label);
-    if !matches!(temporal, "state" | "event" | "eternal") {
-        return Err(AppError::Validation(
-            "temporal must be state / event / eternal".into(),
-        ));
-    }
+    validate_temporal(temporal)?;
     if datatype.is_some() && !matches!(datatype, Some("text" | "number" | "date" | "bool")) {
         return Err(AppError::Validation(
             "datatype must be text / number / date / bool".into(),
@@ -1133,6 +1135,9 @@ pub async fn create_relation_with_iri(
 ///
 /// **key 不动**（它可能已被事实引用），**空描述不覆盖**（人写过的比上游的准），
 /// **domain/range 整体重写**——它们是上游声明的结构，不是人调过的措辞。
+/// **`temporal` 只在本体说了才写**（`Some`）：没写 `utopia:temporal` 的本体不动它，
+/// 人在页面上改过的就留着；写了的照本体，与 domain/range 同一个道理。
+#[allow(clippy::too_many_arguments)]
 pub async fn update_relation_from_import(
     pool: &PgPool,
     kb_id: Uuid,
@@ -1141,11 +1146,16 @@ pub async fn update_relation_from_import(
     description: &str,
     domains: &[Uuid],
     ranges: &[Uuid],
+    temporal: Option<&str>,
 ) -> AppResult<bool> {
+    if let Some(t) = temporal {
+        validate_temporal(t)?;
+    }
     let row: Option<(Uuid,)> = sqlx::query_as(
         "UPDATE relation_types
             SET label = $3,
-                description = CASE WHEN $4 = '' THEN description ELSE $4 END
+                description = CASE WHEN $4 = '' THEN description ELSE $4 END,
+                temporal = COALESCE($5::text, temporal)
           WHERE kb_id = $1 AND iri = $2
           RETURNING id",
     )
@@ -1153,6 +1163,7 @@ pub async fn update_relation_from_import(
     .bind(iri)
     .bind(label)
     .bind(description)
+    .bind(temporal)
     .fetch_optional(pool)
     .await?;
     let Some((id,)) = row else {
@@ -1683,13 +1694,16 @@ pub struct BulkRelation {
     pub symmetric: bool,
     pub asymmetric: bool,
     pub irreflexive: bool,
+    /// `state` / `event` / `eternal`（0031）。OWL 自己没有这个概念，标准词表里的对象
+    /// 属性全是 `state`；只有本体用 `utopia:temporal` 说了的才不是——导出端写的那一条
+    pub temporal: String,
 }
 
 /// 一次插完一批关系或属性，返回 key → id。语义同 [`create_entity_types_bulk`]。
 ///
 /// `kind` 决定走关系通道还是属性通道；`datatype` 只对属性有意义，关系传 `None`。
-/// `temporal` 固定 `state`——OWL 里没有对应概念，猜 event 或 eternal 都更差
-/// （与单条版的判断一致）。
+/// `temporal` 照每一行写：没有 `utopia:temporal` 注解的本体一律 `state`
+///（与单条版的默认一致），写了的按它说的。
 pub async fn create_relation_types_bulk(
     pool: &PgPool,
     kb_id: Uuid,
@@ -1700,6 +1714,7 @@ pub async fn create_relation_types_bulk(
     }
     for r in rows {
         validate_key(&r.key)?;
+        validate_temporal(&r.temporal)?;
     }
     let keys: Vec<&str> = rows.iter().map(|r| r.key.as_str()).collect();
     // 导入来的词表自己就可能不一致（unece.org 里 `brandName` 与
@@ -1716,16 +1731,18 @@ pub async fn create_relation_types_bulk(
     let syms: Vec<bool> = rows.iter().map(|r| r.symmetric).collect();
     let asyms: Vec<bool> = rows.iter().map(|r| r.asymmetric).collect();
     let irrefs: Vec<bool> = rows.iter().map(|r| r.irreflexive).collect();
+    let temporals: Vec<&str> = rows.iter().map(|r| r.temporal.as_str()).collect();
     let out: Vec<(Uuid, String)> = sqlx::query_as(
         "INSERT INTO relation_types
              (id, kb_id, key, label, temporal, functional, inverse_functional,
               description, kind, datatype, iri,
               is_transitive, is_symmetric, is_asymmetric, is_irreflexive)
-         SELECT gen_random_uuid(), $1, k, l, 'state', fu, iv, d, kind, dt, i,
+         SELECT gen_random_uuid(), $1, k, l, tm, fu, iv, d, kind, dt, i,
                 tr, sy, asym, irr
          FROM UNNEST($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[],
-                     $8::bool[], $9::bool[], $10::bool[], $11::bool[], $12::bool[], $13::bool[])
-              AS t(k, l, d, i, kind, dt, fu, iv, tr, sy, asym, irr)
+                     $8::bool[], $9::bool[], $10::bool[], $11::bool[], $12::bool[], $13::bool[],
+                     $14::text[])
+              AS t(k, l, d, i, kind, dt, fu, iv, tr, sy, asym, irr, tm)
          ON CONFLICT (kb_id, key) DO NOTHING
          RETURNING id, key",
     )
@@ -1742,6 +1759,7 @@ pub async fn create_relation_types_bulk(
     .bind(&syms)
     .bind(&asyms)
     .bind(&irrefs)
+    .bind(&temporals)
     .fetch_all(pool)
     .await?;
     Ok(out.into_iter().map(|(id, k)| (k, id)).collect())

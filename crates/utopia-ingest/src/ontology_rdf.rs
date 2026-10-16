@@ -62,6 +62,10 @@ pub struct OwlProperty {
     /// `author rangeIncludes Organization, Person` 就会被读成
     /// "必须既是组织又是人"，然后降级成 text——一条边就这么没了
     pub ranges_union: bool,
+    /// `utopia:temporal` 的值：`state` / `event` / `eternal`（0031）。导出端早就写这一条，
+    /// 导入端从前不读——一份本体自己说「这条关系是一个时刻」，导进来还是 `state`。
+    /// 没写或写了别的值都是 `None`，落库时按 `state`；数据属性读了也不用
+    pub temporal: Option<String>,
 }
 
 /// 一次解析的结果。`unprojected` 是**报告**不是错误——见模块文档。
@@ -85,6 +89,11 @@ pub type VocabDatatypes = BTreeMap<String, &'static str>;
 const RDF_TYPE: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type";
 const RDFS: &str = "http://www.w3.org/2000/01/rdf-schema#";
 const OWL: &str = "http://www.w3.org/2002/07/owl#";
+/// 我们自己的注解命名空间，与导出端（`utopia-server::rdf`）同一个
+const UTOPIA_NS: &str = "urn:utopia:ns:";
+/// `utopia:temporal` 写了 `state`/`event`/`eternal` 以外的值时记在 `unprojected` 下的键
+pub const UNPROJECTED_TEMPORAL: &str =
+    "utopia:temporal with a value other than state/event/eternal";
 
 /// schema.org 自己那套 domain/range。**不是标准词汇**，所以写死在这里，
 /// 但值得认：schema.org 及派生词汇表一个 `rdfs:domain` 都没有，
@@ -342,8 +351,12 @@ pub fn project(bytes: &[u8], format: RdfFormat) -> anyhow::Result<OwlProjection>
     let mut ranges: BTreeMap<String, Vec<String>> = BTreeMap::new();
     // rangeIncludes 用过的属性，它的 range 按并集读
     let mut union_ranged: BTreeSet<String> = BTreeSet::new();
+    // `utopia:temporal` 说的时间语义；只认三个值
+    let mut temporal: BTreeMap<String, String> = BTreeMap::new();
+    let utopia_temporal = format!("{UTOPIA_NS}temporal");
     let known = |p: &str| {
         p == RDF_TYPE
+            || p == utopia_temporal
             || p == format!("{RDFS}label")
             || p == format!("{RDFS}comment")
             || p == format!("{RDFS}subClassOf")
@@ -443,6 +456,19 @@ pub fn project(bytes: &[u8], format: RdfFormat) -> anyhow::Result<OwlProjection>
             if let Some(o) = &t.object_iri {
                 ranges.entry(t.subject.clone()).or_default().push(o.clone());
                 union_ranged.insert(t.subject.clone());
+            }
+        } else if p == utopia_temporal {
+            // 导出端写的就是这三个字面值（0031）。别的值不猜：报告出来，落库按 `state`
+            match t.object_lit.as_ref().map(|(v, _)| v.as_str()) {
+                Some(v @ ("state" | "event" | "eternal")) => {
+                    temporal.entry(t.subject.clone()).or_insert(v.to_string());
+                }
+                _ => {
+                    *proj
+                        .unprojected
+                        .entry(UNPROJECTED_TEMPORAL.to_string())
+                        .or_insert(0) += 1;
+                }
             }
         } else if !known(p) {
             // 报告而不是丢弃：预览页要能说清"这个文件里还有什么我们没消费"
@@ -582,6 +608,7 @@ pub fn project(bytes: &[u8], format: RdfFormat) -> anyhow::Result<OwlProjection>
             domains: domains.get(iri).cloned().unwrap_or_default(),
             ranges: rs,
             ranges_union: union_ranged.contains(iri),
+            temporal: temporal.get(iri).cloned(),
             iri: iri.clone(),
         });
     }
@@ -1714,6 +1741,48 @@ schema:employees a rdf:Property ; rdfs:label "employees" ;
         assert!(
             !p.unprojected.keys().any(|k| k.contains("inverseOf")),
             "**认了就不该再算进「暂未投影」**"
+        );
+    }
+
+    /// `utopia:temporal` 要被读出来（0031）。导出端一直写它，导入端从前不读：
+    /// 一份本体自己说「这条关系是一个时刻」，导进来还是 `state`，#1242 的那条
+    /// 「非 state 的关系不经模型就能绑」对它永远不成立。
+    #[test]
+    fn a_property_annotated_with_utopia_temporal_keeps_the_value_it_declared() {
+        let ttl = r#"
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix utopia: <urn:utopia:ns:> .
+@prefix ex: <http://example.org/> .
+
+ex:Person a owl:Class .
+ex:attended a owl:ObjectProperty ; rdfs:label "attended" ; utopia:temporal "event" .
+ex:born_of a owl:ObjectProperty ; rdfs:label "born of" ; utopia:temporal "eternal" .
+ex:works_at a owl:ObjectProperty ; rdfs:label "works at" .
+ex:met a owl:ObjectProperty ; rdfs:label "met" ; utopia:temporal "sometimes" .
+"#;
+        let p = project(ttl.as_bytes(), RdfFormat::Turtle).expect("解析");
+        let by = |k: &str| {
+            p.properties
+                .iter()
+                .find(|x| x.key == k)
+                .unwrap_or_else(|| panic!("没有 {k}"))
+        };
+        assert_eq!(by("attended").temporal.as_deref(), Some("event"));
+        assert_eq!(by("born_of").temporal.as_deref(), Some("eternal"));
+        assert_eq!(
+            by("works_at").temporal,
+            None,
+            "没写就是没写，落库再按 state"
+        );
+        // 三个值以外的不猜：留空并报告出来，预览页能说清这一条没进来
+        assert_eq!(by("met").temporal, None);
+        assert_eq!(p.unprojected.get(UNPROJECTED_TEMPORAL), Some(&1));
+        assert!(
+            !p.unprojected
+                .keys()
+                .any(|k| k.contains("urn:utopia:ns:temporal")),
+            "认了就不该再按谓词算进「暂未投影」"
         );
     }
 }
