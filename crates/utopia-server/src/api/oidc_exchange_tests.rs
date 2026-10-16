@@ -211,6 +211,24 @@ async fn exchange_maps_only_linked_active_people_and_spends_each_token_once() ->
         let (status, body) = exchange(sign_email(&format!("sub-{ann}"), &format!("{ann}@EXAMPLE.test"), true)?).await?;
         anyhow::ensure!(status == StatusCode::OK && user_of(&body)? == ann, "existing by email: {status} {body}");
 
+        let duplicate = Uuid::now_v7();
+        sqlx::query("INSERT INTO users(id,org_id,email,password_hash,display_name) VALUES($1,$2,$3,'unused','Duplicate Ann')")
+            .bind(duplicate)
+            .bind(org)
+            .bind(format!("{ann}@EXAMPLE.TEST"))
+            .execute(&pool)
+            .await?;
+        let (status, body) = exchange(sign_email("ambiguous-ann", &format!("{ann}@example.test"), true)?).await?;
+        anyhow::ensure!(
+            status == StatusCode::UNPROCESSABLE_ENTITY
+                && body["code"] == "oidc_unavailable"
+                && body["error"] == "The identity could not be mapped to an account",
+            "ambiguous email: {status} {body}"
+        );
+        let linked: i64 = sqlx::query_scalar("SELECT count(*) FROM oidc_identities WHERE issuer = $1 AND (subject = 'ambiguous-ann' OR user_id = $2)")
+            .bind(&issuer).bind(duplicate).fetch_one(&pool).await?;
+        anyhow::ensure!(linked == 0);
+
         let bea_sub = format!("sub-{}", Uuid::now_v7());
         let (status, body) = exchange(sign_email(&bea_sub, &bea_email, true)?).await?;
         anyhow::ensure!(status == StatusCode::OK, "opened: {status} {body}");

@@ -377,6 +377,8 @@ pub async fn set_system_admin(
 /// subject 绑上。开户与绑定同一个事务：绑定撞车（`taken` / `already_linked`）时
 /// 不留下一个没人能登进去的账号。
 ///
+/// 大小写不敏感的邮箱匹配必须只有一个活动账号；多个匹配返回冲突，不开户也不绑定。
+///
 /// 这个 email 只剩一个停用的账号时返回 `None`：停用的人不能换个新号回来——
 /// email 的唯一索引只管启用中的账号，挡不住这一步，得在这里查。
 ///
@@ -389,13 +391,20 @@ pub async fn account_for_sso(
     display_name: &str,
 ) -> AppResult<Option<User>> {
     let mut tx = pool.begin().await?;
-    let active: Option<User> = sqlx::query_as(
-        "SELECT * FROM users WHERE lower(email) = lower($1) AND deactivated_at IS NULL",
+    // 本次只拒绝快照中已有的歧义；阻止并发开户产生重复邮箱需要另行迁移并处理存量重复。
+    let mut active: Vec<User> = sqlx::query_as(
+        "SELECT * FROM users WHERE lower(email) = lower($1) AND deactivated_at IS NULL LIMIT 2",
     )
     .bind(email)
-    .fetch_optional(&mut *tx)
+    .fetch_all(&mut *tx)
     .await?;
-    let user = match active {
+    if active.len() > 1 {
+        return Err(AppError::CodedConflict {
+            code: "unlinked",
+            message: "Multiple active accounts match the SSO email".into(),
+        });
+    }
+    let user = match active.pop() {
         Some(u) => u,
         None => {
             let deactivated: bool = sqlx::query_scalar(
