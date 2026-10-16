@@ -292,6 +292,7 @@ pub async fn deactivate_user(pool: &PgPool, target: Uuid, actor: Uuid) -> AppRes
         return Err(AppError::Validation("不能停用自己的账号".into()));
     }
     let mut tx = pool.begin().await?;
+    lock_account_organization(&mut tx, target).await?;
     let victim: Option<(bool, Uuid, Option<chrono::DateTime<chrono::Utc>>)> =
         sqlx::query_as("SELECT is_admin, org_id, deactivated_at FROM users WHERE id = $1")
             .bind(target)
@@ -360,16 +361,55 @@ pub async fn set_system_admin(
     if target == actor && !value {
         return Err(AppError::Validation("不能收回自己的系统管理员".into()));
     }
+    let mut tx = pool.begin().await?;
+    let org_id = lock_account_organization(&mut tx, target).await?;
+    let is_admin: bool =
+        sqlx::query_scalar("SELECT is_admin FROM users WHERE id = $1 AND deactivated_at IS NULL")
+            .bind(target)
+            .fetch_optional(&mut *tx)
+            .await?
+            .ok_or(AppError::NotFound)?;
+    if is_admin && !value {
+        let others: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM users
+             WHERE org_id = $1 AND is_admin AND deactivated_at IS NULL AND id <> $2",
+        )
+        .bind(org_id)
+        .bind(target)
+        .fetch_one(&mut *tx)
+        .await?;
+        if others == 0 {
+            return Err(AppError::Validation(
+                "这是组织里最后一个管理员，收回权限之后没人能管成员".into(),
+            ));
+        }
+    }
     let res =
         sqlx::query("UPDATE users SET is_admin = $2 WHERE id = $1 AND deactivated_at IS NULL")
             .bind(target)
             .bind(value)
-            .execute(pool)
+            .execute(&mut *tx)
             .await?;
     if res.rows_affected() == 0 {
         return Err(AppError::NotFound);
     }
+    tx.commit().await?;
     Ok(())
+}
+
+async fn lock_account_organization(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    target: Uuid,
+) -> AppResult<Uuid> {
+    // 撤权与停用共用组织锁；拿锁后再读账号、数管理员，不能信任请求鉴权时的快照。
+    sqlx::query_scalar(
+        "SELECT id FROM organizations
+         WHERE id = (SELECT org_id FROM users WHERE id = $1) FOR NO KEY UPDATE",
+    )
+    .bind(target)
+    .fetch_optional(&mut **tx)
+    .await?
+    .ok_or(AppError::NotFound)
 }
 
 /// 单点登录允许自动开户时，用身份提供方核实过的 email 找账号；找不到就按注册的
