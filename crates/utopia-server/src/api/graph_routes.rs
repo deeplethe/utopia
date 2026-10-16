@@ -6,7 +6,8 @@ use utopia_core::models::Role;
 use utopia_core::AppError;
 use uuid::Uuid;
 
-use crate::auth::AuthUser;
+use super::documents_routes::require_reader_kb;
+use crate::auth::{AuthUser, SessionOrToken};
 use crate::error::ApiResult;
 use crate::state::AppState;
 
@@ -66,11 +67,11 @@ pub struct OverviewQuery {
 
 pub async fn overview(
     State(state): State<AppState>,
-    AuthUser(user): AuthUser,
+    reader: SessionOrToken,
     Path(kb_id): Path<Uuid>,
     Query(q): Query<OverviewQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    require_kb(&state, &user, kb_id, Role::Viewer).await?;
+    require_reader_kb(&state, &reader, kb_id).await?;
     let at = parse_instant("at", q.at.as_deref())?;
     let as_of = parse_instant("as_of", q.as_of.as_deref())?;
     // 画多少个是渲染的事，库里有多少是知识库的事——两个数都回，界面才说得出
@@ -100,11 +101,11 @@ pub struct NeighborhoodQuery {
 
 pub async fn neighborhood(
     State(state): State<AppState>,
-    AuthUser(user): AuthUser,
+    reader: SessionOrToken,
     Path(kb_id): Path<Uuid>,
     Query(q): Query<NeighborhoodQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    require_kb(&state, &user, kb_id, Role::Viewer).await?;
+    require_reader_kb(&state, &reader, kb_id).await?;
     let at = parse_instant("at", q.at.as_deref())?;
     let as_of = parse_instant("as_of", q.as_of.as_deref())?;
     let (nodes, edges) = utopia_store::graph::neighborhood(

@@ -1,6 +1,6 @@
 # 0014 · Identity from the person, scope from the token
 
-- **Status**: Implemented · 2026-10-15 · #180, #318, #1243 · open: tokens across workspaces
+- **Status**: Implemented · 2026-10-15 · #180, #318, #1243, #1262 · open: tokens across workspaces
 - **Written**: 2026-09-01 · condensed into English 2026-09-03
 - **Related**: migration `0014_data_source_grants` gave data sources a grant layer; this is the same question where a machine knocks. [0004](0004-language-and-localization.md) has the server speak English only, MCP error codes included. [0015](0015-recording-a-sentence-is-not-asserting-a-fact.md) removes the main objection to opening `remember` over MCP.
 
@@ -83,6 +83,15 @@ push documents in.
    Not done: rotating or deleting a source, changing a base's settings or members, and every
    other write still take a session. A token does not create workspaces or tokens.
 
+7. **A token reads the graph view** (added 2026-10-16, #1262). A service that mirrors into a base reads
+   it back, and a session JWT is the wrong credential for a backend (decision 6). Two reads now
+   also take a personal token, acting as its owner: `GET /kbs/{id}/graph/overview`, the most
+   connected entities with the base's totals, so a client sees the shape of what it pushed; and
+   `GET /kbs/{id}/graph/neighborhood`, the entities around one entity, so it can follow what a
+   statement touches. Any token qualifies, since reading is the lowest scope. The owner's role is
+   still the ceiling, and Viewer suffices; a base outside the token's `kb_ids` is a 404, as for
+   document content (0052).
+
 ## Dead ends
 
 - **Base-level machine tokens**, one per base and unrelated to a person. It would be a third
@@ -104,6 +113,8 @@ push documents in.
 - 2026-10-15: the status line still said `can_write` was hard-coded false. #318 had already
   computed it from the token's scope and the person's role, and `remember` has been reachable
   over MCP with a write token since then. The line now names what is open.
+- 2026-10-16: decision 7 opens the graph overview and neighbourhood reads to a token; the routes
+  behind `AuthUser` stay session-only.
 
 ## Open questions
 
