@@ -2761,7 +2761,8 @@ export const api = {
 
   /** 是否配置了单点登录（0056）。四项环境变量缺一个都是 false——
    *  登录页据此决定要不要露出那个按钮 */
-  oidcStatus: () => request<{ enabled: boolean }>("/api/v1/auth/oidc/status"),
+  oidcStatus: () =>
+    request<{ enabled: boolean; password_login: boolean }>("/api/v1/auth/oidc/status"),
   /** 谁的哪个身份提供方 subject 绑定到了这个部署的哪个账号（只读 + 解绑） */
   oidcIdentities: () =>
     request<{

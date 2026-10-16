@@ -6,7 +6,7 @@ use utopia_core::models::{KnowledgeBase, Role, User};
 use utopia_core::AppError;
 use uuid::Uuid;
 
-use crate::auth::AuthUser;
+use crate::auth::{AuthUser, SessionOrToken};
 use crate::error::ApiResult;
 use crate::state::AppState;
 
@@ -58,25 +58,35 @@ pub struct UpdateKbReq {
 }
 
 /// 用户可见的 KB 列表（restricted 库仅矩阵成员与系统管理员可见）。
+///
+/// 读令牌也能列（#1243）：客户端建库之前先按名字找，免得每跑一次建一个同名库。
+/// 限定过 `kb_ids` 的令牌只看得见它列着的那几个
 pub async fn list(
     State(state): State<AppState>,
-    AuthUser(user): AuthUser,
+    caller: SessionOrToken,
     Path(workspace_id): Path<Uuid>,
 ) -> ApiResult<Json<Vec<KnowledgeBase>>> {
+    let user = &caller.user;
     utopia_store::workspaces::require_role(&state.pool, user.id, workspace_id, Role::Viewer)
         .await?;
-    let list =
+    let mut list =
         utopia_store::kbs::list_visible(&state.pool, workspace_id, user.id, user.is_admin).await?;
+    list.retain(|kb| caller.reaches(kb.id));
     Ok(Json(list))
 }
 
 /// 建库：部署管理员（工作区 Admin+ 或系统管理员）。创建者自动进入矩阵为 admin。
+///
+/// 写令牌也能建（0014 决定 6）：以发令牌的人的身份，角色要求一点没松
 pub async fn create(
     State(state): State<AppState>,
-    AuthUser(user): AuthUser,
+    caller: SessionOrToken,
     Path(workspace_id): Path<Uuid>,
     Json(req): Json<CreateKbReq>,
 ) -> ApiResult<Json<KnowledgeBase>> {
+    caller.require_write(None)?;
+    let token_id = caller.token_id();
+    let user = caller.user;
     let name = req.name.trim();
     if name.is_empty() || name.chars().count() > 64 {
         return Err(AppError::invalid("bad_name", "Name must be 1-64 characters").into());
@@ -120,7 +130,7 @@ pub async fn create(
     }
     utopia_store::access::set_kb_member(&state.pool, kb.id, user.id, "admin", Some(user.id))
         .await?;
-    install_packs(&state, kb.id, user.id, &req.ontology_packs).await?;
+    install_packs(&state, kb.id, user.id, token_id, &req.ontology_packs).await?;
     let kb = utopia_store::kbs::get(&state.pool, kb.id).await?;
     Ok(Json(kb))
 }
@@ -401,6 +411,7 @@ pub(super) async fn install_packs(
     state: &AppState,
     kb_id: Uuid,
     actor: Uuid,
+    via_token: Option<Uuid>,
     pack_ids: &[String],
 ) -> ApiResult<()> {
     if pack_ids.is_empty() {
@@ -413,7 +424,7 @@ pub(super) async fn install_packs(
         packs.push((pack, crate::ontology_packs::bytes(pack)?));
     }
     for (pack, bytes) in &packs {
-        crate::owl_import::apply(state, kb_id, actor, pack.filename, bytes)
+        crate::owl_import::apply(state, kb_id, actor, via_token, pack.filename, bytes)
             .await
             .map_err(|e| AppError::Other(anyhow::anyhow!("装本体包 {} 失败：{e}", pack.id)))?;
     }

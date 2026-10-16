@@ -17,9 +17,7 @@ use crate::state::AppState;
 
 const SEARCH_TOP_K: usize = 6;
 const TOOL_CHUNK_CHARS: usize = 800;
-/// `get_document` 一次最多回多少字。检索那边的 800 字是为了让六条命中都装得下，
-/// 这边只有一篇文档，而问的人已经知道要读哪一篇——截在答案前面才是这个工具
-/// 要消灭的毛病
+/// `get_document` 每页的正文预算；超出的部分用字符 offset 续读，不把上下文塞满。
 const DOCUMENT_CHARS: usize = 24_000;
 /// 一次 changes 最多回多少条。刚灌完的库里 asserted 是成百上千条，全发出去
 /// 只会把上下文填满而不增加信息——有信息量的是 corrected/rejected，那类事件
@@ -391,6 +389,22 @@ pub async fn get_document(
     else {
         return refuse(Step::new("document", "?", "invalid id").invalid("document_id"));
     };
+    let offset = match args.get("offset") {
+        None => 0,
+        Some(value) => {
+            let Some(offset) = value.as_u64().and_then(|n| usize::try_from(n).ok()) else {
+                return ToolResult::new(
+                    "get_document needs `offset` to be a non-negative integer character position."
+                        .into(),
+                    Step::new("document", "?", "invalid offset")
+                        .invalid("offset")
+                        .json(),
+                )
+                .error();
+            };
+            offset
+        }
+    };
     // 本库之外的 id 一律当作不存在——分不出「没有」和「不给你看」才是对的
     let doc = match utopia_store::documents::find_in_kb(&ctx.state.pool, ctx.kb_id, id).await {
         Ok(Some(doc)) => doc,
@@ -420,25 +434,34 @@ pub async fn get_document(
         };
 
     let mut lines = Vec::new();
+    let mut skip = offset;
     let mut used = 0usize;
     let mut omitted = 0usize;
     for c in &chunks {
         let body = c.text.trim();
         let len = body.chars().count();
+        // offset 只数按顺序拼接的正文，不数标题、引证和分块之间的排版。
+        if offset > 0 && skip >= len {
+            skip -= len;
+            continue;
+        }
+        let remaining = len - skip;
         let room = DOCUMENT_CHARS.saturating_sub(used);
         // 装不下的分块整块不发，也不引——发一个引证编号出去而正文不在，
         // 界面上落成一条指不到东西的引证
         if room == 0 {
-            omitted += len;
+            omitted += remaining;
             continue;
         }
-        let body: String = if len > room {
-            omitted += len - room;
-            body.chars().take(room).collect()
+        let read = remaining.min(room);
+        let body: String = if skip > 0 || remaining > room {
+            body.chars().skip(skip).take(read).collect()
         } else {
             body.to_string()
         };
-        used += body.chars().count();
+        skip = 0;
+        omitted += remaining - read;
+        used += read;
         let n = cite(sink, c.id.to_string(), |n| source_json(n, c));
         lines.push(format!(
             "[{n}] \"{}\" section {}:\n{body}",
@@ -447,7 +470,10 @@ pub async fn get_document(
         ));
     }
     if omitted > 0 {
-        lines.push(format!("… truncated, {omitted} chars omitted"));
+        lines.push(format!(
+            "… truncated, {omitted} chars omitted; call get_document with document_id: {id}, offset: {} to continue",
+            offset + used
+        ));
     }
 
     let when = doc
@@ -459,7 +485,9 @@ pub async fn get_document(
         doc.filename,
         chunks.len()
     );
-    let text = if lines.is_empty() {
+    let text = if lines.is_empty() && offset > 0 {
+        format!("{header}\n(no text remaining at offset {offset})")
+    } else if lines.is_empty() {
         format!("{header}\n(no text)")
     } else {
         format!("{header}\n\n{}", lines.join("\n\n"))

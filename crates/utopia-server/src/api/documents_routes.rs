@@ -1,21 +1,16 @@
-use axum::extract::FromRequestParts;
 use axum::extract::{Multipart, Path, Query, State};
-use axum::http::request::Parts;
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use axum_extra::extract::cookie::CookieJar;
 use percent_encoding::{percent_encode, AsciiSet, NON_ALPHANUMERIC};
 use serde::Deserialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use utopia_core::models::{Document, Role};
 use utopia_core::AppError;
-use utopia_store::tokens::Authenticated;
 use uuid::Uuid;
 
-use crate::auth::AuthUser;
-use crate::error::ApiErr;
+use crate::auth::{AuthUser, SessionOrToken};
 use crate::error::ApiResult;
 use crate::state::AppState;
 
@@ -24,58 +19,6 @@ pub struct UploadQuery {
     /// 目标 folder 来源：上传直接归入该文件夹（仅 kind=folder 接受上传）
     #[serde(default)]
     pub source: Option<Uuid>,
-}
-
-const PAT_PREFIX: &str = utopia_store::tokens::PREFIX;
-
-/// Web session or personal access token, resolved far enough to enforce both
-/// identity and token scope.
-///
-/// `AuthUser` cannot play this role: it interprets every bearer string as a
-/// JWT, so the PAT designed for API clients would become a 401 before the
-/// route could apply its Viewer check.
-pub struct DocumentReader {
-    pub user: utopia_core::models::User,
-    pub pat: Option<Authenticated>,
-}
-
-impl FromRequestParts<AppState> for DocumentReader {
-    type Rejection = ApiErr;
-
-    async fn from_request_parts(
-        parts: &mut Parts,
-        state: &AppState,
-    ) -> Result<Self, Self::Rejection> {
-        let raw = CookieJar::from_headers(&parts.headers)
-            .get(crate::auth::COOKIE_NAME)
-            .map(|cookie| cookie.value().to_string())
-            .or_else(|| {
-                parts
-                    .headers
-                    .get(header::AUTHORIZATION)
-                    .and_then(|value| value.to_str().ok())
-                    .and_then(|value| value.strip_prefix("Bearer "))
-                    .map(str::to_owned)
-            })
-            .ok_or(AppError::Unauthorized)?;
-
-        if raw.starts_with(PAT_PREFIX) {
-            let auth = utopia_store::tokens::authenticate(&state.pool, raw.trim()).await?;
-            let user = utopia_store::accounts::find_user_by_id(&state.pool, auth.user_id)
-                .await?
-                .ok_or(AppError::Unauthorized)?;
-            return Ok(Self {
-                user,
-                pat: Some(auth),
-            });
-        }
-
-        let user_id = crate::auth::decode_user_id(state, &raw)?;
-        let user = utopia_store::accounts::find_user_by_id(&state.pool, user_id)
-            .await?
-            .ok_or(AppError::Unauthorized)?;
-        Ok(Self { user, pat: None })
-    }
 }
 
 #[derive(Deserialize)]
@@ -140,14 +83,12 @@ fn content_headers(
 
 async fn require_reader_kb(
     state: &AppState,
-    reader: &DocumentReader,
+    reader: &SessionOrToken,
     kb_id: Uuid,
 ) -> ApiResult<()> {
     utopia_store::access::require_kb(&state.pool, &reader.user, kb_id, Role::Viewer).await?;
-    if let Some(pat) = &reader.pat {
-        if !pat.covers(kb_id) {
-            return Err(AppError::NotFound.into());
-        }
+    if !reader.reaches(kb_id) {
+        return Err(AppError::NotFound.into());
     }
     Ok(())
 }
@@ -155,7 +96,7 @@ async fn require_reader_kb(
 /// Serve the retained original named by the document ledger.
 pub async fn content(
     State(state): State<AppState>,
-    reader: DocumentReader,
+    reader: SessionOrToken,
     Path(id): Path<Uuid>,
     Query(query): Query<ContentQuery>,
 ) -> ApiResult<Response> {
@@ -227,7 +168,7 @@ pub async fn content(
 /// Name the exact retained versions the content route can address.
 pub async fn versions(
     State(state): State<AppState>,
-    reader: DocumentReader,
+    reader: SessionOrToken,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Response> {
     let document = utopia_store::documents::get(&state.pool, id).await?;

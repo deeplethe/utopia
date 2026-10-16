@@ -25,6 +25,7 @@ import {
   Wordmark,
 } from "../ui";
 import { LoginScene } from "./LoginScene";
+import { loginSections, ssoErrorKey } from "./loginSections";
 import { usePageTitle } from "../useTitle";
 import { claimFor } from "../authSession";
 
@@ -38,6 +39,7 @@ export function Login() {
   const [leaving, setLeaving] = useState(false);
   const queryClient = useQueryClient();
   const sso = useQuery({ queryKey: ["oidc-status"], queryFn: api.oidcStatus });
+  const sections = loginSections(sso.data);
   // 单点登录回调失败时带着代码跳回这里（`?sso_error=`），措辞按代码查
   const ssoError = new URLSearchParams(window.location.search).get("sso_error");
 
@@ -87,6 +89,7 @@ export function Login() {
           className="u-card-opaque rounded-panel p-6 u-rise"
           style={{ animationDelay: "90ms" }}
         >
+          {sections.password && (
           <Segmented
             fill
             className="mb-6"
@@ -97,13 +100,15 @@ export function Login() {
               label: m === "login" ? S.login.signIn : S.login.signUp,
             }))}
           />
+          )}
 
           {ssoError && (
             <p role="alert" className="mb-3 text-small text-danger">
-              {S.login.ssoErrors[ssoError] ?? S.login.ssoErrorOther}
+              {S.login.ssoErrors[ssoErrorKey(ssoError, sections.password)] ?? S.login.ssoErrorOther}
             </p>
           )}
 
+          {sections.password && (
           <form
             className="space-y-3"
             onSubmit={(e) => {
@@ -149,14 +154,17 @@ export function Login() {
                   : S.login.createAccount}
             </Button>
           </form>
+          )}
 
-          {mode === "login" && sso.data?.enabled && (
+          {mode === "login" && sections.sso && (
             <>
-              <div className="my-4 flex items-center gap-3 text-fine text-ink-2">
-                <span className="h-px flex-1 bg-line" />
-                {S.login.orDivider}
-                <span className="h-px flex-1 bg-line" />
-              </div>
+              {sections.password && (
+                <div className="my-4 flex items-center gap-3 text-fine text-ink-2">
+                  <span className="h-px flex-1 bg-line" />
+                  {S.login.orDivider}
+                  <span className="h-px flex-1 bg-line" />
+                </div>
+              )}
               <Button variant="secondary" size="md" className="w-full"
                 disabled={leaving}
                 onClick={() => {

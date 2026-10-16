@@ -53,6 +53,7 @@ export const en = {
     wrong_password: "Current password is incorrect.",
     registration_closed:
       "Sign-up is closed on this deployment — ask an administrator for an account.",
+    password_login_disabled: "Password sign-in is turned off on this deployment. Continue with SSO.",
     no_chat_model:
       "No chat model configured yet. Set one under Administration → Models.",
     // 对话流里没答成的那一轮：`error` 帧带的 code（服务端的英文原句只给日志）
@@ -400,6 +401,8 @@ export const en = {
     ssoErrors: {
       unlinked:
         "This identity isn't linked to an account. Sign in with your password and link it from your account page.",
+      unlinked_sso_only:
+        "This identity can't sign in to this deployment. Ask an administrator for access.",
       cancelled: "Single sign-on was cancelled.",
       denied: "The identity provider's answer couldn't be verified.",
       session: "The sign-in started in a different browser session. Try again.",
@@ -2365,6 +2368,9 @@ export const en = {
     requeue: "Run again",
     requeued: (n: number) =>
       n === 1 ? "1 job back in the queue" : `${n} jobs back in the queue`,
+    exportKb: "Export knowledge base (RDF)",
+    exportKbNote: "Download every fact and its provenance as a Turtle file.",
+    exportKbAction: "Export",
     /* 语料语言。措辞要把"这不是界面语言"讲清楚，否则一定有人当成界面开关 */
     cardIdentity: "Name and description",
     cardIdentityNote:

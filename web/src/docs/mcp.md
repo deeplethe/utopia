@@ -38,7 +38,7 @@ Three methods are served:
 | Tool | What it answers |
 |---|---|
 | `search_chunks` | Full-text + semantic search over the base's documents. Returns the six best-matching passages, each cut at 800 characters and carrying its `document_id`. Pass `as_of` to search the base as it stood at that moment — earlier versions, documents deleted since; full-text recall stays current, so hits are right but may be incomplete |
-| `get_document` | The full text of one document, all sections in order, by `document_id`. Use it when a search hit is the right document but the excerpt does not carry the answer. Capped at 24,000 characters, and says so when it cuts |
+| `get_document` | Read one document by `document_id`, all sections in order, up to 24,000 body characters per call. When truncated, call again with the optional `offset` given in the notice to continue |
 | `find_entities` | Entities by (partial) name: id, type, and a disambiguator when several share a name |
 | `entity_facts` | One entity's facts with validity ranges. Pass `at` (a date) to see the world as of that day; this is the tool for "who was X in 2024". Pass `as_of` (a date or an RFC3339 moment) to see the facts **as the base held them then**, before later corrections, retractions and merges — "what did we have on record before the memo arrived". The two combine: `at` for the date asked about, `as_of` for when |
 | `neighbors` | The entities linked to one entity, one hop, grouped by predicate; narrow with `predicate` or `object_type`. Takes a name as well as an id |
@@ -182,6 +182,8 @@ curl -s -X POST https://your-utopia/api/v1/kbs/$KB/mcp \
   -d '{"jsonrpc":"2.0","id":3,"method":"tools/call",
        "params":{"name":"get_document","arguments":{"document_id":"<id from the hit>"}}}'
 ```
+
+If the document is truncated, repeat `get_document` with the same `document_id` and the `offset` from the notice (for example, `"offset":24000` after the first full page). The offset is a zero-based Unicode character position across trimmed section bodies in order; headers and separators do not count. Omitting it starts at 0. At or past the end, the tool reports no remaining text.
 
 A document id from another base, or a made-up one, comes back as "No document with that id in this knowledge base" — the tool cannot tell you what it is not allowed to see.
 

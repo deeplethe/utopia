@@ -54,6 +54,7 @@ export const zh: Strings = {
     bad_display_name: "显示名需要 1–64 个字符。",
     wrong_password: "当前密码不对。",
     registration_closed: "本部署已关闭自助注册——请找管理员开通账户。",
+    password_login_disabled: "本部署已关闭密码登录，请用单点登录。",
     no_chat_model: "还没有配置对话模型。到「管理 → 模型」里配一个。",
     // 对话流里没答成的那一轮：`error` 帧带的 code（服务端的英文原句只给日志）
     answer_empty: "模型没有给出回答，请再问一次。",
@@ -356,6 +357,7 @@ export const zh: Strings = {
     ssoButton: "使用单点登录",
     ssoErrors: {
       unlinked: "这个身份还没绑定任何账号。先用密码登录，再到账户页绑定。",
+      unlinked_sso_only: "这个身份登不进本部署，请找管理员开通。",
       cancelled: "单点登录已取消。",
       denied: "身份提供方的应答没能通过校验。",
       session: "这次登录是在另一个浏览器会话里开始的，请重试。",
@@ -2070,6 +2072,9 @@ export const zh: Strings = {
     failedJobs: (n: number) => `${n} 个失败的任务`,
     requeue: "再跑一遍",
     requeued: (n: number) => `${n} 个任务回到队列`,
+    exportKb: "导出整个知识库（RDF）",
+    exportKbNote: "把所有事实及其出处下载为 Turtle 文件。",
+    exportKbAction: "导出",
     cardIdentity: "名字与描述",
     cardIdentityNote: "最长 64 个字符。切换器和这个库每一页的顶上用的都是它。",
     cardVisibilityNote:

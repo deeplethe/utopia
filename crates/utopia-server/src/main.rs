@@ -169,6 +169,7 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let state = AppState::new(pool.clone(), &cfg, search, jwt_secret);
+    api::oidc_routes::warn_about_password_login(&state);
 
     // worker 并发数：系统设置持久化，启动时装载；运行中经同一 AtomicUsize 热调
     let n = utopia_store::access::worker_concurrency(&pool)

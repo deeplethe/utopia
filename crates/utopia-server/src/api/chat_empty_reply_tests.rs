@@ -42,6 +42,8 @@ pub(super) enum Reply {
     HttpError(u16, &'static str),
     /// 调一个工具：(名字, 参数 JSON)
     Tool(&'static str, &'static str),
+    ThoughtTool(&'static str, &'static str, &'static str),
+    ThoughtText(&'static str, &'static str),
 }
 
 /// 按脚本回话的假模型。`replies[i]` 是第 i+1 次请求的回复，脚本读完之后一律回空。
@@ -74,10 +76,11 @@ impl Respond for Scripted {
         };
         let frame = match self.replies.get(n - 1).copied().unwrap_or(Reply::Empty) {
             Reply::HttpError(status, body) => {
-                return ResponseTemplate::new(status).set_body_string(body)
+                return ResponseTemplate::new(status).set_body_string(body);
             }
             Reply::Http(status) => {
-                return ResponseTemplate::new(status).set_body_string("Evidence gathering complete")
+                return ResponseTemplate::new(status)
+                    .set_body_string("Evidence gathering complete");
             }
             Reply::Finished(text, reason) => Some(
                 serde_json::json!({ "choices": [{ "delta": { "content": text }, "finish_reason": reason }] }),
@@ -138,6 +141,15 @@ impl Respond for Scripted {
                     "function": { "name": name, "arguments": args }
                 }]
             } }] })),
+            Reply::ThoughtTool(name, args, reasoning) => {
+                Some(serde_json::json!({"choices":[{"delta":{
+                    "reasoning_content":reasoning,
+                    "tool_calls":[{"index":0,"id":format!("call_{n}"),"function":{"name":name,"arguments":args}}]
+                }}]}))
+            }
+            Reply::ThoughtText(text, reasoning) => Some(serde_json::json!({"choices":[{"delta":{
+                "content":text,"reasoning_content":reasoning
+            }}]})),
         };
         let mut sse = String::new();
         if let Some(frame) = frame {
