@@ -1,4 +1,4 @@
-//! 个人令牌读实体（0014 决定 7）：搜实体、实体详情、认知历史、事实证据四条读路由
+//! 个人令牌读图（0014 决定 7）：搜实体、实体详情、认知历史、事实证据、图总览、邻域六条读路由
 //! 收任何一枚活着的令牌。角色照旧是上限，`kb_ids` 排除了的库答 404；改实体仍只认会话。
 use crate::state::AppState;
 use axum::body::Body;
@@ -81,13 +81,15 @@ impl Fixture {
             .1
     }
 
-    fn read_paths(&self) -> [String; 4] {
+    fn read_paths(&self) -> [String; 6] {
         let (kb, entity, fact) = (self.kb, self.entity, self.fact);
         [
             format!("/kbs/{kb}/entities?q=Zhang"),
             format!("/kbs/{kb}/entities/{entity}"),
             format!("/kbs/{kb}/entities/{entity}/history"),
             format!("/kbs/{kb}/facts/{fact}/evidence"),
+            format!("/kbs/{kb}/graph/overview"),
+            format!("/kbs/{kb}/graph/neighborhood?entity={entity}"),
         ]
     }
 
@@ -109,8 +111,7 @@ impl Fixture {
 }
 
 #[tokio::test]
-async fn a_read_token_of_a_base_viewer_reads_its_entities_facts_and_history() -> anyhow::Result<()>
-{
+async fn a_read_token_of_a_base_viewer_gets_200_on_every_graph_read() -> anyhow::Result<()> {
     let Some(f) = Fixture::new().await? else {
         return Ok(());
     };
@@ -128,7 +129,7 @@ async fn a_read_token_of_a_base_viewer_reads_its_entities_facts_and_history() ->
 }
 
 #[tokio::test]
-async fn a_token_limited_to_another_base_gets_404_on_every_entity_read() -> anyhow::Result<()> {
+async fn a_token_limited_to_another_base_gets_404_on_every_graph_read() -> anyhow::Result<()> {
     let Some(f) = Fixture::new().await? else {
         return Ok(());
     };

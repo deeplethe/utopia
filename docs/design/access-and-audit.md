@@ -19,9 +19,9 @@ writes an audit row `mcp.tool_called`; the tokens page shows the plaintext once 
 snippet [0014]. A `write` token also sets up a base as its owner: creating a base and a `statements` or `api` source,
 reading the source's push key, importing an ontology and deciding a kind word, with the owner's
 role unchanged as the ceiling; any token lists a workspace's bases; a token limited by `kb_ids`
-creates no base. These routes, document content and four graph reads (entity search, detail,
-history, fact evidence; Viewer suffices, `kb_ids` answers 404) take `SessionOrToken`; apart from
-MCP, every other route is session-only [0014 d6, d7]. `ingest_token` on a source is a different kind: plaintext, push-only [0014].
+creates no base. These routes, document content and six graph reads (entity search, detail,
+history, fact evidence, overview, neighbourhood; Viewer suffices, `kb_ids` answers 404) take
+`SessionOrToken`; apart from MCP, every other route is session-only [0014 d6, d7]. `ingest_token` on a source is a different kind: plaintext, push-only [0014].
 
 **Another app can trade its user's fresh ID token for a session.** `POST /auth/oidc/exchange`
 accepts an ID token from the configured issuer whose audience is in
