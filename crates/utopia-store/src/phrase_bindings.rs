@@ -17,7 +17,7 @@ use uuid::Uuid;
 /// SQL 侧的归一：与 [`normalize`] 一致。`$col` 由调用处替换成列名。
 const PHRASE_SQL: &str = "lower(btrim(regexp_replace($col, '\\s+', ' ', 'g')))";
 
-fn phrase_sql(col: &str) -> String {
+pub(crate) fn phrase_sql(col: &str) -> String {
     PHRASE_SQL.replace("$col", col)
 }
 
@@ -52,7 +52,11 @@ pub struct PhraseSignature {
 }
 
 /// 库里每条 distinct 的签名：活着的开放陈述，按短语、两端的类、宾语是不是字面值分组。
-pub async fn signatures(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<PhraseSignature>> {
+/// 采纳复用一条属性时在它自己的事务里读（不另占一条连接），所以收任何执行器
+pub async fn signatures<'e>(
+    pool: impl sqlx::Executor<'e, Database = sqlx::Postgres>,
+    kb_id: Uuid,
+) -> AppResult<Vec<PhraseSignature>> {
     // 一条陈述可以有多条证据。计数、取例句前先为每条陈述选一条稳定的引用，
     // 优先有完整位置的证据，避免证据多的陈述挤掉其他陈述。
     let sql = format!(

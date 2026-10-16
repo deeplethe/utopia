@@ -102,6 +102,16 @@ impl SearchIndex {
         Ok(())
     }
 
+    /// Discard an incomplete rebuild while retaining the index's writer lock.
+    /// Removing its directory first could erase another process's live index.
+    pub fn clear(&self) -> anyhow::Result<()> {
+        let mut writer = self.writer.lock().expect("writer 锁中毒");
+        writer.delete_all_documents()?;
+        writer.commit()?;
+        self.reader.reload()?;
+        Ok(())
+    }
+
     pub fn delete_document(&self, document_id: &str) -> anyhow::Result<()> {
         let mut writer = self.writer.lock().expect("writer 锁中毒");
         writer.delete_term(Term::from_field_text(self.f_document_id, document_id));
