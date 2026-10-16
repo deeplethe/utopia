@@ -1,6 +1,6 @@
 # 0014 · Identity from the person, scope from the token
 
-- **Status**: Implemented · 2026-10-15 · #180, #318, #1243 · open: tokens across workspaces
+- **Status**: Implemented · 2026-10-16 · #180, #318, #1243, #1262 · open: tokens across workspaces
 - **Written**: 2026-09-01 · condensed into English 2026-09-03
 - **Related**: migration `0014_data_source_grants` gave data sources a grant layer; this is the same question where a machine knocks. [0004](0004-language-and-localization.md) has the server speak English only, MCP error codes included. [0015](0015-recording-a-sentence-is-not-asserting-a-fact.md) removes the main objection to opening `remember` over MCP.
 
@@ -83,6 +83,16 @@ push documents in.
    Not done: rotating or deleting a source, changing a base's settings or members, and every
    other write still take a session. A token does not create workspaces or tokens.
 
+7. **A token reads extractions and export** (added 2026-10-16, #1262). A service that mirrors
+   into a base has to read it back to check what landed, and a session JWT is the wrong
+   credential for a backend, for the reasons decision 6 gives. Two reads now also take a
+   personal token, acting as its owner: a document's extractions
+   (`GET /documents/{id}/extractions`), the facts read from one document; and the base's export
+   (`GET /kbs/{id}/export`), which takes the whole base out of the server, so the `kb.exported`
+   row carries the token's id as `detail.token_id` beside the owner as actor. Any token
+   qualifies, read or write; the owner's role is the ceiling and Viewer suffices, as from a
+   session; a base the token's `kb_ids` leaves out answers 404, as document content does (0052).
+
 ## Dead ends
 
 - **Base-level machine tokens**, one per base and unrelated to a person. It would be a third
@@ -104,6 +114,9 @@ push documents in.
 - 2026-10-15: the status line still said `can_write` was hard-coded false. #318 had already
   computed it from the token's scope and the person's role, and `remember` has been reachable
   over MCP with a write token since then. The line now names what is open.
+
+- 2026-10-16: decision 7 opens a document's extractions and a base's export to any token; the
+  sentence in decision 6 that only its routes and document content take a token predates it.
 
 ## Open questions
 

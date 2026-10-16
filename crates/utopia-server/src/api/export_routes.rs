@@ -16,12 +16,11 @@ use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
-use utopia_core::models::Role;
 use utopia_core::AppError;
 use uuid::Uuid;
 
-use super::graph_routes::require_kb;
-use crate::auth::AuthUser;
+use super::documents_routes::require_reader_kb;
+use crate::auth::SessionOrToken;
 use crate::error::ApiResult;
 use crate::rdf::{self, Format, Names, SharedBuf, Sink};
 use crate::state::AppState;
@@ -38,27 +37,32 @@ pub struct ExportQuery {
 
 pub async fn export(
     State(state): State<AppState>,
-    AuthUser(user): AuthUser,
+    reader: SessionOrToken,
     Path(kb_id): Path<Uuid>,
     Query(q): Query<ExportQuery>,
 ) -> ApiResult<Response> {
-    let kb = require_kb(&state, &user, kb_id, Role::Viewer).await?;
+    require_reader_kb(&state, &reader, kb_id).await?;
+    let kb = utopia_store::kbs::get(&state.pool, kb_id).await?;
     let format = Format::parse(q.format.as_deref()).ok_or_else(|| {
         AppError::Validation("Unknown `format` (expected turtle or jsonld)".into())
     })?;
     let names = Names::new(kb_id, q.base.as_deref()).map_err(AppError::Validation)?;
 
-    // 导出是一次「整个库离开这台机器」的动作，台账要记下（0014 的同一条理由）。
+    // 导出是一次「整个库离开这台机器」的动作，台账要记下（0014 的同一条理由）；
+    // 令牌导出的还要记下是哪一枚（0014 决定 7）。
     // 必须在快照事务之前写完并放掉连接：下面那条事务一占就是整个流的时长，
     // 占着它再回头要连接，会把最小池（两条）上的并发导出互相饿死
     let _ = utopia_store::audit::record(
         &state.pool,
         Some(kb_id),
-        user.id,
+        reader.user.id,
         "kb.exported",
         "knowledge_base",
         Some(kb_id),
-        serde_json::json!({ "format": format.extension() }),
+        utopia_store::audit::via_token(
+            serde_json::json!({ "format": format.extension() }),
+            reader.token_id(),
+        ),
     )
     .await;
 
