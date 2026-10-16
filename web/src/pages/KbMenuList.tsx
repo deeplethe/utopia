@@ -9,7 +9,7 @@
    Esc / ← 关上并把焦点还给那一行（kbMenuKeys）。没用 DropdownMenuSub：它只能
    长在 DropdownMenu 里，而两个宿主一个是带查找框的 Popover（菜单的 typeahead
    与焦点管理会跟查找框抢键），一个是手写的 div。 */
-import { useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
 import { Check, ChevronRight } from "lucide-react";
 import type { Kb } from "../api";
 import { Row, cn } from "../ui";
@@ -139,6 +139,11 @@ function KbGroupRow({
     if (open) submenu.current?.querySelector("button")?.focus();
     else show(true);
   };
+  useEffect(() => {
+    if (!narrow || !open || !focusInside.current) return;
+    submenu.current?.querySelector("button")?.focus();
+    focusInside.current = false;
+  }, [narrow, open]);
   const onSubmenuKey = (e: KeyboardEvent<HTMLDivElement>) => {
     const action = submenuKey(e.key);
     if (action === undefined) return;
@@ -169,25 +174,34 @@ function KbGroupRow({
   if (narrow)
     return (
       <>
-        <Row
-          density="menu"
-          className={ROW}
-          aria-expanded={open}
-          trailing={trailing}
-          onClick={() => setOpen((v) => !v)}
-        >
-          <span className="truncate">{name}</span>
-        </Row>
+        <div ref={anchor}>
+          <Row
+            density="menu"
+            className={ROW}
+            aria-expanded={open}
+            trailing={trailing}
+            onClick={() => setOpen((v) => !v)}
+            onKeyDown={onRowKey}
+          >
+            <span className="truncate">{name}</span>
+          </Row>
+        </div>
         {open &&
-          items.map((item) => (
-            <KbRow
-              key={item.kb.id}
-              label={item.label}
-              indent={1}
-              current={item.kb.id === currentId}
-              onClick={() => onPick(item.kb.id)}
-            />
-          ))}
+          <div ref={submenu} onKeyDown={onSubmenuKey}>
+            {items.map((item) => (
+              <KbRow
+                key={item.kb.id}
+                label={item.label}
+                indent={1}
+                current={item.kb.id === currentId}
+                onClick={() => {
+                  setOpen(false);
+                  onPick(item.kb.id);
+                }}
+              />
+            ))}
+          </div>
+        }
       </>
     );
   return (
