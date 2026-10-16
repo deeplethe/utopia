@@ -632,7 +632,46 @@ pub fn parse_open_response(raw: &str) -> anyhow::Result<OpenExtraction> {
             None => out.skipped += 1,
         }
     }
+    values_are_not_things(&mut out);
     Ok(out)
+}
+
+/// 宾语写成了一个值的，改回值（[`crate::literal_object`]）。
+///
+/// 规则 2 说数字写进 value，模型照样会把「成立于 2015年3月12日」「注册资本为 5000万元」
+/// 的值列进 `e`、写进宾语。实测同一个模型同一份提示词，一篇这样写、另一篇照规则写：
+/// 写成宾语的那篇，签名成了两样东西之间的关系，`对象是不是字面值` 那一格对不上任何属性，
+/// 定义好的属性一条也落不下。这里只挪格子，原文的字一个不改。
+///
+/// 挪完以后没有陈述再指着它、也不是别名的那个「东西」从 `e` 里拿掉，免得建出一个叫
+/// 「2015年3月12日」的实体。还当主语用着的留下：那是模型真把它当成了一样东西
+fn values_are_not_things(x: &mut OpenExtraction) {
+    let named: std::collections::HashMap<String, bool> = x
+        .entities
+        .iter()
+        .map(|e| (name_key(&e.name), e.named))
+        .collect();
+    for s in &mut x.statements {
+        let Some(object) = s.object.as_deref() else {
+            continue;
+        };
+        // 宾语和值都给了的，解析层不裁（见 `parse_statement`）
+        if s.value.is_none()
+            && crate::literal_object(object, *named.get(&name_key(object)).unwrap_or(&false))
+        {
+            s.value = s.object.take();
+        }
+    }
+    let used: HashSet<String> = x
+        .statements
+        .iter()
+        .flat_map(|s| [Some(&s.subject), s.object.as_ref()])
+        .flatten()
+        .chain(x.names.iter().flat_map(|n| [&n.entity, &n.name]))
+        .map(|n| name_key(n))
+        .collect();
+    x.entities
+        .retain(|e| used.contains(&name_key(&e.name)) || !crate::literal_object(&e.name, e.named));
 }
 
 #[cfg(test)]
@@ -1044,6 +1083,45 @@ mod tests {
         assert_eq!(x.statements.len(), 1);
         assert_eq!(x.statements[0].object.as_deref(), Some("B"));
         assert_eq!(x.statements[0].value.as_deref(), Some("b"));
+        assert_eq!(x.skipped, 0);
+    }
+
+    /// 实测的那篇公司简介：值被列成东西写进了宾语。挪回值，那几样「东西」也不再列着；
+    /// 真东西（杭州）和被当成主语用着的不动
+    #[test]
+    fn a_value_written_as_an_object_becomes_the_value() {
+        let raw = r#"{"e": [["星河科技有限公司", "公司", 1], ["2015年3月12日", "日期", 1],
+                            ["5000万元", "金额", 0], ["1200人", "人数", 0], ["杭州", "城市", 1],
+                            ["1984", "小说", 1], ["2020年", "年份", 1]],
+            "s": [["星河科技有限公司成立于2015年3月12日，注册资本为5000万元，总部位于杭州。",
+                   "星河科技有限公司", "成立于", "2015年3月12日", null, null, null, null],
+                  ["星河科技有限公司成立于2015年3月12日，注册资本为5000万元，总部位于杭州。",
+                   "星河科技有限公司", "注册资本为", "5000万元", null, null, null, null],
+                  ["截至2023年底，公司员工人数为1200人。",
+                   "星河科技有限公司", "员工人数为", "1200人", null, null, null, null],
+                  ["星河科技有限公司成立于2015年3月12日，注册资本为5000万元，总部位于杭州。",
+                   "星河科技有限公司", "总部位于", "杭州", null, null, null, null],
+                  ["他读过《1984》。", "星河科技有限公司", "出版", "1984", null, null, null, null],
+                  ["2020年是公司上市之年。", "2020年", "是", null, "公司上市之年", null, null, null]]}"#;
+        let x = parse_open_response(raw).unwrap();
+        let shape: Vec<(Option<&str>, Option<&str>)> = x
+            .statements
+            .iter()
+            .map(|s| (s.object.as_deref(), s.value.as_deref()))
+            .collect();
+        assert_eq!(
+            shape,
+            vec![
+                (None, Some("2015年3月12日")),
+                (None, Some("5000万元")),
+                (None, Some("1200人")),
+                (Some("杭州"), None),
+                (Some("1984"), None),
+                (None, Some("公司上市之年")),
+            ]
+        );
+        let names: Vec<&str> = x.entities.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["星河科技有限公司", "杭州", "1984", "2020年"]);
         assert_eq!(x.skipped, 0);
     }
 

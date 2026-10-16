@@ -81,6 +81,9 @@ struct Due {
     marks: Option<String>,
     /// 绑到的属性的时间语义
     temporal: Option<String>,
+    /// 绑到的是属性时它的 datatype 与单位（关系是 NULL）：值按它们读（[`typed_value`]）
+    datatype: Option<String>,
+    unit: Option<String>,
 }
 
 /// 对一个库重算一遍。
@@ -252,7 +255,11 @@ async fn materialize_in_tx(
                 s.valid_to, s.valid_to_precision,
                 s.attested_from, s.confidence, b.marks,
                 (SELECT rt.temporal FROM relation_types rt WHERE rt.id = b.relation_type_id)
-                    AS temporal
+                    AS temporal,
+                (SELECT rt.datatype FROM relation_types rt
+                  WHERE rt.id = b.relation_type_id AND rt.kind = 'attribute') AS datatype,
+                (SELECT rt.unit FROM relation_types rt
+                  WHERE rt.id = b.relation_type_id AND rt.kind = 'attribute') AS unit
            FROM facts s
            JOIN entities se ON se.id = s.subject_id
       LEFT JOIN entities oe ON oe.id = s.object_id
@@ -338,12 +345,16 @@ async fn materialize_in_tx(
                 .await?
             }
             (false, None, Some(value)) => {
+                let Some(value) = typed_value(value, d.datatype.as_deref(), d.unit.as_deref())
+                else {
+                    continue;
+                };
                 insert_fact_on(
                     tx,
                     kb_id,
                     d.subject_id,
                     Some(d.property),
-                    FactObject::Value(value),
+                    FactObject::Value(&value),
                     validity,
                     d.confidence,
                 )
@@ -502,7 +513,15 @@ struct Implied {
     valid_to_precision: Option<String>,
     attested_from: Option<chrono::DateTime<chrono::Utc>>,
     confidence: f32,
+    datatype: Option<String>,
+    unit: Option<String>,
 }
+
+/// 结论属性的 datatype 与单位（结论是关系时 NULL），两条隐含查询共用
+const CONCLUDED_SHAPE: &str = "(SELECT rt.datatype FROM relation_types rt
+                  WHERE rt.id = r.conclude_property_id AND rt.kind = 'attribute') AS datatype,
+                (SELECT rt.unit FROM relation_types rt
+                  WHERE rt.id = r.conclude_property_id AND rt.kind = 'attribute') AS unit";
 
 async fn imply_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
@@ -517,7 +536,7 @@ async fn imply_in_tx(
                 CASE WHEN r.reading IS NULL THEN s.object_id ELSE pr.entity_id END AS object_id,
                 CASE WHEN r.reading IS NULL THEN s.object_value ELSE pr.value END AS object_value,
                 s.valid_from, s.valid_from_precision, s.valid_from_grade, s.valid_to, s.valid_to_precision,
-                s.attested_from, s.confidence
+                s.attested_from, s.confidence, {CONCLUDED_SHAPE}
            FROM implication_rules r
            JOIN facts s ON s.kb_id = r.kb_id AND s.layer = 'open' AND s.invalidated_at IS NULL
            JOIN entities se ON se.id = s.subject_id
@@ -552,7 +571,7 @@ async fn imply_in_tx(
                 pr.entity_id AS object_id, pr.value AS object_value,
                 NULL::timestamptz AS valid_from, NULL::text AS valid_from_precision, NULL::text AS valid_from_grade,
                 NULL::timestamptz AS valid_to, NULL::text AS valid_to_precision,
-                NULL::timestamptz AS attested_from, 0.9::real AS confidence
+                NULL::timestamptz AS attested_from, 0.9::real AS confidence, {CONCLUDED_SHAPE}
            FROM implication_rules r
            JOIN entities e ON e.kb_id = r.kb_id AND e.merged_into IS NULL AND {KIND} = r.phrase
            JOIN phrase_readings pr ON pr.kb_id = r.kb_id AND pr.reading = r.reading AND pr.phrase = r.phrase
@@ -577,7 +596,13 @@ async fn imply_in_tx(
             to_precision: d.valid_to_precision.as_deref(),
             attested_at: d.attested_from,
         };
-        let object = match (d.object_id, &d.object_value) {
+        let value = match &d.object_value {
+            Some(v) if d.object_id.is_none() => {
+                typed_value(v, d.datatype.as_deref(), d.unit.as_deref())
+            }
+            _ => None,
+        };
+        let object = match (d.object_id, &value) {
             (Some(o), _) => FactObject::Entity(o),
             (None, Some(v)) => FactObject::Value(v),
             _ => continue,
@@ -632,6 +657,31 @@ async fn imply_in_tx(
         }
     }
     Ok(implied)
+}
+
+/// 开放陈述的值（`{"value": "2.3亿元"}`）落到属性上时的样子：`value` 那一格按属性的
+/// datatype 与单位读成数、日期、真假（[`utopia_extract::attribute_value`]），其余键照抄。
+/// 绑到关系上的值（datatype 是 NULL）原样留着。
+///
+/// **读不出来就不写**（None）。从前这里照抄原文的字：声明了 number、单位万元的「注册
+/// 资本」上躺着 `"2.3亿元"`，导出成 `"2.3亿元"^^xsd:decimal`，比较、对账、规则全都对不上。
+/// 读不出来的陈述还在开放图谱里，原文的字一个没丢
+fn typed_value(
+    raw: &serde_json::Value,
+    datatype: Option<&str>,
+    unit: Option<&str>,
+) -> Option<serde_json::Value> {
+    let Some(datatype) = datatype else {
+        return Some(raw.clone());
+    };
+    let Some(written) = raw.get("value") else {
+        return utopia_extract::attribute_value(datatype, unit, raw)
+            .map(|v| serde_json::json!({ "value": v }));
+    };
+    let read = utopia_extract::attribute_value(datatype, unit, written)?;
+    let mut out = raw.clone();
+    out["value"] = read;
+    Some(out)
 }
 
 /// 类别词的归一（同 type_bindings）：这里要在 SQL 里对上实体的 specific_type
