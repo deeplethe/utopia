@@ -8,6 +8,8 @@ license.workspace = true
 utopia-core.workspace = true
 utopia-ingest.workspace = true
 utopia-reason.workspace = true
+# 物化把属性的值按 datatype 与单位读成数、日期（`attribute_value`）
+utopia-extract = { path = "../utopia-extract" }
 serde.workspace = true
 pgvector.workspace = true
 futures-util.workspace = true
