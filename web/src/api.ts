@@ -1071,6 +1071,8 @@ export interface GraphEdge {
   blocked: boolean;
   /** 边上的属性（0037） */
   qualifiers: FactQualifier[];
+  /** 文档的角色词（0044）：不是本体属性，另放一处 */
+  statement_qualifiers: StatementQualifier[];
 }
 
 /** 实体的一个名字（0041）。`canonical` 是面板标题上那个；曾用名在世界轴上有结束 */
@@ -1085,6 +1087,14 @@ export interface NameView {
   valid_to_precision: string | null;
   document_ids: string[];
   evidence_count: number;
+}
+
+/** 开放陈述按文档角色词记的限定（0044）：值或实体 */
+export interface StatementQualifier {
+  role: string;
+  value: unknown | null;
+  entity_id: string | null;
+  entity_name: string | null;
 }
 
 export interface EntityFact {
@@ -1106,6 +1116,8 @@ export interface EntityFact {
   object_value: Record<string, unknown> | null;
   /** 边上的属性（0037） */
   qualifiers: FactQualifier[];
+  /** 文档的角色词（0044）：不是本体属性，另放一处 */
+  statement_qualifiers: StatementQualifier[];
   valid_from: string | null;
   valid_to: string | null;
   /** 读出来的区间（0022），与 GraphEdge 同义：「此刻成立」按它判 */

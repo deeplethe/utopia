@@ -127,6 +127,9 @@ unit rather than formatting them into a string. `inferred` describes an
 unaccepted predicate name; it does **not** mean the fact is derived.
 `qualifiers[]` preserves attributes attached to the relation itself: each has
 `qualifier_type_id`, `key`, `label`, raw `value`, `entity_id`, and `entity_name`.
+`statement_qualifiers[]` holds the document's own role words for the statement
+(such as `amount` or `lines`), which are not declared attributes: each has `role`,
+raw `value`, `entity_id`, and `entity_name`.
 
 A `derived_facts[]` entry contains `id`, `subject_id`, `subject`, `predicate_id`,
 `predicate`, `object_id`, `object`, raw `object_value`, `rule`, `rule_name`,

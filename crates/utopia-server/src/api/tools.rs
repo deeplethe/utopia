@@ -1519,6 +1519,7 @@ mod tests {
             other_name: None,
             other_type: None,
             qualifiers: Vec::new(),
+            statement_qualifiers: Vec::new(),
             object_value: Some(value),
             valid_from: Some(t("2023-06-01T00:00:00Z")),
             valid_to: Some(t("2024-02-20T00:00:00Z")),

@@ -993,6 +993,36 @@ async fn entity_fact_qualifier_text_preserves_the_stored_string() -> anyhow::Res
 }
 
 #[tokio::test]
+async fn entity_facts_reads_back_a_statements_role_words() -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    sqlx::query(
+        "INSERT INTO statement_qualifiers(fact_id,role,value)
+         VALUES ($1,'lines','{\"value\":\"10-42\"}'::jsonb)",
+    )
+    .bind(f.corrected)
+    .execute(&f.state.pool)
+    .await?;
+    let result = f
+        .call("entity_facts", json!({"entity_id":f.subject}))
+        .await?;
+    let text = result["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("lines: 10-42]"), "{text}");
+    let fact = result["structuredContent"]["facts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|fact| uuid(&fact["id"]) == f.corrected)
+        .unwrap();
+    assert_eq!(
+        fact["statement_qualifiers"],
+        json!([{"role":"lines","value":{"value":"10-42"},"entity_id":null,"entity_name":null}])
+    );
+    f.clean().await
+}
+
+#[tokio::test]
 async fn entity_facts_keeps_identity_values_filters_and_both_clocks() -> anyhow::Result<()> {
     let Some(f) = Fixture::new().await? else {
         return Ok(());

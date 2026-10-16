@@ -343,36 +343,39 @@ pub async fn find_entities(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value)
 
 /// 事实的另一端：对端实体，或属性值
 /// 边上的属性（0037）跟在对端后面：`Vega Capital [amount: 5000000000 $]`。
-/// 模型读事实行时最常问的就是"投了多少"，数不在行里它就答"没有金额信息"
+/// 模型读事实行时最常问的就是"投了多少"，数不在行里它就答"没有金额信息"。
+/// 按文档角色词记的属性（0061）接在后面，名字是角色词：`[lines: 10-42]`
 fn qualifiers_text(f: &EntityFact) -> String {
-    if f.qualifiers.is_empty() {
-        return String::new();
-    }
-    let parts: Vec<String> = f
+    let typed = f
         .qualifiers
         .iter()
-        .map(|q| {
-            let v = q
-                .value
-                .as_ref()
-                .and_then(|v| v.get("value"))
-                .map(|v| match v {
-                    Value::String(s) => s.clone(),
-                    other => other.to_string(),
-                })
-                .or_else(|| q.entity_name.clone())
-                .unwrap_or_else(|| "?".to_string());
-            let u = q
-                .value
-                .as_ref()
-                .and_then(|v| v.get("unit"))
-                .and_then(|u| u.as_str())
-                .map(|u| format!(" {u}"))
-                .unwrap_or_default();
-            format!("{}: {v}{u}", q.key)
-        })
-        .collect();
+        .map(|q| qualifier_text(&q.key, q.value.as_ref(), q.entity_name.as_deref()));
+    let worded = f
+        .statement_qualifiers
+        .iter()
+        .map(|q| qualifier_text(&q.role, q.value.as_ref(), q.entity_name.as_deref()));
+    let parts: Vec<String> = typed.chain(worded).collect();
+    if parts.is_empty() {
+        return String::new();
+    }
     format!(" [{}]", parts.join(", "))
+}
+
+fn qualifier_text(name: &str, value: Option<&Value>, entity_name: Option<&str>) -> String {
+    let v = value
+        .and_then(|v| v.get("value"))
+        .map(|v| match v {
+            Value::String(s) => s.clone(),
+            other => other.to_string(),
+        })
+        .or_else(|| entity_name.map(String::from))
+        .unwrap_or_else(|| "?".to_string());
+    let u = value
+        .and_then(|v| v.get("unit"))
+        .and_then(|u| u.as_str())
+        .map(|u| format!(" {u}"))
+        .unwrap_or_default();
+    format!("{name}: {v}{u}")
 }
 
 fn other_text(f: &EntityFact) -> String {
@@ -861,6 +864,7 @@ pub async fn entity_facts(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) 
                 "qualifier_type_id": q.qualifier_type_id, "key": q.key, "label": q.label,
                 "value": q.value, "entity_id": q.entity_id, "entity_name": q.entity_name,
             })).collect::<Vec<_>>(),
+            "statement_qualifiers": f.statement_qualifiers,
             "valid_from": f.valid_from, "valid_to": f.valid_to,
             "valid_from_precision": f.valid_from_precision,
             "valid_to_precision": f.valid_to_precision,
@@ -1487,6 +1491,7 @@ mod tests {
             other_name: Some(other.into()),
             other_type: other_type.map(String::from),
             qualifiers: Vec::new(),
+            statement_qualifiers: Vec::new(),
             object_value: None,
             valid_from: Some("2021-01-01T00:00:00Z".parse().unwrap()),
             valid_to: None,

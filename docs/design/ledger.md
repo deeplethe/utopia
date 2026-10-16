@@ -35,8 +35,9 @@ word for open statements; `fact_qualifiers (fact, qualifier_type, value | entity
 declared attribute for typed rows, converted by the attribute's datatype, the unit read from the
 text (`$4 billion` becomes 4000000000 with unit `$`) and the declared unit only when the text
 carries none; a qualifier is not part of the edge's identity; every superseding writer copies
-qualifiers with the evidence [0037, #731]. `time_mentions (fact, chunk, text, char_start)` hold
-verbatim time words [#731]. Names are value facts on `known_as` [0041]. `entities.description`
+qualifiers with the evidence [0037, #731]. Entity detail, graph edges and the MCP `entity_facts`
+tool return both: typed ones in `qualifiers`, role words in `statement_qualifiers` [#1267].
+`time_mentions (fact, chunk, text, char_start)` hold verbatim time words [#731]. Names are value facts on `known_as` [0041]. `entities.description`
 marks a described, unnamed thing [#731].
 
 **Derived facts live in their own table** (`derived_facts`, widened to literal objects, with
