@@ -552,7 +552,7 @@ async fn apply(ctx: &Ctx<'_>, item: &ReviewItem, p: &Precedents, look: Look) -> 
     }
     match gov::gate(look.same, look.conf, types_conflict, shape, p) {
         Gate::Apply if look.same == Some(true) => {
-            let reason = format!("governed|{conf:.2}");
+            let mut reason = format!("governed|{conf:.2}");
             // 同簇连锁：前一对合完，这一对的一侧可能已经并进了别人——合活着的那个
             let (l, r) = (
                 utopia_store::resolution::survivor(pool, kb_id, item.left.id).await?,
@@ -568,6 +568,43 @@ async fn apply(ctx: &Ctx<'_>, item: &ReviewItem, p: &Precedents, look: Look) -> 
                     audit(ctx, "review.merge", item, conf, id).await;
                 }
                 return Ok(());
+            }
+            // A person's decision on these records is already authoritative. Model
+            // decisions need the same live evidence as the non-governance path,
+            // regardless of whether a second look supplied the confidence.
+            if item.left.name == item.right.name
+                && gov::decided_before(pool, kb_id, item.left.id, item.right.id).await?
+                    != Some(true)
+            {
+                match utopia_store::resolution::namesake_identity_evidence(pool, kb_id, l, r)
+                    .await?
+                {
+                    Some(proof) => {
+                        reason.push('|');
+                        reason.push_str(&proof);
+                    }
+                    None => {
+                        let why = crate::adjudication::no_identity_reason(item);
+                        let closed = utopia_store::resolution::close_review_auto(
+                            pool, item.id, "kept", &why,
+                        )
+                        .await?;
+                        if closed > 0 {
+                            let id = gov::record(
+                                pool,
+                                kb_id,
+                                NewDecision {
+                                    action: "keep",
+                                    reason: Some(&why),
+                                    ..decision("applied", None)
+                                },
+                            )
+                            .await?;
+                            audit(ctx, "review.keep", item, conf, id).await;
+                        }
+                        return Ok(());
+                    }
+                }
             }
             // 执行闸门（0027）：合并会立刻送出图外的东西——违规、派生、答案——留给人，
             // 把握再高也不动手。agent 的看法照记成建议，理由前面写明是闸门留下的

@@ -2384,6 +2384,63 @@ pub async fn list_merges(
 // LLM 裁决缓存
 // ---------------------------------------------------------------------------
 
+/// A same name is not an identity link (#1193). Only an explicitly timeless,
+/// unique ontology relation can connect the records without interpreting another
+/// model's explanation. Re-read both facts and their sources even on cache hits:
+/// a verdict outlives the evidence that once made it safe to apply.
+pub async fn namesake_identity_evidence(
+    pool: &PgPool,
+    kb_id: Uuid,
+    left: Uuid,
+    right: Uuid,
+) -> AppResult<Option<String>> {
+    let proof: Option<(Uuid, Uuid, Uuid, Uuid)> = sqlx::query_as(
+        "SELECT a.id, b.id, ca.id, cb.id
+         FROM entities ea JOIN entities eb ON eb.kb_id = ea.kb_id
+         JOIN facts a ON a.kb_id = ea.kb_id AND (a.subject_id = ea.id OR a.object_id = ea.id)
+         JOIN facts b ON b.kb_id = ea.kb_id AND b.predicate_id = a.predicate_id
+                     AND (b.subject_id = eb.id OR b.object_id = eb.id)
+         JOIN relation_types r ON r.id = a.predicate_id AND r.kb_id = ea.kb_id
+         JOIN fact_evidence fa ON fa.fact_id = a.id
+         JOIN fact_evidence fb ON fb.fact_id = b.id
+         JOIN chunks ca ON ca.id = fa.chunk_id AND ca.kb_id = ea.kb_id
+         JOIN chunks cb ON cb.id = fb.chunk_id AND cb.kb_id = ea.kb_id
+         JOIN documents da ON da.id = ca.document_id AND da.kb_id = ea.kb_id
+         JOIN documents db ON db.id = cb.document_id AND db.kb_id = ea.kb_id
+         WHERE ea.kb_id = $1 AND ea.id = $2 AND eb.id = $3 AND ea.id <> eb.id
+           AND ea.merged_into IS NULL AND eb.merged_into IS NULL
+           AND ea.canonical_name = eb.canonical_name
+           AND a.invalidated_at IS NULL AND b.invalidated_at IS NULL
+           AND a.derived_by_rule IS NULL AND b.derived_by_rule IS NULL
+           AND r.temporal = 'eternal' AND r.key <> 'known_as'
+           AND a.valid_from IS NULL AND a.valid_to IS NULL
+           AND b.valid_from IS NULL AND b.valid_to IS NULL
+           AND a.valid_from_precision IS NULL AND a.valid_to_precision IS NULL
+           AND b.valid_from_precision IS NULL AND b.valid_to_precision IS NULL
+           AND ((r.inverse_functional AND a.subject_id = ea.id AND b.subject_id = eb.id
+                 AND ((a.object_id IS NOT NULL AND a.object_id = b.object_id)
+                      OR (r.kind = 'attribute' AND a.object_value = b.object_value
+                          AND jsonb_typeof(a.object_value->'value') IN ('string','number','boolean')
+                          AND length(trim(a.object_value->>'value')) > 0)))
+             OR (r.functional AND a.object_id = ea.id AND b.object_id = eb.id
+                 AND a.subject_id = b.subject_id))
+           AND ca.superseded_at IS NULL AND cb.superseded_at IS NULL
+           AND da.deleted_at IS NULL AND db.deleted_at IS NULL
+           AND da.purged_at IS NULL AND db.purged_at IS NULL
+           AND fa.document_id = ca.document_id AND fb.document_id = cb.document_id
+           AND fa.doc_version = ca.doc_version AND fb.doc_version = cb.doc_version
+           AND length(trim(fa.quote)) > 0 AND length(trim(fb.quote)) > 0
+           AND strpos(ca.text, fa.quote) > 0 AND strpos(cb.text, fb.quote) > 0
+         ORDER BY a.id, b.id, ca.id, cb.id LIMIT 1",
+    )
+    .bind(kb_id)
+    .bind(left)
+    .bind(right)
+    .fetch_optional(pool)
+    .await?;
+    Ok(proof.map(|(a, b, ca, cb)| format!("identity_evidence|facts={a},{b}|chunks={ca},{cb}")))
+}
+
 pub async fn get_verdict(
     pool: &PgPool,
     kb_id: Uuid,

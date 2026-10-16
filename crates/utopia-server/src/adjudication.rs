@@ -85,6 +85,23 @@ pub(crate) fn batch_verdict_may_apply(item: &ReviewItem, same: Option<bool>) -> 
 /// 第二眼没跑成时上交的理由
 pub(crate) const SECOND_LOOK_UNAVAILABLE: &str = "escalate_unsure|second_look_unavailable";
 
+pub(crate) const NO_IDENTITY_EVIDENCE: &str = "kept_apart|no_checkable_identity_evidence";
+
+pub(crate) fn no_identity_reason(item: &ReviewItem) -> String {
+    match item.reason.as_deref() {
+        Some(reason)
+            if item.stage == "human"
+                && reason.starts_with("namesake_tie|")
+                && !reason.contains("|redirected") =>
+        {
+            // Left is the unresolved mention, not an identified namesake. Keeping
+            // it apart closes review work without inventing an identity for it.
+            format!("{NO_IDENTITY_EVIDENCE}|unresolved_namesake_left|{reason}")
+        }
+        _ => NO_IDENTITY_EVIDENCE.into(),
+    }
+}
+
 /// 一次裁决落地成了什么：第二层的行按它记 applied 还是 proposed
 enum Outcome {
     Merged(Uuid),
@@ -103,7 +120,10 @@ async fn record_look(
     look: &Look,
     outcome: &Outcome,
 ) -> anyhow::Result<()> {
+    let evidence_held = matches!(outcome, Outcome::Kept) && look.same == Some(true);
+    let held_reason = evidence_held.then(|| no_identity_reason(item));
     let action = match look.same {
+        Some(true) if evidence_held => "keep",
         Some(true) => "merge",
         Some(false) => "keep",
         None => "unsure",
@@ -121,7 +141,7 @@ async fn record_look(
             target_id: item.id,
             action,
             confidence: look.conf,
-            reason: look.why.as_deref(),
+            reason: held_reason.as_deref().or(look.why.as_deref()),
             precedents: gov::precedents_json(p),
             status,
             merge_id,
@@ -381,6 +401,42 @@ async fn apply_verdict(
 ) -> anyhow::Result<Outcome> {
     // 有把握就动手，不再抽一成给人（0026 修订）：队列里等人的，只剩机器拿不准、
     // 或闸门说合了会送出图外的那些
+    let evidence = if same == Some(true) && conf >= AUTO_CONF && item.left.name == item.right.name {
+        match utopia_store::resolution::namesake_identity_evidence(
+            &state.pool,
+            kb_id,
+            item.left.id,
+            item.right.id,
+        )
+        .await?
+        {
+            Some(proof) => Some(proof),
+            None => {
+                // Keeping is reversible and does not turn one missing identity
+                // link into another item in the human queue (#1193).
+                let reason = no_identity_reason(item);
+                utopia_store::resolution::close_review_auto(&state.pool, item.id, "kept", &reason)
+                    .await?;
+                let _ = utopia_store::audit::record_opt(
+                    &state.pool,
+                    Some(kb_id),
+                    None,
+                    "review.keep",
+                    "review",
+                    Some(item.id),
+                    serde_json::json!({
+                        "left": item.left.name, "right": item.right.name,
+                        "score": item.score, "confidence": conf, "via": via,
+                        "why": why, "model_same": true, "reason": reason,
+                    }),
+                )
+                .await;
+                return Ok(Outcome::Kept);
+            }
+        }
+    } else {
+        None
+    };
     let outcome = match same {
         Some(true) if conf >= AUTO_CONF => {
             // 执行闸门（0027）：合并会立刻送出图外的东西——违规、派生、答案——留给人，
@@ -404,7 +460,11 @@ async fn apply_verdict(
             let (target, source) =
                 utopia_store::resolution::merge_direction(&state.pool, item.left.id, item.right.id)
                     .await?;
-            let reason = format!("auto_merged|{via} {conf:.2}");
+            let mut reason = format!("auto_merged|{via} {conf:.2}");
+            if let Some(proof) = evidence {
+                reason.push('|');
+                reason.push_str(&proof);
+            }
             match utopia_store::resolution::merge_entities(
                 &state.pool,
                 kb_id,
@@ -555,12 +615,265 @@ mod tests {
         ));
     }
 
-    /// 同名家族的对不受影响：够线就照旧自动落地
+    /// 同名对的证据闸门不增加第二眼调用；不到线的仍按原来的路径再看。
     #[test]
-    fn a_same_name_pair_keeps_the_old_rule() {
+    fn a_same_name_pair_does_not_add_a_second_look() {
         let p = gov::Precedents::default();
         let it = item("ambiguous_name|0.41");
         assert!(!needs_second_look(&it, &p, Some(true), 0.9));
         assert!(needs_second_look(&it, &p, Some(true), 0.6), "不到线才再看");
+    }
+
+    struct EvidenceFixture {
+        state: AppState,
+        org: Uuid,
+        kb: Uuid,
+        workspace: Uuid,
+        relation: Uuid,
+        facts: [Uuid; 2],
+        chunks: [Uuid; 2],
+        _dir: tempfile::TempDir,
+    }
+
+    async fn evidence_fixture() -> anyhow::Result<Option<EvidenceFixture>> {
+        let Some(url) = utopia_store::test_db::url() else {
+            return Ok(None);
+        };
+        let pool = sqlx::PgPool::connect(&url).await?;
+        let (org, workspace, kb, relation) = (
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+        );
+        let (left, right, doc) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
+        let facts = [Uuid::now_v7(), Uuid::now_v7()];
+        let chunks = [Uuid::now_v7(), Uuid::now_v7()];
+        sqlx::raw_sql(&format!(
+            "INSERT INTO organizations(id,name) VALUES ('{org}','identity-evidence');
+             INSERT INTO workspaces(id,org_id,name) VALUES ('{workspace}','{org}','identity-evidence');
+             INSERT INTO knowledge_bases(id,workspace_id,name) VALUES ('{kb}','{workspace}','identity-evidence');
+             INSERT INTO entities(id,kb_id,canonical_name) VALUES ('{left}','{kb}','张伟'),('{right}','{kb}','张伟');
+             INSERT INTO documents(id,kb_id,filename,sha256) VALUES ('{doc}','{kb}','identity.txt','{doc}');
+             INSERT INTO relation_types(id,kb_id,key,label,kind,datatype,temporal,inverse_functional)
+                 VALUES ('{relation}','{kb}','identifier','identifier','attribute','text','eternal',TRUE);"
+        )).execute(&pool).await?;
+        for (seq, subject) in [left, right].iter().enumerate() {
+            sqlx::raw_sql(&format!(
+                "INSERT INTO facts(id,kb_id,subject_id,predicate_id,object_value)
+                     VALUES ('{fact}','{kb}','{subject}','{relation}','{{\"value\":\"ID-7\"}}');
+                 INSERT INTO chunks(id,kb_id,document_id,seq,text)
+                     VALUES ('{chunk}','{kb}','{doc}',{seq},'张伟的终身编号是 ID-7。');
+                 INSERT INTO fact_evidence(fact_id,chunk_id,document_id,doc_version,quote)
+                     VALUES ('{fact}','{chunk}','{doc}',1,'张伟的终身编号是 ID-7。');",
+                fact = facts[seq],
+                chunk = chunks[seq],
+            ))
+            .execute(&pool)
+            .await?;
+        }
+        utopia_store::resolution::create_review(
+            &pool,
+            kb,
+            left,
+            right,
+            0.85,
+            "ambiguous_name|0.85",
+            utopia_store::resolution::ReviewStage::Adjudicating,
+        )
+        .await?;
+        let dir = tempfile::tempdir()?;
+        let cfg = utopia_core::config::AppConfig {
+            data_dir: dir.path().to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+        let search = Arc::new(utopia_search::SearchIndex::open(
+            &dir.path().join("search"),
+        )?);
+        Ok(Some(EvidenceFixture {
+            state: AppState::new(pool, &cfg, search, "test-only".into()),
+            org,
+            kb,
+            workspace,
+            relation,
+            facts,
+            chunks,
+            _dir: dir,
+        }))
+    }
+
+    impl EvidenceFixture {
+        async fn item(&self) -> anyhow::Result<ReviewItem> {
+            Ok(
+                utopia_store::resolution::pending_adjudications(&self.state.pool, self.kb, 1)
+                    .await?
+                    .remove(0),
+            )
+        }
+        async fn finish(self, result: anyhow::Result<()>) -> anyhow::Result<()> {
+            sqlx::query("DELETE FROM organizations WHERE id=$1")
+                .bind(self.org)
+                .execute(&self.state.pool)
+                .await?;
+            result
+        }
+    }
+
+    /// Known true duplicates with only a common employer are one intentional lost
+    /// merge; timeless unique identifiers preserve the supported true duplicate.
+    #[tokio::test]
+    async fn namesake_evidence_keeps_employer_only_apart_but_preserves_unique_identity(
+    ) -> anyhow::Result<()> {
+        for unique in [false, true] {
+            let Some(f) = evidence_fixture().await? else {
+                return Ok(());
+            };
+            let result = async {
+                if !unique {
+                    let employer = Uuid::now_v7();
+                    sqlx::query("INSERT INTO entities(id,kb_id,canonical_name) VALUES ($1,$2,'Acme')").bind(employer).bind(f.kb).execute(&f.state.pool).await?;
+                    sqlx::query("UPDATE relation_types SET key='works_for', label='employer', kind='relation', datatype=NULL, temporal='state', inverse_functional=FALSE WHERE id=$1").bind(f.relation).execute(&f.state.pool).await?;
+                    sqlx::query("UPDATE facts SET object_value=NULL, object_id=$2 WHERE id=ANY($1)").bind(f.facts.as_slice()).bind(employer).execute(&f.state.pool).await?;
+                    sqlx::query("UPDATE chunks SET text='张伟任职于 Acme。' WHERE id=ANY($1)").bind(f.chunks.as_slice()).execute(&f.state.pool).await?;
+                    sqlx::query("UPDATE fact_evidence SET quote='张伟任职于 Acme。' WHERE fact_id=ANY($1)").bind(f.facts.as_slice()).execute(&f.state.pool).await?;
+                }
+                let mut it = f.item().await?;
+                if !unique {
+                    it.stage = "human".into();
+                    it.reason = Some("namesake_tie|0.85".into());
+                    sqlx::query("UPDATE resolution_reviews SET stage='human', reason='namesake_tie|0.85' WHERE id=$1").bind(it.id).execute(&f.state.pool).await?;
+                }
+                let outcome = apply_verdict(&f.state, f.kb, &it, Some(true), 0.99, "adjudicated", Some("nothing contradicts")).await?;
+                assert_eq!(matches!(outcome, Outcome::Merged(_)), unique);
+                let (status, reason, human): (String, String, i64) = sqlx::query_as("SELECT status, reason, (SELECT count(*) FROM resolution_reviews WHERE kb_id=$2 AND status='pending' AND stage='human') FROM resolution_reviews WHERE id=$1").bind(it.id).bind(f.kb).fetch_one(&f.state.pool).await?;
+                assert_eq!(human, 0);
+                if unique { assert_eq!(status, "merged"); assert!(reason.contains("identity_evidence|facts=")); }
+                else {
+                    assert_eq!(status, "kept"); assert_eq!(reason, format!("{NO_IDENTITY_EVIDENCE}|unresolved_namesake_left|namesake_tie|0.85"));
+                    let detail: serde_json::Value = sqlx::query_scalar("SELECT detail FROM audit_events WHERE target_id=$1 AND action='review.keep'").bind(it.id).fetch_one(&f.state.pool).await?;
+                    assert_eq!(detail["reason"], reason);
+                    assert_eq!(detail["model_same"], true);
+                    let look = Look::from_batch(Some(true), 0.99, Some("nothing contradicts".into()));
+                    record_look(&f.state, f.kb, Uuid::now_v7(), &it, &gov::Precedents::default(), &look, &outcome).await?;
+                    let row: (String,String,String) = sqlx::query_as("SELECT action,status,reason FROM agent_decisions WHERE target_id=$1").bind(it.id).fetch_one(&f.state.pool).await?;
+                    assert_eq!(row, ("keep".into(), "applied".into(), no_identity_reason(&it)));
+                }
+                Ok(())
+            }.await;
+            f.finish(result).await?;
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn namesake_cached_same_rechecks_invalidated_evidence() -> anyhow::Result<()> {
+        let Some(f) = evidence_fixture().await? else {
+            return Ok(());
+        };
+        let result = async {
+            let it = f.item().await?;
+            assert!(utopia_store::resolution::namesake_identity_evidence(
+                &f.state.pool,
+                f.kb,
+                it.left.id,
+                it.right.id
+            )
+            .await?
+            .is_some());
+            let p = gov::precedents_for(&f.state.pool, f.kb, &it).await?;
+            utopia_store::resolution::put_verdict(
+                &f.state.pool,
+                f.kb,
+                &pair_key(&it, &gov::render_lines(&p)),
+                Some(true),
+                0.99,
+                "test-only",
+            )
+            .await?;
+            sqlx::query("UPDATE chunks SET superseded_at=now() WHERE id=$1")
+                .bind(f.chunks[1])
+                .execute(&f.state.pool)
+                .await?;
+            // The dead endpoint makes an accidental extra model call fail the test.
+            utopia_store::settings::upsert(
+                &f.state.pool,
+                f.workspace,
+                Some("http://127.0.0.1:1/v1"),
+                Some("test-only"),
+                Some("test-only"),
+                None,
+                None,
+                None,
+                None,
+            )
+            .await?;
+            adjudicate_entities(&f.state, f.kb).await?;
+            let status: String =
+                sqlx::query_scalar("SELECT status FROM resolution_reviews WHERE id=$1")
+                    .bind(it.id)
+                    .fetch_one(&f.state.pool)
+                    .await?;
+            assert_eq!(status, "kept");
+            Ok(())
+        }
+        .await;
+        f.finish(result).await
+    }
+
+    #[tokio::test]
+    async fn namesake_incoming_unique_identity_still_merges_and_rolls_back() -> anyhow::Result<()> {
+        let Some(f) = evidence_fixture().await? else {
+            return Ok(());
+        };
+        let result = async {
+            let it = f.item().await?;
+            let identifier = Uuid::now_v7();
+            sqlx::query("INSERT INTO entities(id,kb_id,canonical_name) VALUES ($1,$2,'ID-7')").bind(identifier).bind(f.kb).execute(&f.state.pool).await?;
+            sqlx::query("UPDATE relation_types SET kind='relation', datatype=NULL, functional=TRUE, inverse_functional=FALSE WHERE id=$1").bind(f.relation).execute(&f.state.pool).await?;
+            for (fact, person) in f.facts.iter().zip([it.left.id, it.right.id]) {
+                sqlx::query("UPDATE facts SET subject_id=$2, object_id=$3, object_value=NULL WHERE id=$1").bind(fact).bind(identifier).bind(person).execute(&f.state.pool).await?;
+            }
+            sqlx::query("UPDATE chunks SET text='终身编号 ID-7 的持有人是张伟。' WHERE id=ANY($1)").bind(f.chunks.as_slice()).execute(&f.state.pool).await?;
+            sqlx::query("UPDATE fact_evidence SET quote='终身编号 ID-7 的持有人是张伟。' WHERE fact_id=ANY($1)").bind(f.facts.as_slice()).execute(&f.state.pool).await?;
+            let outcome = apply_verdict(&f.state, f.kb, &it, Some(true), 0.99, "investigated", None).await?;
+            let Outcome::Merged(merge) = outcome else { anyhow::bail!("timeless unique incoming link did not merge") };
+            utopia_store::resolution::revert_merge(&f.state.pool, f.kb, merge).await?;
+            assert!(utopia_store::resolution::namesake_identity_evidence(&f.state.pool, f.kb, it.left.id, it.right.id).await?.is_some());
+            Ok(())
+        }.await;
+        f.finish(result).await
+    }
+
+    #[tokio::test]
+    async fn namesake_evidence_rejects_stale_unrelated_and_missing_quotes() -> anyhow::Result<()> {
+        let Some(f) = evidence_fixture().await? else {
+            return Ok(());
+        };
+        let result = async {
+            let it = f.item().await?;
+            for change in [
+                "UPDATE facts SET valid_to_precision='unknown', attested_to=now() WHERE id=ANY($1)",
+                "UPDATE facts SET object_value='{\"value\":null}' WHERE id=ANY($1)",
+                "UPDATE facts SET object_value='{\"value\":\" \"}' WHERE id=ANY($1)",
+                "UPDATE facts SET invalidated_at=now() WHERE id=ANY($1)",
+            ] {
+                sqlx::query(change).bind(f.facts.as_slice()).execute(&f.state.pool).await?;
+                assert!(utopia_store::resolution::namesake_identity_evidence(&f.state.pool, f.kb, it.left.id, it.right.id).await?.is_none());
+                sqlx::query("UPDATE facts SET valid_to_precision=NULL, attested_to=NULL, invalidated_at=NULL, object_value='{\"value\":\"ID-7\"}' WHERE id=ANY($1)").bind(f.facts.as_slice()).execute(&f.state.pool).await?;
+            }
+            for change in [
+                "UPDATE fact_evidence SET quote=NULL WHERE fact_id=$1",
+                "UPDATE fact_evidence SET quote='not in this source' WHERE fact_id=$1",
+                "UPDATE fact_evidence SET quote='张伟的终身编号是 ID-7。', document_id=NULL WHERE fact_id=$1",
+            ] {
+                sqlx::query(change).bind(f.facts[1]).execute(&f.state.pool).await?;
+                assert!(utopia_store::resolution::namesake_identity_evidence(&f.state.pool, f.kb, it.left.id, it.right.id).await?.is_none());
+            }
+            sqlx::query("UPDATE fact_evidence SET document_id=(SELECT document_id FROM chunks WHERE id=chunk_id), quote='张伟的终身编号是 ID-7。' WHERE fact_id=$1").bind(f.facts[1]).execute(&f.state.pool).await?;
+            sqlx::query("UPDATE chunks SET superseded_at=now() WHERE id=$1").bind(f.chunks[1]).execute(&f.state.pool).await?;
+            assert!(utopia_store::resolution::namesake_identity_evidence(&f.state.pool, f.kb, it.left.id, it.right.id).await?.is_none());
+            Ok(())
+        }.await;
+        f.finish(result).await
     }
 }
