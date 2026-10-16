@@ -422,6 +422,8 @@ impl<'a> Packer<'a> {
         for (offset, piece) in splitter.chunk_indices(block) {
             let sub = range.start + offset..range.start + offset + piece.len();
             if first {
+                // 第一小段带着标题当正文，前缀用上面那份：标题还在 `pending` 里时算的，不含它们。
+                // 从前每一小段都重算前缀，那时 `pending` 已经倒空，第一块把标题念两遍，有时还超了预算
                 self.body = headings
                     .iter()
                     .map(|h| match h {
@@ -430,9 +432,11 @@ impl<'a> Packer<'a> {
                     })
                     .collect();
                 first = false;
+            } else {
+                // 续块：标题已经贴上正文，前缀给整条路径
+                self.prefix = self.prefix_now();
             }
             self.body.push(Piece::Text(sub));
-            self.prefix = self.prefix_now();
             self.flush();
         }
     }
@@ -798,6 +802,32 @@ The tenant pays rent monthly.
             assert_eq!(&text[p.char_start as usize..p.char_end as usize], p.text);
             assert!(tokens(&p.text) <= 40);
         }
+    }
+
+    /// 小节下的第一段一段就超预算、退回按句切：切开的第一块是「上一级（前缀）· 这一节的标题 ·
+    /// 第一小段」，每条标题一遍；续块照旧以整条路径开头
+    #[test]
+    fn the_first_chunk_of_a_split_paragraph_carries_its_headings_once() {
+        let text = format!(
+            "# Report\n\nIntro.\n\n## Part A\n\n{}",
+            "One sentence here. Another sentence follows it. ".repeat(30)
+        );
+        let pieces = chunk_with_budget(&text, 40);
+        let i = pieces
+            .iter()
+            .position(|p| p.text.contains("One sentence"))
+            .expect("长段落切出的第一块");
+        let source = |p: &ChunkPiece| &text[p.char_start as usize..p.char_end as usize];
+        assert_eq!(
+            pieces[i].text,
+            format!("# Report\n\n{}", source(&pieces[i])),
+            "{} token，预算 40",
+            tokens(&pieces[i].text)
+        );
+        assert_eq!(
+            pieces[i + 1].text,
+            format!("# Report\n\n## Part A\n\n{}", source(&pieces[i + 1]))
+        );
     }
 
     #[test]
