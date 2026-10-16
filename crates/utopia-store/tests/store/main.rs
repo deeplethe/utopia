@@ -126,6 +126,7 @@ mod concurrent_chunk_replacement;
 mod cross_kb_provenance_fails_closed;
 mod derived_facts_are_second_class;
 mod ended_when_unknown;
+mod evidence_stays_inside_its_base;
 mod exploration_describes_the_data;
 mod export_surfaces;
 mod exported_references_never_cross_a_kb;
