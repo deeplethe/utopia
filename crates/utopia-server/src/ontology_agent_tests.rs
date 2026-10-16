@@ -2,15 +2,25 @@
 //! `ontology_proposals` 并记下服务的问题与形状；采纳建出属性并排对齐；提过的形状下一轮
 //! 不再送。没有 `UTOPIA_DATABASE_URL` 时跳过。
 use super::*;
+use axum::body::{to_bytes, Body};
+use axum::http::{Request, StatusCode};
 use axum::{extract::State, response::IntoResponse, routing::post, Json, Router};
 use serde_json::{json, Value};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use tower::ServiceExt;
 use utopia_store::phrase_bindings::Decision;
 
 #[derive(Clone)]
 struct Model {
     replies: Arc<Mutex<Vec<Value>>>,
     requests: Arc<Mutex<Vec<Value>>>,
+    embeds: Arc<AtomicUsize>,
+}
+/// 嵌入端点只数次数：采纳不该在请求里调它
+async fn embed(State(m): State<Model>) -> Json<Value> {
+    m.embeds.fetch_add(1, Ordering::SeqCst);
+    Json(json!({ "data": [] }))
 }
 async fn reply(State(m): State<Model>, Json(body): Json<Value>) -> impl IntoResponse {
     m.requests.lock().unwrap().push(body);
@@ -89,11 +99,13 @@ impl Fx {
         let model = Model {
             replies: Arc::new(Mutex::new(replies)),
             requests: Arc::new(Mutex::new(Vec::new())),
+            embeds: Arc::new(AtomicUsize::new(0)),
         };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let endpoint = format!("http://{}", listener.local_addr()?);
         let router = Router::new()
             .route("/chat/completions", post(reply))
+            .route("/embeddings", post(embed))
             .with_state(model.clone());
         let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
         utopia_store::settings::upsert(
@@ -178,6 +190,89 @@ impl Fx {
         self.model.requests.lock().unwrap().len()
     }
 
+    /// 一条形状写进提案里的样子，带第一条例句的陈述 id
+    async fn shape(&self, phrase: &str) -> anyhow::Result<Value> {
+        let sigs = phrase_bindings::signatures(&self.pool, self.kb).await?;
+        let sig = sigs
+            .iter()
+            .find(|s| s.phrase == phrase)
+            .ok_or_else(|| anyhow::anyhow!("no shape `{phrase}`"))?;
+        Ok(shape_of(sig))
+    }
+
+    /// 代理提过的一条，直接落库
+    async fn seed(
+        &self,
+        section: &str,
+        key: &str,
+        payload: Value,
+        signatures: Value,
+    ) -> anyhow::Result<()> {
+        utopia_store::ontology::save_agent_proposals(
+            &self.pool,
+            self.kb,
+            &[utopia_store::ontology::AgentProposal {
+                section: section.into(),
+                key: key.into(),
+                payload,
+                serves: Vec::new(),
+                signatures,
+            }],
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// 以这个库的编辑身份走一次接口
+    async fn post(&self, path: &str, body: Value) -> anyhow::Result<(StatusCode, Value)> {
+        sqlx::query(
+            "INSERT INTO kb_members(kb_id,user_id,role) VALUES($1,$2,'editor') ON CONFLICT DO NOTHING",
+        )
+        .bind(self.kb)
+        .bind(self.user)
+        .execute(&self.pool)
+        .await?;
+        let token = crate::auth::issue_token(&self.state, self.user)?;
+        let request = Request::post(format!("/api/v1/kbs/{}{path}", self.kb))
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::from(body.to_string()))?;
+        let response = crate::api::router(self.state.clone(), &Default::default())
+            .oneshot(request)
+            .await?;
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), 1 << 20).await?;
+        Ok((
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        ))
+    }
+
+    /// 这个库排着的任务，按到期的先后
+    async fn queued(&self) -> anyhow::Result<Vec<String>> {
+        Ok(sqlx::query_scalar(
+            "SELECT kind FROM jobs WHERE status='queued' AND payload->>'kb_id'=$1 ORDER BY run_at, id",
+        )
+        .bind(self.kb.to_string())
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    /// 一个键留下了什么：同键的元素在不在、提案的状态、这个库的任务数、回归用例数
+    async fn left_by(&self, key: &str) -> anyhow::Result<(bool, String, i64, i64)> {
+        Ok(sqlx::query_as(
+            "SELECT EXISTS(SELECT 1 FROM relation_types WHERE kb_id=$1 AND key=$2)
+                    OR EXISTS(SELECT 1 FROM entity_types WHERE kb_id=$1 AND key=$2),
+                    (SELECT status FROM ontology_proposals WHERE kb_id=$1 AND key=$2),
+                    (SELECT count(*) FROM jobs WHERE payload->>'kb_id'=$1::text),
+                    (SELECT count(*) FROM ontology_regression_cases WHERE kb_id=$1)",
+        )
+        .bind(self.kb)
+        .bind(key)
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
     async fn cleanup(self) -> anyhow::Result<()> {
         self.server.abort();
         sqlx::query("DELETE FROM jobs WHERE payload->>'kb_id'=$1")
@@ -199,6 +294,17 @@ impl Fx {
             .await?;
         Ok(())
     }
+}
+
+/// founded in 那条形状提成的关系：organization → place
+fn founded_in() -> Value {
+    json!({ "key": "founded_in", "label": "founded in", "description": "where an organization was founded",
+            "temporal": "state", "domains": ["organization"], "ranges": ["place"], "proposed_by": "agent" })
+}
+
+/// 代理提的新类：city，父类 place
+fn city() -> Value {
+    json!({ "key": "city", "label": "City", "description": "a city", "parents": ["place"], "proposed_by": "agent" })
 }
 
 fn user_text(request: &Value) -> String {
@@ -674,5 +780,224 @@ async fn a_base_with_no_questions_gets_them_proposed_and_the_report_counts_them(
         (p.open, p.adopted, p.adopted_edited, p.rejected),
         (0, 0, 0, 0)
     );
+    f.cleanup().await
+}
+
+/// 采纳半途失败什么都不留。字面值属性的例句宾语是实体，回归用例写不进去：从前属性先提交、
+/// 对齐先排上，提案还开着而键已被占，这条提案再也采纳不了
+#[tokio::test]
+async fn a_failed_adoption_leaves_nothing_behind() -> anyhow::Result<()> {
+    let Some(f) = Fx::new(Vec::new()).await? else {
+        return Ok(());
+    };
+    let founding_note = json!({ "key": "founding_note", "label": "founding note", "description": "x",
+                                "datatype": "text", "domains": ["organization"], "proposed_by": "agent" });
+    let shapes = json!({ "phrases": [f.shape("founded in").await?] });
+    f.seed("attribute_types", "founding_note", founding_note, shapes)
+        .await?;
+    let adopt = json!({ "section": "attribute_types", "key": "founding_note" });
+    let (status, body) = f.post("/ontology/proposals/adopt", adopt).await?;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["code"], "bad_property_shape");
+    assert_eq!(
+        f.left_by("founding_note").await?,
+        (false, "open".to_string(), 0, 0),
+        "no attribute, no job, no case; the proposal stays open for a person to reject"
+    );
+    f.cleanup().await
+}
+
+/// 只改状态的接口不再收「采纳」：从前它把提案标成采纳，元素却没建
+#[tokio::test]
+async fn the_status_only_endpoint_does_not_adopt() -> anyhow::Result<()> {
+    let Some(f) = Fx::new(Vec::new()).await? else {
+        return Ok(());
+    };
+    f.seed("relation_types", "founded_in", founded_in(), json!({}))
+        .await?;
+    let adopt = json!({ "section": "relation_types", "key": "founded_in", "status": "adopted" });
+    let (status, body) = f.post("/ontology/proposals", adopt).await?;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["code"], "adoption_endpoint");
+    assert_eq!(
+        f.left_by("founded_in").await?,
+        (false, "open".to_string(), 0, 0)
+    );
+    f.cleanup().await
+}
+
+/// 退役的 Suggest 留下的提案不能采纳：工作台早就不列它（`stored_proposals`），从前直接调采纳的
+/// 接口却照样建出元素
+#[tokio::test]
+async fn a_proposal_the_retired_suggest_left_is_not_adopted() -> anyhow::Result<()> {
+    let Some(f) = Fx::new(Vec::new()).await? else {
+        return Ok(());
+    };
+    f.seed("relation_types", "founded_in", founded_in(), json!({}))
+        .await?;
+    sqlx::query("UPDATE ontology_proposals SET proposed_by='suggest' WHERE kb_id=$1")
+        .bind(f.kb)
+        .execute(&f.pool)
+        .await?;
+    let adopt = json!({ "section": "relation_types", "key": "founded_in" });
+    let (status, body) = f.post("/ontology/proposals/adopt", adopt).await?;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    f.cleanup().await
+}
+
+/// 采纳像编辑器一样先排补向量、再排对齐（新属性排短语对齐，新类排类别词对齐），和元素同一次
+/// 提交，请求里不调嵌入。对齐晚 5 秒到期：同时到期的话两份一起被领走，对齐看见补向量正跑着，
+/// 就把自己挪到半分钟后
+#[tokio::test]
+async fn adoption_queues_vectors_before_alignment() -> anyhow::Result<()> {
+    let Some(f) = Fx::new(Vec::new()).await? else {
+        return Ok(());
+    };
+    // 配上嵌入模型：请求里就地嵌的话，嵌入端点数得到
+    sqlx::query(
+        "UPDATE llm_settings SET embed_base_url = chat_base_url, embed_model = 'scripted-embed'
+          WHERE workspace_id = (SELECT workspace_id FROM knowledge_bases WHERE id = $1)",
+    )
+    .bind(f.kb)
+    .execute(&f.pool)
+    .await?;
+    f.seed("relation_types", "founded_in", founded_in(), json!({}))
+        .await?;
+    f.seed("entity_types", "city", city(), json!({})).await?;
+    for (section, key, align) in [
+        ("relation_types", "founded_in", "align_phrases"),
+        ("entity_types", "city", "align_types"),
+    ] {
+        let adopt = json!({ "section": section, "key": key });
+        let (status, body) = f.post("/ontology/proposals/adopt", adopt).await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(
+            (f.queued().await?, f.model.embeds.load(Ordering::SeqCst)),
+            (vec!["embed_ontology".to_string(), align.to_string()], 0),
+            "{key}: the vectors are queued ahead of alignment, and the request embeds nothing"
+        );
+        let gap: f64 = sqlx::query_scalar(
+            "SELECT extract(epoch FROM max(run_at) - min(run_at))::float8 FROM jobs WHERE payload->>'kb_id'=$1",
+        )
+        .bind(f.kb.to_string())
+        .fetch_one(&f.pool)
+        .await?;
+        assert!(
+            gap >= 5.0,
+            "{key}: alignment is due {gap} s after the vectors"
+        );
+        sqlx::query("DELETE FROM jobs WHERE payload->>'kb_id'=$1")
+            .bind(f.kb.to_string())
+            .execute(&f.pool)
+            .await?;
+    }
+    f.cleanup().await
+}
+
+/// 复用属性时每条形状写一条人的绑定，整次采纳排一份投影，不是一条形状一份
+#[tokio::test]
+async fn a_reuse_queues_one_projection_for_its_shapes() -> anyhow::Result<()> {
+    let Some(f) = Fx::new(Vec::new()).await? else {
+        return Ok(());
+    };
+    let shapes = json!({ "phrases": [f.shape("located in").await?, f.shape("founded in").await?] });
+    let reuse = json!({ "key": "located_in", "label": "located in", "kind": "relation", "proposed_by": "agent" });
+    f.seed("map_to", "located_in", reuse, shapes).await?;
+    let adopt = json!({ "section": "map_to", "key": "located_in" });
+    let (status, body) = f.post("/ontology/proposals/adopt", adopt).await?;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let bound: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM phrase_bindings WHERE kb_id=$1 AND decided_by='person' AND relation_type_id=$2",
+    )
+    .bind(f.kb)
+    .bind(f.located_in)
+    .fetch_one(&f.pool)
+    .await?;
+    assert_eq!(
+        (bound, f.queued().await?),
+        (2, vec![phrase_bindings::MATERIALIZE_KIND.to_string()]),
+        "both shapes are the person's, and one projection follows them"
+    );
+    f.cleanup().await
+}
+
+/// 复用类时类别词写成人的判定，整次采纳另排一份短语对齐，已经排着一份也照排：那份可能在这次
+/// 提交之前就被领走，读不到换过的类
+#[tokio::test]
+async fn a_class_reuse_queues_its_own_phrase_alignment() -> anyhow::Result<()> {
+    let Some(f) = Fx::new(Vec::new()).await? else {
+        return Ok(());
+    };
+    utopia_store::jobs::enqueue(&f.pool, "align_phrases", json!({ "kb_id": f.kb })).await?;
+    let reuse = json!({ "key": "organization", "kind": "class", "proposed_by": "agent" });
+    let words = json!({ "kind_words": ["company"] });
+    f.seed("map_to", "organization", reuse, words).await?;
+    let adopt = json!({ "section": "map_to", "key": "organization" });
+    let (status, body) = f.post("/ontology/proposals/adopt", adopt).await?;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let bound: Option<Uuid> = sqlx::query_scalar(
+        "SELECT type_id FROM type_bindings WHERE kb_id=$1 AND kind_word='company' AND decided_by='person'",
+    )
+    .bind(f.kb)
+    .fetch_one(&f.pool)
+    .await?;
+    assert_eq!(
+        (bound, f.queued().await?),
+        (Some(f.organization), vec!["align_phrases".to_string(); 2]),
+        "company is the person's, and the adoption queues its own phrase alignment"
+    );
+    f.cleanup().await
+}
+
+/// 采纳途中，提案要的类被删了：等删完答 unknown_class，什么都不写，不是写父类时才撞上外键
+#[tokio::test]
+async fn a_class_deleted_during_adoption_answers_unknown_class() -> anyhow::Result<()> {
+    let Some(f) = Fx::new(Vec::new()).await? else {
+        return Ok(());
+    };
+    // 没有实体的类才删得掉
+    sqlx::query(
+        "INSERT INTO entity_types(id,kb_id,key,label,color,shape,description)
+         VALUES ($1,$2,'region','Region','#000','circle','x')",
+    )
+    .bind(Uuid::now_v7())
+    .bind(f.kb)
+    .execute(&f.pool)
+    .await?;
+    let mut town = city();
+    town["parents"] = json!(["region"]);
+    f.seed("entity_types", "city", town, json!({})).await?;
+    let mut deleting = f.pool.begin().await?;
+    let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *deleting)
+        .await?;
+    sqlx::query("DELETE FROM entity_types WHERE kb_id=$1 AND key='region'")
+        .bind(f.kb)
+        .execute(&mut *deleting)
+        .await?;
+    let pool = f.pool.clone();
+    let delete = async move {
+        // 等采纳排到这次删除后面，再提交
+        for _ in 0..500 {
+            let waiting: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid)))",
+            )
+            .bind(pid)
+            .fetch_one(&pool)
+            .await?;
+            if waiting {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        deleting.commit().await?;
+        anyhow::Ok(())
+    };
+    let adopt = json!({ "section": "entity_types", "key": "city" });
+    let ((status, body), ()) =
+        tokio::try_join!(f.post("/ontology/proposals/adopt", adopt), delete)?;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    assert_eq!(body["code"], "unknown_class");
+    assert_eq!(f.left_by("city").await?, (false, "open".to_string(), 0, 0));
     f.cleanup().await
 }
