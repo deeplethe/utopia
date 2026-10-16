@@ -7,6 +7,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams, useNavigate } from "@tanstack/react-router";
 import {
   History as HistoryIcon,
+  Download,
   Lock,
   Plus,
   Search,
@@ -434,6 +435,19 @@ export function KbSettings() {
                   }
                 />
               )}
+
+              <SettingsCard
+                title={S.kbset.exportKb}
+                hint={S.kbset.exportKbNote}
+                action={
+                  <Button variant="secondary" size="sm"
+                    onClick={() => window.open(`/api/v1/kbs/${kbId}/export?format=turtle`)}
+                  >
+                    <Download size={14} />
+                    {S.kbset.exportKbAction}
+                  </Button>
+                }
+              />
             </div>
           )}
 

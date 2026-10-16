@@ -92,6 +92,47 @@ The list refreshes through the existing graph and review events; refreshing read
 saved results and never starts alignment. No evaluator, job, schema migration,
 or version identity is added.
 
+## Cut 2 negative expectations — proposed 2026-10-12
+
+The [review of #1184](https://github.com/deeplethe/utopia/pull/1184#pullrequestreview-5479816945)
+found that a person cannot say a statement should bind to no property. The
+example, `不再负责` bound to `responsibleFor`, motivates a human expectation,
+not a rule that every negation or ending must be unbound. This contract must
+land before implementation; the preceding slices remain implemented.
+
+**An expectation says either bound or none.** Extend the existing Editor POST
+with optional `expected_binding`, either `bound` or `none`; omission means
+`bound` and preserves existing requests. Bound requires `relation_type_id`
+and `direction` with their current validation. None uses
+`{statement_id, expected_binding: "none"}`, with both target fields omitted or
+null. Reject unknown expectation values, incomplete bound targets, and any
+non-null target on a none request. A missing property alone is not a negative
+expectation. Both kinds require a live open statement in the same base and
+Editor access. Adoption continues to write positive cases only.
+
+**Absence has no synthetic property.** For a negative case,
+`expected_property_id` and `expected_direction` are both null; for a positive
+case both remain present. Preserve existing rows, same-base isolation, and
+ownership checks. Repeated confirmation of the same negative expectation,
+including concurrent requests, returns the original case with its actor and
+origin. Deleting a target property removes its positive cases; a negative case
+has no target to delete.
+
+**Compare committed decisions, not just target IDs.** A negative case passes
+only on an explicit `none` decision. `bound` and `undecided` fail; no decision
+leaves the case unchecked. A null actual property alone does not pass, since
+undecided decisions also have no property. A person's explicit none decision
+passes a negative case and fails a positive one. Comparisons retain the actual
+decision and its time separately from the check time, in the existing binding
+transaction; no evaluator, extra job, or binding status is added.
+
+**The human-bound exception applies only to positive cases.** Positive cases
+retain the existing exception and report `human_bound`, not an independent
+match. A negative expectation conflicting with a person's bound signature
+fails and explicitly reports a conflict with the human binding, including the
+actual property and direction. A failed case does not overwrite the person's
+binding: it makes the disagreement visible for a person to resolve.
+
 ## Status history
 
 The status line as it stood on 2026-09-27, before status lines were cut to one line:

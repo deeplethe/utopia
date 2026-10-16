@@ -2070,6 +2070,9 @@ export const zh: Strings = {
     failedJobs: (n: number) => `${n} 个失败的任务`,
     requeue: "再跑一遍",
     requeued: (n: number) => `${n} 个任务回到队列`,
+    exportKb: "导出整个知识库（RDF）",
+    exportKbNote: "把所有事实及其出处下载为 Turtle 文件。",
+    exportKbAction: "导出",
     cardIdentity: "名字与描述",
     cardIdentityNote: "最长 64 个字符。切换器和这个库每一页的顶上用的都是它。",
     cardVisibilityNote:
