@@ -10,9 +10,13 @@ use futures_util::{stream, Stream, StreamExt};
 use rig_core::completion::{
     CompletionError, CompletionModel, CompletionRequest, CompletionResponse, Usage,
 };
-use rig_core::message::{AssistantContent, Message, ToolChoice, ToolResultContent, UserContent};
+use rig_core::message::{
+    AssistantContent, Message, Reasoning, ReasoningContent, ToolChoice, ToolResultContent,
+    UserContent,
+};
 use rig_core::streaming::{
-    RawStreamingChoice, RawStreamingToolCall, StreamFinal, StreamingCompletionResponse,
+    MintKind, RawStreamingChoice, RawStreamingToolCall, StreamFinal, StreamPartId,
+    StreamingCompletionResponse,
 };
 use serde_json::{json, Value};
 use utopia_llm::{AssistantTurn, LlmClient, ToolStreamItem};
@@ -95,25 +99,32 @@ impl CompletionModel for RigModel {
         let w = wire(&request);
         let source = self.open_stream(&w).await?;
         // `LlmClient` 的流已经把工具调用按 index 归并好、放在流末的 `Turn` 里；
-        // rig 只要每个调用一条 `ToolCall`，再一条 `FinalResponse` 收尾
+        // 推理块也要交给 rig 保留，下一次工具续接时随 assistant 消息回传
         let inner = source.flat_map(|item| {
             let items: Vec<Result<RawStreamingChoice, CompletionError>> = match item {
                 Ok(ToolStreamItem::Delta(text)) => vec![Ok(RawStreamingChoice::Message(text))],
                 Ok(ToolStreamItem::Turn(turn)) => {
-                    let mut v: Vec<_> = turn
-                        .tool_calls
-                        .iter()
-                        .map(|c| {
-                            Ok(RawStreamingChoice::ToolCall(
-                                RawStreamingToolCall::new(
-                                    call_id(&c.id),
-                                    c.name.clone(),
-                                    args_value(&c.arguments),
-                                )
-                                .with_additional_params(c.extra_content.clone()),
-                            ))
-                        })
-                        .collect();
+                    let mut v = Vec::new();
+                    if let Some(reasoning) = turn.reasoning_content {
+                        v.push(Ok(RawStreamingChoice::Reasoning {
+                            id: StreamPartId::minted(MintKind::Reasoning, 0),
+                            provider_id: None,
+                            content: ReasoningContent::Text {
+                                text: reasoning,
+                                signature: None,
+                            },
+                        }));
+                    }
+                    v.extend(turn.tool_calls.iter().map(|c| {
+                        Ok(RawStreamingChoice::ToolCall(
+                            RawStreamingToolCall::new(
+                                call_id(&c.id),
+                                c.name.clone(),
+                                args_value(&c.arguments),
+                            )
+                            .with_additional_params(c.extra_content.clone()),
+                        ))
+                    }));
                     v.push(Ok(RawStreamingChoice::FinalResponse(
                         StreamFinal::new(PROVIDER, Usage::new()).with_optional_finish_reason(
                             turn.finish_reason.as_deref().map(finish_reason),
@@ -299,10 +310,18 @@ pub(super) fn push_message(out: &mut Vec<Value>, m: &Message) {
         }
         Message::Assistant { content, .. } => {
             let mut text = String::new();
+            let mut reasoning: Option<String> = None;
             let mut calls = Vec::new();
             for c in content {
                 match c {
                     AssistantContent::Text(t) => text.push_str(&t.text),
+                    AssistantContent::Reasoning(r) => {
+                        for block in &r.content {
+                            if let ReasoningContent::Text { text, .. } = block {
+                                reasoning.get_or_insert_default().push_str(text);
+                            }
+                        }
+                    }
                     // 端点挂在调用上的 `extra_content`（Gemini 3 的 thought_signature）
                     // 跟着回去：同一回合里缺了它，端点拒收整个请求
                     AssistantContent::ToolCall(tc) => {
@@ -319,7 +338,7 @@ pub(super) fn push_message(out: &mut Vec<Value>, m: &Message) {
                         }
                         calls.push(call);
                     }
-                    // 推理块与图片不回灌
+                    // 图片不回灌
                     _ => {}
                 }
             }
@@ -329,6 +348,9 @@ pub(super) fn push_message(out: &mut Vec<Value>, m: &Message) {
             });
             if !calls.is_empty() {
                 msg["tool_calls"] = Value::Array(calls);
+            }
+            if let Some(reasoning) = reasoning {
+                msg["reasoning_content"] = Value::String(reasoning);
             }
             out.push(msg);
         }
@@ -377,6 +399,9 @@ pub(crate) fn call_id(id: &str) -> String {
 
 fn choice_of(turn: &AssistantTurn) -> Vec<AssistantContent> {
     let mut out = Vec::new();
+    if let Some(reasoning) = &turn.reasoning_content {
+        out.push(AssistantContent::Reasoning(Reasoning::new(reasoning)));
+    }
     if let Some(text) = turn.content.as_deref().filter(|t| !t.is_empty()) {
         out.push(AssistantContent::text(text));
     }
@@ -394,7 +419,9 @@ fn choice_of(turn: &AssistantTurn) -> Vec<AssistantContent> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rig_agent::{tool::DynamicTool, tool::ToolOutput, AgentBuilder};
     use rig_core::completion::{Document, ToolDefinition};
+    use wiremock::{matchers::method, matchers::path, Mock, MockServer, ResponseTemplate};
 
     fn req(history: Vec<Message>) -> CompletionRequest {
         CompletionRequest {
@@ -518,6 +545,7 @@ mod tests {
         let turn = AssistantTurn {
             finish_reason: None,
             content: Some("hm".into()),
+            reasoning_content: None,
             tool_calls: vec![utopia_llm::ToolCall {
                 id: "c9".into(),
                 name: "find_entities".into(),
@@ -546,6 +574,7 @@ mod tests {
         let turn = AssistantTurn {
             finish_reason: Some("stop".into()),
             content: None,
+            reasoning_content: None,
             tool_calls: vec![utopia_llm::ToolCall {
                 id: "call_170866".into(),
                 name: "search_kb".into(),
@@ -591,5 +620,124 @@ mod tests {
         assert!(w.messages[2]["tool_calls"][0]
             .get("extra_content")
             .is_none());
+        assert!(w.messages[2].get("reasoning_content").is_none());
+    }
+
+    #[test]
+    fn reasoning_text_blocks_join_verbatim_without_entering_visible_content() {
+        let mut messages = Vec::new();
+        push_message(
+            &mut messages,
+            &Message::Assistant {
+                id: None,
+                content: vec![
+                    AssistantContent::Reasoning(Reasoning::multi(vec![
+                        "  plan\n".into(),
+                        "next step  ".into(),
+                    ])),
+                    AssistantContent::Reasoning(Reasoning::encrypted("opaque")),
+                    AssistantContent::text("answer"),
+                ],
+            },
+        );
+        assert_eq!(messages[0]["reasoning_content"], "  plan\nnext step  ");
+        assert_eq!(messages[0]["content"], "answer");
+        push_message(&mut messages, &Message::assistant("ordinary"));
+        assert!(messages[1].get("reasoning_content").is_none());
+    }
+
+    /// Exercise the actual runner: after executing the tool it must send the
+    /// provider's reasoning back on the next HTTP request, including an empty string.
+    #[tokio::test]
+    async fn reasoning_survives_unary_and_streamed_tool_continuations() {
+        for streaming in [false, true] {
+            for reasoning in ["  Need evidence.\n先查工具  ", ""] {
+                let server = MockServer::start().await;
+                let reasoning = reasoning.to_string();
+                let expected = reasoning.clone();
+                Mock::given(method("POST"))
+                    .and(path("/chat/completions"))
+                    .respond_with(move |request: &wiremock::Request| {
+                        let body: Value = serde_json::from_slice(&request.body).unwrap();
+                        let messages = body["messages"].as_array().unwrap();
+                        let continued = messages.iter().any(|m| m["role"] == "tool");
+                        let mut message = if continued {
+                            let assistant = messages
+                                .iter()
+                                .find(|m| m.get("tool_calls").is_some())
+                                .unwrap();
+                            if assistant["reasoning_content"] != expected {
+                                return ResponseTemplate::new(400).set_body_json(json!({
+                                    "error": {"message": "reasoning_content was not preserved"}
+                                }));
+                            }
+                            json!({"role": "assistant", "content": "done"})
+                        } else {
+                            json!({
+                                "role": "assistant",
+                                "content": "looking",
+                                "reasoning_content": expected,
+                                "tool_calls": [{
+                                    "id": "c1", "type": "function",
+                                    "function": {"name": "search_chunks", "arguments": "{}"}
+                                }]
+                            })
+                        };
+                        let finish = if continued { "stop" } else { "tool_calls" };
+                        if streaming {
+                            if let Some(calls) = message["tool_calls"].as_array_mut() {
+                                calls[0]["index"] = json!(0);
+                            }
+                            let delta = json!({"choices": [{"delta": message}]});
+                            let end = json!({"choices": [{"delta": {}, "finish_reason": finish}]});
+                            ResponseTemplate::new(200)
+                                .insert_header("content-type", "text/event-stream")
+                                .set_body_string(format!(
+                                    "data: {delta}\n\ndata: {end}\n\ndata: [DONE]\n\n"
+                                ))
+                        } else {
+                            ResponseTemplate::new(200).set_body_json(json!({
+                                "choices": [{"message": message, "finish_reason": finish}]
+                            }))
+                        }
+                    })
+                    .expect(2)
+                    .mount(&server)
+                    .await;
+                let model = RigModel::with_context(
+                    LlmClient::new(&server.uri(), None, "deepseek-reasoner"),
+                    super::super::chat_context::Context::new(vec![], vec![], usize::MAX),
+                );
+                let agent = AgentBuilder::new(model)
+                    .dynamic_tool(DynamicTool::new(
+                        "search_chunks",
+                        "search",
+                        json!({"type": "object", "properties": {}}),
+                        |_, _| Box::pin(async { Ok(ToolOutput::text("found")) }),
+                    ))
+                    .build();
+                let runner = agent.runner("question").max_turns(3);
+                if streaming {
+                    let mut output = runner.stream().await;
+                    while let Some(item) = output.next().await {
+                        item.unwrap();
+                    }
+                } else {
+                    runner.run().await.unwrap();
+                }
+                let requests = server.received_requests().await.unwrap();
+                assert_eq!(requests.len(), 2, "one tool turn and one final answer");
+                let continuation: Value = serde_json::from_slice(&requests[1].body).unwrap();
+                let assistant = continuation["messages"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|m| m.get("tool_calls").is_some())
+                    .unwrap();
+                assert_eq!(assistant["reasoning_content"], reasoning);
+                assert_eq!(assistant["content"], "looking");
+                server.verify().await;
+            }
+        }
     }
 }

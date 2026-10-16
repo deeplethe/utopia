@@ -1912,6 +1912,205 @@ async fn failed_reads_do_not_become_successful_empty_results() -> anyhow::Result
 }
 
 #[tokio::test]
+async fn document_reads_continue_past_the_budget_in_chat_and_mcp() -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    let ctx = ToolCtx {
+        state: &f.state,
+        kb_id: f.kb,
+        workspace_id: f.ws,
+        mounted_sources: &[],
+        can_write: false,
+        actor: None,
+        via_token: None,
+        question: None,
+    };
+    let schema = super::super::chat::tools_schema(false, &[]);
+    let listed = f
+        .request(f.kb, "tools/list", json!({}))
+        .await
+        .map_err(|e| e.0)?
+        .0;
+    let document_tool = listed["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "get_document")
+        .unwrap();
+    assert_eq!(
+        document_tool["inputSchema"]["properties"]["offset"]["type"],
+        "integer"
+    );
+    assert_eq!(
+        document_tool["inputSchema"]["properties"]["offset"]["minimum"],
+        0
+    );
+    assert_eq!(
+        document_tool["inputSchema"]["required"],
+        json!(["document_id"])
+    );
+
+    // One oversized table row, then a page boundary inside the next chunk.
+    for (first_body, second_body) in [
+        (
+            format!("| Case | {} | CHECKSUM-TAIL |", "界🦀".repeat(16_000)),
+            "LAST-SECTION",
+        ),
+        ("界".repeat(23_999), "🦀CHECKSUM-TAIL"),
+    ] {
+        sqlx::query(
+            "UPDATE chunks SET text=CASE WHEN seq=0 THEN $2 ELSE $3 END WHERE document_id=$1",
+        )
+        .bind(f.document)
+        .bind(format!(" \n{first_body}\n "))
+        .bind(format!(" \n{second_body}\n "))
+        .execute(&f.state.pool)
+        .await?;
+        let first_len = first_body.chars().count();
+        for over_mcp in [false, true] {
+            let mut sink = ToolSink::default();
+            let mut args = json!({"document_id":f.document});
+            for page in 0..2 {
+                let read = if over_mcp {
+                    f.call("get_document", args.clone()).await?
+                } else {
+                    let checked =
+                        super::super::chat::check_call(&schema, "get_document", &args.to_string())
+                            .map_err(|(message, _)| anyhow::anyhow!(message))?;
+                    tool_result(tools::dispatch(&ctx, &mut sink, "get_document", &checked).await)
+                };
+                assert_eq!(read["isError"], false, "{read}");
+                let text = read["content"][0]["text"].as_str().unwrap();
+                if page == 0 {
+                    assert!(!text.contains("CHECKSUM-TAIL"), "{text}");
+                    assert!(text.contains(&format!(
+                        "{} chars omitted",
+                        first_len + second_body.chars().count() - 24_000
+                    )));
+                    let next_offset: usize = text
+                        .rsplit_once("offset: ")
+                        .unwrap()
+                        .1
+                        .split_whitespace()
+                        .next()
+                        .unwrap()
+                        .parse()?;
+                    assert_eq!(next_offset, 24_000);
+                    args["offset"] = json!(next_offset);
+                } else {
+                    assert!(text.contains("CHECKSUM-TAIL"), "{text}");
+                    assert!(!text.contains("truncated"), "{text}");
+                    if first_len > 24_000 {
+                        let tail: String = first_body.chars().skip(24_000).collect();
+                        assert!(text.contains(&format!("section 1:\n{tail}")));
+                        assert!(text.contains(second_body));
+                    } else {
+                        assert!(!text.contains("section 1:"));
+                        assert!(text.contains("section 2:\nCHECKSUM-TAIL"));
+                    }
+                }
+            }
+            if !over_mcp {
+                assert_eq!(sink.sources.len(), 2);
+                assert_eq!(sink.source_ids[0], f.chunk.to_string());
+            }
+        }
+    }
+    f.clean().await
+}
+
+#[tokio::test]
+async fn document_offsets_preserve_defaults_and_report_invalid_or_finished_reads(
+) -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    let default = f
+        .call("get_document", json!({"document_id":f.document}))
+        .await?;
+    let zero = f
+        .call("get_document", json!({"document_id":f.document,"offset":0}))
+        .await?;
+    assert_eq!(default, zero);
+    for offset in [
+        json!(-1),
+        json!(1.5),
+        json!("24000"),
+        json!(true),
+        Value::Null,
+        json!([]),
+        json!({}),
+    ] {
+        let read = f
+            .call(
+                "get_document",
+                json!({"document_id":f.document,"offset":offset}),
+            )
+            .await?;
+        assert_eq!(read["isError"], true, "{read}");
+        assert!(read["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("non-negative integer"));
+    }
+    let step = step_of(
+        &f,
+        &[],
+        "get_document",
+        json!({"document_id":f.document,"offset":-1}),
+    )
+    .await;
+    assert_eq!(step["status"], "invalid");
+    assert_eq!(step["param"], "offset");
+    let total: i64 = sqlx::query_scalar(
+        "SELECT sum(char_length(trim(text)))::bigint FROM chunks WHERE document_id=$1",
+    )
+    .bind(f.document)
+    .fetch_one(&f.state.pool)
+    .await?;
+    let total = u64::try_from(total)?;
+    for offset in [total, total + 1, usize::MAX as u64] {
+        let read = f
+            .call(
+                "get_document",
+                json!({"document_id":f.document,"offset":offset}),
+            )
+            .await?;
+        assert_eq!(read["isError"], false, "{read}");
+        assert!(read["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .ends_with(&format!("(no text remaining at offset {offset})")));
+    }
+    let boundary = f
+        .call(
+            "get_document",
+            json!({"document_id":f.document,"offset":959}),
+        )
+        .await?;
+    let text = boundary["content"][0]["text"].as_str().unwrap();
+    assert!(!text.contains("section 1:"));
+    assert!(text.contains("section 2:\nAlice works for Acme."));
+    // An empty trailing chunk must not turn an exhausted read into an empty citation.
+    sqlx::query("UPDATE chunks SET text=' \n ' WHERE document_id=$1 AND seq=1")
+        .bind(f.document)
+        .execute(&f.state.pool)
+        .await?;
+    let finished = f
+        .call(
+            "get_document",
+            json!({"document_id":f.document,"offset":959}),
+        )
+        .await?;
+    assert!(finished["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .ends_with("(no text remaining at offset 959)"));
+    f.clean().await
+}
+
+#[tokio::test]
 async fn document_reads_preserve_text_empty_and_unavailable_results() -> anyhow::Result<()> {
     let Some(f) = Fixture::new().await? else {
         return Ok(());
@@ -1951,13 +2150,17 @@ async fn document_reads_preserve_text_empty_and_unavailable_results() -> anyhow:
     // Missing, foreign and deleted IDs remain indistinguishable; a read failure
     // must not change that boundary or turn a genuinely empty document into an error.
     for id in [Uuid::now_v7(), foreign, f.document] {
-        let result = f.call("get_document", json!({"document_id":id})).await?;
-        assert_eq!(result["isError"], false);
-        assert_eq!(
-            result["content"][0]["text"],
-            "No document with that id in this knowledge base."
-        );
-        assert!(result.get("structuredContent").is_none());
+        for offset in [0, 24_000] {
+            let result = f
+                .call("get_document", json!({"document_id":id,"offset":offset}))
+                .await?;
+            assert_eq!(result["isError"], false);
+            assert_eq!(
+                result["content"][0]["text"],
+                "No document with that id in this knowledge base."
+            );
+            assert!(result.get("structuredContent").is_none());
+        }
     }
     f.clean().await
 }

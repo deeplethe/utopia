@@ -401,10 +401,13 @@ pub async fn relink_domains_ranges(
 
 /// 执行计划。属性在类之后落库——它们要挂在 domain 上，而 domain 要等
 /// 类先建好并解析 IRI → id（就是下面那个 `id_of`）。
+///
+/// `via_token`：代 `actor` 导入的那枚令牌，只进审计行（0014 决定 6）；会话是 None
 pub async fn apply(
     state: &AppState,
     kb_id: Uuid,
     actor: Uuid,
+    via_token: Option<Uuid>,
     filename: &str,
     bytes: &[u8],
 ) -> AppResult<(Uuid, ImportPlan)> {
@@ -771,7 +774,7 @@ pub async fn apply(
         "ontology.imported",
         "kb",
         Some(kb_id),
-        summary,
+        utopia_store::audit::via_token(summary, via_token),
     )
     .await;
     // 本体刚变过，向量都是陈的。**排任务而不是就地跑**：这一趟要嵌几千行，

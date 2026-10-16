@@ -32,6 +32,8 @@ pub struct AssistantTurn {
     /// Preserve the provider value; absent is not an implicit `stop`.
     pub finish_reason: Option<String>,
     pub content: Option<String>,
+    /// Provider reasoning, kept apart from visible text and replayed for tool continuation.
+    pub reasoning_content: Option<String>,
     pub tool_calls: Vec<ToolCall>,
 }
 
@@ -39,6 +41,9 @@ impl AssistantTurn {
     /// 还原为 OpenAI 协议的 assistant 消息（回灌对话历史用）。
     pub fn to_message(&self) -> serde_json::Value {
         let mut msg = json!({ "role": "assistant", "content": self.content });
+        if let Some(reasoning) = &self.reasoning_content {
+            msg["reasoning_content"] = json!(reasoning);
+        }
         if !self.tool_calls.is_empty() {
             msg["tool_calls"] = json!(self
                 .tool_calls
@@ -885,6 +890,7 @@ impl LlmClient {
             .unwrap_or_default();
         Ok(AssistantTurn {
             content,
+            reasoning_content: msg["reasoning_content"].as_str().map(String::from),
             tool_calls,
             finish_reason: body["choices"][0]["finish_reason"]
                 .as_str()
@@ -926,6 +932,7 @@ impl LlmClient {
         let stream = async_stream::try_stream! {
             let mut buf = SseBuffer::default();
             let mut content = String::new();
+            let mut reasoning_content: Option<String> = None;
             let mut calls: Vec<ToolCall> = Vec::new();
             let mut finish_reason = None;
             let mut done = false;
@@ -950,6 +957,9 @@ impl LlmClient {
                             done = true;
                         }
                         let delta = &v["choices"][0]["delta"];
+                        if let Some(text) = delta["reasoning_content"].as_str() {
+                            reasoning_content.get_or_insert_default().push_str(text);
+                        }
                         if let Some(text) = delta["content"].as_str() {
                             if !text.is_empty() {
                                 content.push_str(text);
@@ -992,7 +1002,7 @@ impl LlmClient {
             }
             calls.retain(|c| !c.name.is_empty());
             let content = if content.is_empty() { None } else { Some(content) };
-            yield ToolStreamItem::Turn(AssistantTurn { content, tool_calls: calls, finish_reason });
+            yield ToolStreamItem::Turn(AssistantTurn { content, reasoning_content, tool_calls: calls, finish_reason });
         };
         Ok(stream)
     }
@@ -2061,6 +2071,66 @@ mod tests {
             };
             assert_eq!(turn.finish_reason.as_deref(), reason);
         }
+    }
+
+    #[tokio::test]
+    async fn tool_turns_preserve_reasoning_for_continuation_without_showing_it() {
+        for reasoning in [Some("先查找🦀"), Some(""), None] {
+            let body = json!({"choices":[{"message":{
+                "content":"Searching now",
+                "reasoning_content":reasoning,
+                "tool_calls":[{"id":"call_1","type":"function","function":{"name":"search","arguments":"{}"}}]
+            },"finish_reason":"tool_calls"}]}).to_string();
+            let (addr, server) = an_http_response("200 OK", "application/json", &body).await;
+            let turn = client_at(addr)
+                .chat_tools_with(&[], None, None)
+                .await
+                .unwrap();
+            server.await.unwrap();
+            let message = turn.to_message();
+            assert_eq!(turn.content.as_deref(), Some("Searching now"));
+            assert_eq!(message["content"], "Searching now");
+            assert_eq!(
+                message.get("reasoning_content"),
+                reasoning.map(|s| json!(s)).as_ref()
+            );
+            assert_eq!(message["tool_calls"][0]["id"], "call_1");
+        }
+    }
+
+    #[tokio::test]
+    async fn streamed_tool_turns_join_reasoning_across_frames_and_utf8_chunks() {
+        use futures_util::TryStreamExt;
+        let frames = [
+            json!({"choices":[{"delta":{"reasoning_content":"先查找"}}]}),
+            json!({"choices":[{"delta":{"reasoning_content":"🦀"}}]}),
+            json!({"choices":[{"delta":{
+                "content":"Searching now",
+                "tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"search","arguments":"{}"}}]
+            },"finish_reason":"tool_calls"}]}),
+        ];
+        let sse = frames
+            .iter()
+            .map(|frame| format!("data: {frame}\n\n"))
+            .collect::<String>()
+            + "data: [DONE]\n\n";
+        let (addr, server) = bytewise_sse(&sse).await;
+        let items: Vec<ToolStreamItem> = client_at(addr)
+            .chat_tools_stream_with(&[], None, None)
+            .await
+            .unwrap()
+            .try_collect()
+            .await
+            .unwrap();
+        server.await.unwrap();
+        let [ToolStreamItem::Delta(delta), ToolStreamItem::Turn(turn)] = items.as_slice() else {
+            panic!("expected only the visible content delta and completed turn: {items:?}");
+        };
+        assert_eq!(delta, "Searching now");
+        assert_eq!(turn.content.as_deref(), Some("Searching now"));
+        let message = turn.to_message();
+        assert_eq!(message["reasoning_content"], "先查找🦀");
+        assert_eq!(message["tool_calls"][0]["id"], "call_1");
     }
 
     #[tokio::test]
