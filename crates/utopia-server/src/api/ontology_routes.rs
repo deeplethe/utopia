@@ -9,6 +9,7 @@ use utopia_core::models::Role;
 use utopia_core::AppError;
 use uuid::Uuid;
 
+use crate::api::documents_routes::require_reader_kb;
 use crate::auth::{AuthUser, SessionOrToken};
 use crate::error::ApiResult;
 use crate::state::AppState;
@@ -22,12 +23,13 @@ async fn require_kb(
     utopia_store::access::require_kb(&state.pool, user, kb_id, min).await
 }
 
+/// 令牌也读得到（0014 决定 7）：类别 key 要先换成类型 id，才能去查实例
 pub async fn get(
     State(state): State<AppState>,
-    AuthUser(user): AuthUser,
+    reader: SessionOrToken,
     Path(kb_id): Path<Uuid>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    require_kb(&state, &user, kb_id, Role::Viewer).await?;
+    require_reader_kb(&state, &reader, kb_id).await?;
     let (entity_types, relation_types) = tokio::try_join!(
         utopia_store::ontology::entity_type_views(&state.pool, kb_id),
         utopia_store::ontology::relation_type_views(&state.pool, kb_id),
@@ -50,14 +52,14 @@ fn default_per() -> i64 {
     12
 }
 
-/// 某个类下的实体实例列表（详情区右侧，分页）。
+/// 某个类下的实体实例列表（详情区右侧，分页）。令牌也读得到（0014 决定 7）。
 pub async fn list_entity_instances(
     State(state): State<AppState>,
-    AuthUser(user): AuthUser,
+    reader: SessionOrToken,
     Path((kb_id, type_id)): Path<(Uuid, Uuid)>,
     Query(q): Query<InstancesQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    require_kb(&state, &user, kb_id, Role::Viewer).await?;
+    require_reader_kb(&state, &reader, kb_id).await?;
     let per = q.per.clamp(1, 100);
     let page = q.page.max(0);
     let (rows, total) =
