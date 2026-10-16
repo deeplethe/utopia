@@ -126,6 +126,7 @@ import {
 } from "@/components/ui/popover";
 import { useKb, useKbId } from "../kb";
 import { toast } from "../toast";
+import { fetchMe } from "../authSession";
 
 const EDGE_CURVATURE_STEP = 0.18;
 
@@ -387,7 +388,7 @@ export function Graph() {
   const [nodeBudget, setNodeBudget] = useState<number>(NODE_BUDGETS[0]);
 
   // 空状态给谁看：管理员能自己去配模型，其他人只能去找管理员。与 Shell 共用同一份缓存
-  const me = useQuery({ queryKey: ["me"], queryFn: api.me });
+  const me = useQuery({ queryKey: ["me"], queryFn: fetchMe });
   // 空状态说哪一句，取决于这个库走到哪一步了（#313）
   const readiness = useReadiness(kbId);
   const step = nextStep(readiness.data, {

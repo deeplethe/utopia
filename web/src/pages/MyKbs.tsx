@@ -26,6 +26,7 @@ import {
   Th,
   Tr,
 } from "../ui";
+import { fetchMe } from "../authSession";
 
 const ymd = (iso: string) => iso.slice(0, 10);
 
@@ -53,7 +54,7 @@ export function MyKbs() {
     queryFn: () => api.myKbs(workspace!.id),
     enabled: !!workspace,
   });
-  const me = useQuery({ queryKey: ["me"], queryFn: api.me });
+  const me = useQuery({ queryKey: ["me"], queryFn: fetchMe });
   /* 能不能建库：系统管理员，或者在这个工作区里是 Admin+（api/kbs.rs 的 create
      就是这么判的）。**editor 不能**——它管的是库里的内容，不是有几个库 */
   const wsRole = useQuery({

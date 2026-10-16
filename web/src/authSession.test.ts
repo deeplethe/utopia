@@ -2,6 +2,7 @@ import { Children, isValidElement, type ReactNode } from "react";
 import { QueryClient } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api, type User } from "./api";
+import { fetchMe } from "./authSession";
 import { S } from "./i18n";
 import { liveAnswer, type LiveHandle } from "./liveAnswer";
 import { Login } from "./pages/Login";
@@ -9,10 +10,10 @@ import { UserMenu } from "./pages/UserMenu";
 import { convMarks } from "./unread";
 import { kbStore, wsStore } from "./wsStore";
 
-// 不挂载界面，直接调登录页与用户菜单里真实的回调；QueryClient 和聊天的几个 store 都是真的。
+// 不挂载界面，直接调登录页、用户菜单和 `me` 取数里真实的代码；QueryClient 和聊天的几个 store 都是真的。
 const hooks = vi.hoisted(() => ({
   client: undefined as unknown,
-  mutation: undefined as { onSuccess: () => void } | undefined,
+  mutation: undefined as { onSuccess: (data: { user: { id: string } }) => void } | undefined,
   navigate: vi.fn(),
 }));
 vi.mock("react", async (importOriginal) => ({
@@ -43,12 +44,12 @@ class MemoryStorage {
   removeItem(key: string) { this.values.delete(key); }
 }
 
-/** 元素树里按可见文字找到那个按钮或菜单项的回调 */
-function action(tree: ReactNode, label: string, prop: "onSelect" | "onClick"): () => unknown {
+/** 元素树里按可见文字找到那个菜单项的回调 */
+function action(tree: ReactNode, label: string): () => unknown {
   for (const child of Children.toArray(tree)) {
-    if (!isValidElement<{ children?: ReactNode; onSelect?: () => unknown; onClick?: () => unknown }>(child)) continue;
-    if (Children.toArray(child.props.children).includes(label) && child.props[prop]) return child.props[prop];
-    try { return action(child.props.children, label, prop); } catch { /* 下一个兄弟 */ }
+    if (!isValidElement<{ children?: ReactNode; onSelect?: () => unknown }>(child)) continue;
+    if (Children.toArray(child.props.children).includes(label) && child.props.onSelect) return child.props.onSelect;
+    try { return action(child.props.children, label); } catch { /* 下一个兄弟 */ }
   }
   throw new Error(`Missing action: ${label}`);
 }
@@ -56,9 +57,10 @@ function action(tree: ReactNode, label: string, prop: "onSelect" | "onClick"): (
 let client: QueryClient;
 const handles: LiveHandle[] = [];
 
-/** 上一个人留在这个标签页里的：缓存、所选的库、草稿、上次会话、一场写完未读的回答、一场还在写的 */
-function seedPreviousAccount() {
-  client.setQueryData(["me"], { id: "previous-user" });
+/** 上一个人经由真实的 `me` 取数认领了这个标签页，然后留下：所选的库、草稿、上次会话、一场写完未读的回答、一场还在写的 */
+async function seedPreviousAccount() {
+  vi.spyOn(api, "me").mockResolvedValue({ id: "previous-user" } as User);
+  client.setQueryData(["me"], await fetchMe());
   wsStore.set("previous-workspace");
   kbStore.set("shared-kb");
   sessionStorage.setItem("chat:draft", "unsent question");
@@ -71,24 +73,26 @@ function seedPreviousAccount() {
   expect(convMarks.unread().has("private-conversation")).toBe(true);
 }
 
-function expectNothingOfThePreviousAccount() {
+function expectTabCleared() {
   expect(liveAnswer.get()).toEqual([]);
-  expect(client.getQueryCache().getAll()).toEqual([]);
+  expect(sessionStorage.getItem("chat:draft")).toBeNull();
+  expect(sessionStorage.getItem("chat:last:shared-kb")).toBeNull();
+}
+
+function expectSharedCleared() {
   expect([...convMarks.unread()]).toEqual([]);
   expect(localStorage.getItem("utopia.unread")).toBeNull();
   expect(wsStore.get()).toBeNull();
   expect(kbStore.get()).toBeNull();
   expect(localStorage.getItem("utopia.ws")).toBeNull();
   expect(localStorage.getItem("utopia.kb")).toBeNull();
-  expect(sessionStorage.getItem("chat:draft")).toBeNull();
-  expect(sessionStorage.getItem("chat:last:shared-kb")).toBeNull();
 }
 
 beforeEach(() => {
   vi.useFakeTimers();
   vi.stubGlobal("localStorage", new MemoryStorage());
   vi.stubGlobal("sessionStorage", new MemoryStorage());
-  vi.stubGlobal("window", { location: { search: "", href: "" }, setTimeout });
+  vi.stubGlobal("window", { location: { search: "" }, setTimeout });
   client = new QueryClient();
   hooks.client = client;
   hooks.navigate.mockReset();
@@ -103,26 +107,45 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("the next account on a tab finds nothing of the previous one", () => {
-  it("after signing out", async () => {
-    seedPreviousAccount();
+describe("a tab keeps a person's chat state only for that person", () => {
+  it("clears all of it on sign-out", async () => {
+    await seedPreviousAccount();
     vi.spyOn(api, "logout").mockResolvedValue({ ok: true });
-    await action(UserMenu({ user: { display_name: "Previous user" } as User }), S.nav.signOut, "onSelect")();
-    expectNothingOfThePreviousAccount();
+    await action(UserMenu({ user: { display_name: "Previous user" } as User }), S.nav.signOut)();
+    expectTabCleared();
+    expectSharedCleared();
+    expect(client.getQueryCache().getAll()).toEqual([]);
+    expect(sessionStorage.getItem("utopia.account")).toBeNull();
+    expect(localStorage.getItem("utopia.account")).toBeNull();
     expect(hooks.navigate).toHaveBeenCalledWith({ to: "/login" });
   });
 
-  it("after signing in once the previous session expired", () => {
-    seedPreviousAccount();
+  it("clears it when another account signs in", async () => {
+    await seedPreviousAccount();
     Login();
-    hooks.mutation!.onSuccess();
-    expectNothingOfThePreviousAccount();
+    hooks.mutation!.onSuccess({ user: { id: "next-user" } });
+    expectTabCleared();
+    expectSharedCleared();
   });
 
-  it("before the single sign-on redirect", () => {
-    seedPreviousAccount();
-    action(Login(), S.login.ssoButton, "onClick")();
-    expectNothingOfThePreviousAccount();
-    expect(window.location.href).toBe("/api/v1/auth/oidc/start");
+  it("keeps it when the same account signs back in after its session expired", async () => {
+    await seedPreviousAccount();
+    Login();
+    hooks.mutation!.onSuccess({ user: { id: "previous-user" } });
+    expect(sessionStorage.getItem("chat:draft")).toBe("unsent question");
+    expect(sessionStorage.getItem("chat:last:shared-kb")).toBe("private-conversation");
+    expect(liveAnswer.get()).toHaveLength(2);
+    expect(kbStore.get()).toBe("shared-kb");
+  });
+
+  it("drops a tab's draft on reload after another account signed in in another tab", async () => {
+    await seedPreviousAccount();
+    // 另一个标签页里 B 登录：共用的那份已经归了 B
+    localStorage.setItem("utopia.account", "next-user");
+    kbStore.set("next-users-kb");
+    vi.spyOn(api, "me").mockResolvedValue({ id: "next-user" } as User);
+    await fetchMe();
+    expectTabCleared();
+    expect(kbStore.get()).toBe("next-users-kb");
   });
 });

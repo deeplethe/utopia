@@ -27,6 +27,7 @@ import {
   cn,
   pageSlice,
 } from "../ui";
+import { fetchMe } from "../authSession";
 
 const ROLES = ["owner", "admin", "editor", "viewer"] as const;
 const ROLE_OPTIONS = ROLES.map((r) => ({ value: r, label: S.members.roles[r] }));
@@ -130,7 +131,7 @@ export function Members({ workspaceId }: { workspaceId: string }) {
   // 角色平时是一行字，点了才变成下拉——同时只有一行在编辑
   // 按角色筛
   const [role, setRole] = useState("all");
-  const me = useQuery({ queryKey: ["me"], queryFn: api.me });
+  const me = useQuery({ queryKey: ["me"], queryFn: fetchMe });
   const [error, setError] = useState<string | null>(null);
 
   const members = useQuery({

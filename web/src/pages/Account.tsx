@@ -12,10 +12,11 @@ import {
 import { toast } from "../toast";
 import { Avatar } from "./UserMenu";
 import { SsoAccount } from "./Sso";
+import { fetchMe } from "../authSession";
 
 export function Account() {
   const queryClient = useQueryClient();
-  const me = useQuery({ queryKey: ["me"], queryFn: api.me });
+  const me = useQuery({ queryKey: ["me"], queryFn: fetchMe });
 
   const [name, setName] = useState<string | null>(null);
   const [curPw, setCurPw] = useState("");
