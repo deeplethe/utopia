@@ -17,7 +17,7 @@ use uuid::Uuid;
 /// SQL 侧的归一：与 [`normalize`] 一致。`$col` 由调用处替换成列名。
 const PHRASE_SQL: &str = "lower(btrim(regexp_replace($col, '\\s+', ' ', 'g')))";
 
-fn phrase_sql(col: &str) -> String {
+pub(crate) fn phrase_sql(col: &str) -> String {
     PHRASE_SQL.replace("$col", col)
 }
 
@@ -52,7 +52,11 @@ pub struct PhraseSignature {
 }
 
 /// 库里每条 distinct 的签名：活着的开放陈述，按短语、两端的类、宾语是不是字面值分组。
-pub async fn signatures(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<PhraseSignature>> {
+/// 采纳复用一条属性时在它自己的事务里读（不另占一条连接），所以收任何执行器
+pub async fn signatures<'e>(
+    pool: impl sqlx::Executor<'e, Database = sqlx::Postgres>,
+    kb_id: Uuid,
+) -> AppResult<Vec<PhraseSignature>> {
     // 一条陈述可以有多条证据。计数、取例句前先为每条陈述选一条稳定的引用，
     // 优先有完整位置的证据，避免证据多的陈述挤掉其他陈述。
     let sql = format!(
@@ -110,6 +114,31 @@ pub async fn signatures(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<PhraseSigna
     Ok(sqlx::query_as(&sql).bind(kb_id).fetch_all(pool).await?)
 }
 
+/// 一篇文档里活着的开放陈述落在哪些签名上（键同 [`PhraseSignature::key`]）。推送来的
+/// 文档抽完，本体只判这些签名（#1242）；别的签名还是对齐器的
+pub async fn signature_keys_of_document(
+    pool: &PgPool,
+    kb_id: Uuid,
+    document_id: Uuid,
+) -> AppResult<Vec<(String, Option<Uuid>, Option<Uuid>, bool)>> {
+    let sql = format!(
+        "SELECT DISTINCT {phrase}, s.type_id, o.type_id, (f.object_id IS NULL)
+           FROM facts f
+           JOIN entities s ON s.id = f.subject_id
+      LEFT JOIN entities o ON o.id = f.object_id
+          WHERE f.kb_id = $1 AND f.layer = 'open' AND f.invalidated_at IS NULL
+            AND f.phrase IS NOT NULL AND btrim(f.phrase) <> ''
+            AND EXISTS (SELECT 1 FROM fact_evidence fe JOIN chunks c ON c.id = fe.chunk_id
+                         WHERE fe.fact_id = f.id AND c.document_id = $2)",
+        phrase = phrase_sql("f.phrase")
+    );
+    Ok(sqlx::query_as(&sql)
+        .bind(kb_id)
+        .bind(document_id)
+        .fetch_all(pool)
+        .await?)
+}
+
 /// 按 id 取一条绑定的签名（人在队列里定它时用）：短语、两端的类、宾语是不是字面值，
 /// 例句照判定时记下的，陈述数同。
 pub async fn signature_of(
@@ -147,7 +176,7 @@ pub struct Binding {
     /// bound / none / undecided
     pub status: String,
     pub decided_at: DateTime<Utc>,
-    /// agent / person
+    /// agent / person / ontology（短语正好是一条声明了的关系，#1242）
     pub decided_by: String,
     /// 判定时输入的指纹；NULL = 这一列出现之前的判定
     pub basis: Option<String>,
@@ -275,7 +304,7 @@ pub struct Decision<'a> {
     /// bound / none / undecided
     pub status: &'a str,
     pub votes: &'a serde_json::Value,
-    /// agent / person
+    /// agent / person / ontology
     pub decided_by: &'a str,
     /// 判定时输入的指纹（[`basis_of`]）：代理的判定必带，人的判定不带——人不按指纹重判
     pub basis: Option<&'a str>,
@@ -289,8 +318,8 @@ pub struct Decision<'a> {
 
 /// 记下一条签名的判定（有则改）。返回是否写入了。
 ///
-/// **人的判定不被代理覆盖**：已有行是人判的而这次是代理，原样留着、返回 false。
-/// 反过来人可以改代理的。
+/// **人的判定不被代理覆盖**：已有行是人判的而这次是代理或本体，原样留着、返回 false。
+/// 反过来人可以改代理的、本体的。
 pub async fn decide(
     pool: &PgPool,
     kb_id: Uuid,
@@ -334,7 +363,7 @@ fn validate_decision(sig: &PhraseSignature, d: &Decision<'_>) -> AppResult<Strin
             return Err(AppError::Validation(format!("unknown marks {marks:?}")));
         }
     }
-    if !matches!(d.decided_by, "agent" | "person") {
+    if !matches!(d.decided_by, "agent" | "person" | "ontology") {
         return Err(AppError::Validation(format!(
             "unknown decider {:?}",
             d.decided_by
@@ -421,7 +450,7 @@ pub async fn decide_on(
                 basis = EXCLUDED.basis,
                 marks = EXCLUDED.marks,
                 marks_asked_at = EXCLUDED.marks_asked_at
-          WHERE NOT (phrase_bindings.decided_by = 'person' AND EXCLUDED.decided_by = 'agent')",
+          WHERE NOT (phrase_bindings.decided_by = 'person' AND EXCLUDED.decided_by <> 'person')",
     )
     .bind(Uuid::now_v7())
     .bind(kb_id)

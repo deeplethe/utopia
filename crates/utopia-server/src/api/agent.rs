@@ -566,7 +566,16 @@ impl AgentHook for Policy {
 /// 最后那一轮的工具往返放在它的结论之前——顺序就是真实顺序，模型读起来
 /// 是「我问了、我查了、我答了」。tool 消息的工具名在协议里没有，从前面那条
 /// 带 tool_calls 的 assistant 消息里按 id 找回来
+#[cfg(test)]
 pub fn history_messages(turns: &[(String, String)], last_tool_exchange: &[Value]) -> Vec<Message> {
+    history_messages_with_reasoning(turns, last_tool_exchange, &[])
+}
+
+pub fn history_messages_with_reasoning(
+    turns: &[(String, String)],
+    last_tool_exchange: &[Value],
+    reasoning: &[Option<String>],
+) -> Vec<Message> {
     let last_assistant = turns.iter().rposition(|(role, _)| role == "assistant");
     let mut out = Vec::new();
     for (i, (role, content)) in turns.iter().enumerate() {
@@ -574,7 +583,17 @@ pub fn history_messages(turns: &[(String, String)], last_tool_exchange: &[Value]
             out.extend(exchange_messages(last_tool_exchange));
         }
         match role.as_str() {
-            "assistant" => out.push(Message::assistant(content.clone())),
+            "assistant" => {
+                let mut parts = Vec::new();
+                if let Some(Some(text)) = reasoning.get(i) {
+                    parts.push(AssistantContent::reasoning(text));
+                }
+                parts.push(AssistantContent::text(content));
+                out.push(Message::Assistant {
+                    id: None,
+                    content: parts,
+                });
+            }
             _ => out.push(Message::user(content.clone())),
         }
     }
@@ -588,6 +607,9 @@ fn exchange_messages(exchange: &[Value]) -> Vec<Message> {
         match m["role"].as_str() {
             Some("assistant") => {
                 let mut content = Vec::new();
+                if let Some(reasoning) = m["reasoning_content"].as_str() {
+                    content.push(AssistantContent::reasoning(reasoning));
+                }
                 if let Some(text) = m["content"].as_str().filter(|t| !t.is_empty()) {
                     content.push(AssistantContent::text(text));
                 }

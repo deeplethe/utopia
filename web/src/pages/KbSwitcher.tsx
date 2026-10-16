@@ -18,6 +18,7 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { fetchMe } from "../authSession";
 
 export function KbSwitcher({
   kb,
@@ -35,7 +36,7 @@ export function KbSwitcher({
   const [q, setQ] = useState("");
   // 建库要系统管理员或工作区 Admin+（见 api/kbs.rs create）：没这个权限的人
   // 看不到入口，省得点进去吃一个 403
-  const me = useQuery({ queryKey: ["me"], queryFn: api.me });
+  const me = useQuery({ queryKey: ["me"], queryFn: fetchMe });
   const wsRole = useQuery({
     queryKey: ["workspaceRole", kb?.workspace_id],
     queryFn: () => api.workspaceRole(kb!.workspace_id),

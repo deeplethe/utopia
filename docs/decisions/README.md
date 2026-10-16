@@ -129,7 +129,8 @@ By domain; the domains are the files of [../design/](../design/README.md). **Sta
 |---|---|---|---|
 | 0014 | [Identity from the person, scope from the token](0014-identity-from-the-person-scope-from-the-token.md) | Implemented |  |
 | 0020 | [An auditor reads it without us](0020-an-auditor-reads-it-without-us.md) | Implemented |  |
-| 0066 | [Another app may trade a fresh ID token for a session](0066-another-app-may-trade-a-fresh-id-token-for-a-session.md) | Implemented |  |
+| 0066 | [Another app may trade a fresh ID token for a session](0066-another-app-may-trade-a-fresh-id-token-for-a-session.md) | Implemented | partly (by 0069) |
+| 0069 | [The identity provider vouches for listed domains](0069-the-identity-provider-vouches-for-listed-domains.md) | Implemented |  |
 
 ### [interface](../design/interface.md)
 

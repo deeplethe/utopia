@@ -27,6 +27,18 @@ pub async fn record(
     .await
 }
 
+/// 令牌代人做的动作在 detail 里记下是哪一枚（0014 决定 6）：撤销之前，管理员要查得出
+/// 这枚令牌做过什么。会话来的（None）原样返回
+pub fn via_token(mut detail: serde_json::Value, token_id: Option<Uuid>) -> serde_json::Value {
+    if let (Some(token_id), Some(fields)) = (token_id, detail.as_object_mut()) {
+        fields.insert(
+            "token_id".into(),
+            serde_json::Value::String(token_id.to_string()),
+        );
+    }
+    detail
+}
+
 /// 请求的来源信息。由 HTTP 层在每个请求外层 scope 进 [`CLIENT`]，`record_opt`
 /// 自行读取——否则 25 个调用点每一个都要多带两个与业务无关的参数。
 ///

@@ -2160,7 +2160,18 @@ pub async fn first_live_evidence(
 
 /// 证据回放路径：不过滤 superseded——它的职责就是能看旧版。
 /// stale = 证据版本落后于文档当前版本（UI 标 "from v{n}"）。
-pub async fn fact_evidence(pool: &PgPool, fact_id: Uuid) -> AppResult<Vec<EvidenceView>> {
+/// 事实不在本 KB 时 NotFound：路由只校验了路径里的 kb，事实 id 是调用方给的。
+pub async fn fact_evidence(
+    pool: &PgPool,
+    kb_id: Uuid,
+    fact_id: Uuid,
+) -> AppResult<Vec<EvidenceView>> {
+    sqlx::query("SELECT 1 FROM facts WHERE id = $1 AND kb_id = $2")
+        .bind(fact_id)
+        .bind(kb_id)
+        .fetch_optional(pool)
+        .await?
+        .ok_or(AppError::NotFound)?;
     let rows: Vec<EvidenceView> = sqlx::query_as(
         "SELECT fe.quote, fe.proposed_predicate, fe.chunk_id, c.document_id, d.filename, c.seq,
                 c.doc_version,

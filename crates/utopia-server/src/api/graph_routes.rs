@@ -454,7 +454,7 @@ pub async fn fact_evidence(
     Path((kb_id, fact_id)): Path<(Uuid, Uuid)>,
 ) -> ApiResult<Json<serde_json::Value>> {
     require_kb(&state, &user, kb_id, Role::Viewer).await?;
-    let evidence = utopia_store::graph::fact_evidence(&state.pool, fact_id).await?;
+    let evidence = utopia_store::graph::fact_evidence(&state.pool, kb_id, fact_id).await?;
     Ok(Json(json!({ "evidence": evidence })))
 }
 

@@ -32,6 +32,7 @@ import {
   cn,
   type ChipTone,
 } from "../ui";
+import { fetchMe } from "../authSession";
 
 const PAGE = 25;
 
@@ -615,7 +616,7 @@ function DataSources({
 }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
-  const me = useQuery({ queryKey: ["me"], queryFn: api.me });
+  const me = useQuery({ queryKey: ["me"], queryFn: fetchMe });
   const mounted = useQuery({
     queryKey: ["kbDataSources", kbId],
     queryFn: () => api.kbDataSources(kbId),

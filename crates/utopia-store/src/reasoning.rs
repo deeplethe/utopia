@@ -2811,7 +2811,7 @@ pub async fn proof(
     let Some(derived) = derived_one(pool, kb_id, derived_id).await? else {
         return Ok(None);
     };
-    let steps = premise_steps(pool, derived_id, 0).await?;
+    let steps = premise_steps(pool, kb_id, derived_id, 0).await?;
     Ok(Some(utopia_core::models::Proof { derived, steps }))
 }
 
@@ -2821,6 +2821,7 @@ pub async fn proof(
 /// 到底了就停在那一步上——它自己的三元组还是列出来的，只是不再往下问。
 fn premise_steps<'a>(
     pool: &'a PgPool,
+    kb_id: Uuid,
     derived_id: Uuid,
     depth: usize,
 ) -> std::pin::Pin<
@@ -2840,11 +2841,12 @@ fn premise_steps<'a>(
         .await?;
         // 断言那几步一次取完（每一步还要各取一次证据），派生那几步逐条问
         let asserted: Vec<Uuid> = rows.iter().filter_map(|(_, f, _)| *f).collect();
-        let mut by_fact: HashMap<Uuid, utopia_core::models::ProofStep> = steps_for(pool, &asserted)
-            .await?
-            .into_iter()
-            .map(|s| (s.fact_id, s))
-            .collect();
+        let mut by_fact: HashMap<Uuid, utopia_core::models::ProofStep> =
+            steps_for(pool, kb_id, &asserted)
+                .await?
+                .into_iter()
+                .map(|s| (s.fact_id, s))
+                .collect();
 
         let mut steps = Vec::with_capacity(rows.len());
         for (seq, fact, derived) in rows {
@@ -2860,7 +2862,7 @@ fn premise_steps<'a>(
                 };
                 step.seq = seq;
                 if depth + 1 < utopia_reason::MAX_DEPTH {
-                    step.premises = premise_steps(pool, d, depth + 1).await?;
+                    step.premises = premise_steps(pool, kb_id, d, depth + 1).await?;
                 }
                 steps.push(step);
             }
@@ -2948,6 +2950,7 @@ async fn derived_step(
 /// 走——前提是同一种东西，证明链没有理由长两个样
 async fn steps_for(
     pool: &PgPool,
+    kb_id: Uuid,
     premises: &[Uuid],
 ) -> AppResult<Vec<utopia_core::models::ProofStep>> {
     #[allow(clippy::type_complexity)]
@@ -2996,7 +2999,7 @@ async fn steps_for(
     ) in rows
     {
         // 一条链最多 MAX_DEPTH 步，逐条取证据是可数的几次往返
-        let evidence = crate::graph::fact_evidence(pool, fact_id).await?;
+        let evidence = crate::graph::fact_evidence(pool, kb_id, fact_id).await?;
         steps.push(utopia_core::models::ProofStep {
             seq: seq as i32,
             fact_id,
@@ -3082,7 +3085,7 @@ pub async fn blocked_proof(
     .await?;
     match path {
         None => Ok(None),
-        Some((p,)) => Ok(Some(steps_for(pool, &p).await?)),
+        Some((p,)) => Ok(Some(steps_for(pool, kb_id, &p).await?)),
     }
 }
 

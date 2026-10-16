@@ -171,12 +171,15 @@ pub async fn retry_target(
 /// 「我已经查过了」这件事也一起省掉了：跨轮之后模型只看得见自己写的散文，
 /// 于是接着说「翻译」时重查一遍，还落到了另一批同名实体上。
 ///
-/// 折中是**只回放最近一轮**：需要的是「我刚做过什么」，不是二十轮的输出。
+/// 工具往返**只回放最近一轮**：需要的是「我刚做过什么」，不是二十轮的输出。
+/// 协议要求的终答推理则随各条正文回放，不属于可以单独裁掉的工具证据。
 pub struct History {
     /// Identities parallel to turns, so callers can exclude their own appended question.
     pub turn_ids: Vec<Uuid>,
     /// `(role, content)`，按时间序
     pub turns: Vec<(String, String)>,
+    /// 终答的协议推理，和 `turns` 一一对应；不混入用户看到的正文。
+    pub reasoning: Vec<Option<String>>,
     /// 这场对话里已经认下的实体（去重）
     pub entities: Vec<serde_json::Value>,
     /// **最近一轮助手做过什么**：带 `tool_calls` 的助手消息与配套的 tool 结果。
@@ -213,6 +216,17 @@ pub async fn recent_context(pool: &PgPool, conversation_id: Uuid, n: i64) -> App
     .fetch_all(pool)
     .await?;
     rows.reverse();
+    Ok(history_from_rows(rows))
+}
+
+fn reasoning_metadata(message: &serde_json::Value) -> bool {
+    message["role"] == "assistant"
+        && message.get("tool_calls").is_none()
+        && message.get("content").is_none()
+        && message.get("reasoning_content").is_some()
+}
+
+fn history_from_rows(rows: Vec<ContextRow>) -> History {
     // 实体按 id 去重、保持首次出现的顺序：同一个实体在几轮里反复出现是常态，
     // 每轮各列一遍只是把同一件事说三遍
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -227,14 +241,30 @@ pub async fn recent_context(pool: &PgPool, conversation_id: Uuid, n: i64) -> App
     }
     // 最后一条助手消息的那一段。**倒着找**——最后一条通常是刚落库的用户消息
     let last_assistant = rows.iter().rev().find(|row| row.role == "assistant");
-    let last_tool_exchange = last_assistant
+    let mut last_tool_exchange = last_assistant
         .and_then(|row| row.tool_exchange.as_array().cloned())
         .unwrap_or_default();
+    last_tool_exchange.retain(|m| !reasoning_metadata(m));
     let last_sources = last_assistant
         .and_then(|row| row.sources.as_array().cloned())
         .unwrap_or_default();
-    Ok(History {
+    History {
         turn_ids: rows.iter().map(|row| row.id).collect(),
+        reasoning: rows
+            .iter()
+            .map(|row| {
+                if row.role != "assistant" {
+                    return None;
+                }
+                row.tool_exchange
+                    .as_array()?
+                    .iter()
+                    .rev()
+                    .find(|m| reasoning_metadata(m))?["reasoning_content"]
+                    .as_str()
+                    .map(str::to_owned)
+            })
+            .collect(),
         turns: rows
             .into_iter()
             .map(|mut row| {
@@ -250,7 +280,7 @@ pub async fn recent_context(pool: &PgPool, conversation_id: Uuid, n: i64) -> App
         entities,
         last_tool_exchange,
         last_sources,
-    })
+    }
 }
 
 /// 一轮除了正文之外留下的东西。
@@ -268,7 +298,8 @@ pub struct TurnRecord {
     /// 这一轮认下的实体（id / 名字 / 类型）。下一轮回放，让模型接着走而不是重搜
     pub resolved: serde_json::Value,
     /// 这一轮调了什么、拿回什么（已截断的那一份）。下一轮回放最近的一段——
-    /// 没有它，模型跨轮之后就不知道自己查过，于是重查
+    /// 没有它，模型跨轮之后就不知道自己查过，于是重查。
+    /// 末尾可附仅含 `role` 和 `reasoning_content` 的终答协议 metadata。
     pub tool_exchange: serde_json::Value,
 }
 
@@ -335,4 +366,58 @@ pub async fn delete(
         return Err(AppError::NotFound);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn history_separates_terminal_reasoning_from_tool_exchanges() {
+        let row = |role: &str, tool_exchange| ContextRow {
+            id: Uuid::now_v7(),
+            role: role.into(),
+            content: "same text".into(),
+            resolved: json!([]),
+            tool_exchange,
+            sources: json!([]),
+            stopped: false,
+        };
+        let call = json!({"role":"assistant","reasoning_content":"tool thought",
+            "tool_calls":[{"id":"c"}]} );
+        let result = json!({"role":"tool","tool_call_id":"c","content":"ok"});
+        let history = history_from_rows(vec![
+            row("user", json!([])),
+            row("assistant", json!([])),
+            row(
+                "assistant",
+                json!([{"role":"assistant","reasoning_content":"older thought"}]),
+            ),
+            row(
+                "assistant",
+                json!([{"role":"assistant","reasoning_content":7}]),
+            ),
+            row(
+                "assistant",
+                json!([call.clone(), result.clone(),
+                {"role":"assistant","reasoning_content":""}]),
+            ),
+            row("user", json!([])),
+        ]);
+        assert_eq!(
+            history.reasoning,
+            [
+                None,
+                None,
+                Some("older thought".into()),
+                None,
+                Some(String::new()),
+                None
+            ]
+        );
+        assert_eq!(history.reasoning.len(), history.turns.len());
+        assert_eq!(history.turn_ids.len(), history.turns.len());
+        assert_eq!(history.last_tool_exchange, [call, result]);
+    }
 }
