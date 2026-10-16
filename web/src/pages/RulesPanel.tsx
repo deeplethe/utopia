@@ -100,8 +100,12 @@ export function parseOperand(op: string, text: string): unknown | undefined {
   const t = text.trim();
   if (!t) return undefined;
   if (kind === "set") {
+    // **全角逗号也是分隔符**：中文输入法敲出来的逗号是「，」。从前只认半角，
+    // 「气测异常，气测异常后效」存成了一个成员——「属于」永不成立，
+    // 「不属于」对任何值都成立。metadataOnly 故意不锁含「，」的成员，好让
+    // 这样存下的旧规则打开再保存一次就修好；代价是经 API 写进的也会被拆开
     const set = t
-      .split(",")
+      .split(/[,，]/)
       .map((s) => s.trim())
       .filter(Boolean);
     return set.length ? set : undefined;
