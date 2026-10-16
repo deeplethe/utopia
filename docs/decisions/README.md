@@ -148,6 +148,7 @@ By domain; the domains are the files of [../design/](../design/README.md). **Sta
 | 0046 | [The app surface is MCP](0046-the-app-surface-is-mcp.md) | Accepted |  |
 | 0063 | [Stopping a chat ends the generation](0063-stopping-a-chat-ends-the-generation.md) | Implemented |  |
 | 0064 | [Extraction reads time as it goes](0064-extraction-reads-time-as-it-goes.md) | In progress |  |
+| 0071 | [Use decays; the ledger does not](0071-use-decays-the-ledger-does-not.md) | Proposed |  |
 
 ### process
 

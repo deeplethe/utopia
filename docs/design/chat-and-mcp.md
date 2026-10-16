@@ -112,6 +112,8 @@ which #547 marks on the answer [0042].
 
 - A per-task model (`on_model_select`) and a chat model chosen per base [0042].
 - Retrieval that takes `at`; a versioned full-text index [0022, 0019].
+- Salience: retrievals and feedback recorded in a side table, a decaying score that reorders
+  search results when a base turns its weight up, and an hourly sweep for expiries and caps [0071].
 - The read-contract gaps: conflict and review state, chunk identity behind a quote [0020].
 - Which protocol renders an agent's interface in an external client (A2UI or MCP's own extension)
   when the nod card is needed there [0016].
