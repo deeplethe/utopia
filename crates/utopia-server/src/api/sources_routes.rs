@@ -402,6 +402,16 @@ pub struct IngestBody {
     pub deleted: bool,
 }
 
+/// 推送的回执：动作，重复时再加上占着这份内容的文档
+fn action_reply(action: crate::ingest_sources::IngestAction) -> serde_json::Value {
+    match action {
+        crate::ingest_sources::IngestAction::Duplicate(id) => {
+            json!({ "action": action_str(action), "duplicate_of": id })
+        }
+        _ => json!({ "action": action_str(action) }),
+    }
+}
+
 fn action_str(action: crate::ingest_sources::IngestAction) -> &'static str {
     match action {
         crate::ingest_sources::IngestAction::Created => "created",
@@ -409,6 +419,7 @@ fn action_str(action: crate::ingest_sources::IngestAction) -> &'static str {
         crate::ingest_sources::IngestAction::Moved => "moved",
         crate::ingest_sources::IngestAction::Unchanged => "unchanged",
         crate::ingest_sources::IngestAction::Tombstoned => "marked_missing",
+        crate::ingest_sources::IngestAction::Duplicate(_) => "duplicate",
     }
 }
 
@@ -442,7 +453,7 @@ pub async fn ingest(
     )
     .await
     .map_err(utopia_core::AppError::Other)?;
-    Ok(Json(json!({ "action": action_str(action) })))
+    Ok(Json(action_reply(action)))
 }
 
 /// 推送失败的两种性质。**调用方发错了**和**我们这边没接住**得分开：前者记进
@@ -472,13 +483,12 @@ async fn handle_push(
 ) -> Result<crate::ingest_sources::IngestAction, PushError> {
     let body: IngestBody = serde_json::from_slice(bytes)
         .map_err(|e| PushError::Rejected(format!("Invalid JSON payload: {e}")))?;
-    let identity = body
+    let declared = body
         .external_id
         .as_deref()
         .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| body.filename.trim())
-        .to_string();
+        .filter(|s| !s.is_empty());
+    let identity = declared.unwrap_or_else(|| body.filename.trim()).to_string();
     if identity.is_empty() {
         return Err(PushError::Rejected(
             "external_id or filename is required".into(),
@@ -499,22 +509,31 @@ async fn handle_push(
             "filename and content are required".into(),
         ));
     }
-    let action = crate::ingest_sources::ingest_item(
+    // 带了 external_id 身份就是它：不走「同内容 = 移动」，不把另一个 ID 的文档改成它
+    let action = crate::ingest_sources::ingest_item_with_outcome(
         state,
         source.kb_id,
         source.id,
         &key,
+        if declared.is_some() {
+            crate::ingest_sources::Identity::Declared
+        } else {
+            crate::ingest_sources::Identity::Path
+        },
         body.filename.trim(),
         "text/plain",
         body.content.as_bytes(),
         body.doc_time,
     )
     .await
-    .map_err(|e| PushError::Failed(e.to_string()))?;
-    // 失而复得：曾被墓碑标记的身份再次正常推送，摘掉 missing 标记
-    utopia_store::documents::clear_missing_keys(&state.pool, source.id, &[key])
-        .await
-        .map_err(|e| PushError::Failed(e.to_string()))?;
+    .map_err(|e| PushError::Failed(e.to_string()))?
+    .action;
+    // 失而复得：曾被墓碑标记的身份再次正常推送，摘掉 missing 标记；重复的推送什么也没落，不摘
+    if !matches!(action, crate::ingest_sources::IngestAction::Duplicate(_)) {
+        utopia_store::documents::clear_missing_keys(&state.pool, source.id, &[key])
+            .await
+            .map_err(|e| PushError::Failed(e.to_string()))?;
+    }
     Ok(action)
 }
 
@@ -552,14 +571,15 @@ pub async fn push(
                 crate::ingest_sources::IngestAction::Updated
                 | crate::ingest_sources::IngestAction::Moved => (0, 1),
                 crate::ingest_sources::IngestAction::Unchanged
-                | crate::ingest_sources::IngestAction::Tombstoned => (0, 0),
+                | crate::ingest_sources::IngestAction::Tombstoned
+                | crate::ingest_sources::IngestAction::Duplicate(_) => (0, 0),
             };
             utopia_store::sources::finish_run(&state.pool, run, source.id, None, created, updated)
                 .await?;
             // 来源行同步反映"上一次推送"：操作条/左栏状态点直接可用
             utopia_store::sources::finish_sync(&state.pool, source.id, None, created).await?;
             state.emit_source(source.kb_id);
-            Ok(Json(json!({ "action": action_str(action) })))
+            Ok(Json(action_reply(action)))
         }
         Err(err) => {
             let msg = err.message().to_string();
@@ -610,13 +630,14 @@ pub async fn push_statements(
                 crate::ingest_sources::IngestAction::Updated
                 | crate::ingest_sources::IngestAction::Moved => (0, 1),
                 crate::ingest_sources::IngestAction::Unchanged
-                | crate::ingest_sources::IngestAction::Tombstoned => (0, 0),
+                | crate::ingest_sources::IngestAction::Tombstoned
+                | crate::ingest_sources::IngestAction::Duplicate(_) => (0, 0),
             };
             utopia_store::sources::finish_run(&state.pool, run, source.id, None, created, updated)
                 .await?;
             utopia_store::sources::finish_sync(&state.pool, source.id, None, created).await?;
             state.emit_source(source.kb_id);
-            Ok(Json(json!({ "action": action_str(action) })))
+            Ok(Json(action_reply(action)))
         }
         Err(err) => {
             let msg = err.message().to_string();
@@ -795,21 +816,25 @@ async fn handle_statements_push(
         return Ok(crate::ingest_sources::IngestAction::Tombstoned);
     };
     let filename = format!("{identity}.json");
-    let action = crate::ingest_sources::ingest_item(
+    let action = crate::ingest_sources::ingest_item_with_outcome(
         state,
         source.kb_id,
         source.id,
         &key,
+        crate::ingest_sources::Identity::Declared,
         &filename,
         "application/json",
         content.as_bytes(),
         body.doc_time,
     )
     .await
-    .map_err(|e| PushError::Failed(e.to_string()))?;
-    utopia_store::documents::clear_missing_keys(&state.pool, source.id, &[key])
-        .await
-        .map_err(|e| PushError::Failed(e.to_string()))?;
+    .map_err(|e| PushError::Failed(e.to_string()))?
+    .action;
+    if !matches!(action, crate::ingest_sources::IngestAction::Duplicate(_)) {
+        utopia_store::documents::clear_missing_keys(&state.pool, source.id, &[key])
+            .await
+            .map_err(|e| PushError::Failed(e.to_string()))?;
+    }
     Ok(action)
 }
 

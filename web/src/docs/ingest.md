@@ -107,7 +107,9 @@ The response tells you what happened:
 { "action": "created" }
 ```
 
-`created` · `updated` · `moved` (same content, new name) · `unchanged` · `marked_missing`.
+`created` · `updated` · `moved` (same content, new name) · `unchanged` · `marked_missing` · `duplicate` (the base already holds this exact content as another document, named by `duplicate_of`, which may be a document in the trash; nothing was created or changed).
+
+With `external_id`, the id is the identity: the same content under a new id never takes over a live id's document. To rename an id, tombstone the old one (`"deleted": true`), then push the new id with the same content; the new id takes over the document, with its history, and answers `moved`.
 
 Example with curl:
 
@@ -156,7 +158,7 @@ Two things to know before wiring a system to it:
 - **Send events, not state.** A row that *is* the current state of a system belongs on a mounted database, read at query time. Pushing it here copies state into the ledger and the two drift.
 - **A new push under the same identity does not close the old statement.** The earlier one becomes stale and goes to review; deciding that an interval ended is done on the typed layer, by alignment and the temporal engine, not by the push.
 
-The response is the API push's: `{ "action": "created" }` · `updated` · `unchanged` · `marked_missing`.
+The response is the API push's: `{ "action": "created" }` · `updated` · `unchanged` · `marked_missing` · `duplicate` (with `duplicate_of`). It is never `moved`: the stored document carries its `external_id`, so two identities never share content.
 
 ---
 

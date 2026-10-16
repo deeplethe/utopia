@@ -153,6 +153,17 @@ pub enum IngestAction {
     Unchanged,
     /// 墓碑：标记"不在来源中"（不删除文档，删不删由用户在 UI 决定）
     Tombstoned,
+    /// 库里已有一篇同内容的文档（`documents_kb_sha_idx`）：这次什么也没建、没改，指向那一篇
+    Duplicate(Uuid),
+}
+
+/// 身份从哪来。`Path`：来源按位置认文档，同内容出现在新位置就是移动/改名，历史跟着走；
+/// `Declared`：调用方亲口给了 ID，身份就是它，绝不把另一个活着的 ID 的文档改成它；
+/// 只有已被墓碑标记的那篇可以接手（改名）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Identity {
+    Path,
+    Declared,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -231,6 +242,7 @@ pub async fn ingest_item(
         kb_id,
         source_id,
         external_key,
+        Identity::Path,
         filename,
         mime,
         bytes,
@@ -246,6 +258,7 @@ pub async fn ingest_item_with_outcome(
     kb_id: Uuid,
     source_id: Uuid,
     external_key: &str,
+    identity: Identity,
     filename: &str,
     mime: &str,
     bytes: &[u8],
@@ -281,6 +294,16 @@ pub async fn ingest_item_with_outcome(
     }
 
     if let Some(doc) = existing {
+        // 新内容已被库里另一篇占着：先答重复，免得下面恢复回收站、重建索引之后才发现
+        if doc.sha256 != sha256 {
+            if let Some(holder) =
+                utopia_store::documents::find_by_kb_sha(&state.pool, kb_id, &sha256).await?
+            {
+                return Ok(IngestOutcome {
+                    action: IngestAction::Duplicate(holder.id),
+                });
+            }
+        }
         // Ordinary source reappearance retains upstream restore semantics,
         // including search and derivation repair, before comparing content.
         let revived = doc.deleted_at.is_some();
@@ -312,7 +335,7 @@ pub async fn ingest_item_with_outcome(
         }
         // 变更：原地替换，旧版本入 document_versions，并与处理任务一起提交
         write_blob(state, &sha256, bytes).await?;
-        utopia_store::documents::replace_content_and_enqueue_processing(
+        match utopia_store::documents::replace_content_and_enqueue_processing(
             &state.pool,
             doc.id,
             filename,
@@ -321,17 +344,26 @@ pub async fn ingest_item_with_outcome(
             &sha256,
             doc_time,
         )
-        .await?;
+        .await
+        {
+            Ok(()) => {}
+            Err(utopia_core::AppError::Conflict(_)) => {
+                return duplicate_of(state, kb_id, &sha256).await
+            }
+            Err(e) => return Err(e.into()),
+        }
         state.emit_document(kb_id, doc.id);
         return Ok(IngestOutcome {
             action: IngestAction::Updated,
         });
     }
 
-    // 同内容出现在新路径：识别为移动/改名，不重跑管道
-    if let Some(doc) =
-        utopia_store::documents::find_by_source_sha(&state.pool, source_id, &sha256).await?
-    {
+    // 同内容出现在新路径：识别为移动/改名，不重跑管道。声明的 ID 只接手已被墓碑标记的那篇
+    // （先墓碑旧 ID、再推新 ID = 改名），活着的绝不改走
+    let moved = utopia_store::documents::find_by_source_sha(&state.pool, source_id, &sha256)
+        .await?
+        .filter(|doc| identity == Identity::Path || doc.missing_since.is_some());
+    if let Some(doc) = moved {
         utopia_store::documents::update_location(&state.pool, doc.id, filename, external_key)
             .await?;
         state.emit_document(kb_id, doc.id);
@@ -360,12 +392,21 @@ pub async fn ingest_item_with_outcome(
                 action: IngestAction::Created,
             })
         }
-        // KB 内已有同内容：不伪造新的身份，保留幂等结果
-        Err(utopia_core::AppError::Conflict(_)) => Ok(IngestOutcome {
-            action: IngestAction::Unchanged,
-        }),
+        // KB 内已有同内容：不伪造新的身份，如实说重复了谁
+        Err(utopia_core::AppError::Conflict(_)) => duplicate_of(state, kb_id, &sha256).await,
         Err(e) => Err(e.into()),
     }
+}
+
+async fn duplicate_of(
+    state: &AppState,
+    kb_id: Uuid,
+    sha256: &str,
+) -> anyhow::Result<IngestOutcome> {
+    let holder = utopia_store::documents::find_by_kb_sha(&state.pool, kb_id, sha256).await?;
+    Ok(IngestOutcome {
+        action: holder.map_or(IngestAction::Unchanged, |d| IngestAction::Duplicate(d.id)),
+    })
 }
 
 async fn sync_urls(state: &AppState, source: &Source) -> anyhow::Result<SyncStats> {
