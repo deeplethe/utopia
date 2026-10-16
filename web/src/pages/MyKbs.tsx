@@ -146,9 +146,13 @@ export function MyKbs() {
                 if ("heading" in line)
                   return (
                     <Tr key={`group-${line.heading}`}>
-                      <Td colSpan={6} className="pt-4 text-small font-medium text-ink-2">
+                      <th
+                        scope="rowgroup"
+                        colSpan={6}
+                        className="px-3 pt-4 pb-2 text-left align-top text-small font-medium text-ink-2"
+                      >
                         {line.heading}
-                      </Td>
+                      </th>
                     </Tr>
                   );
                 const { row, label } = line;
