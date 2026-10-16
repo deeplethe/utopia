@@ -49,6 +49,14 @@ classes of context neighbours, interleaved and never scored together; a class in
 subtree applied on its own, a cross-axis class sent to a person, each pair acknowledged once) runs
 from the ontology page; extraction no longer enqueues it [0001, 0016, #736].
 
+**A class's member list can name what its members lack** [#1269]. The instance list
+(`GET /kbs/{id}/ontology/entity-types/{type_id}/entities`) takes `missing_predicate`, a property key
+or an open phrase, and `missing_direction` (`out`, the default, with the member as subject; `in`;
+`either`), and keeps only the members no live fact links by that predicate: a typed row, a derived
+row, a row of the inverse (or symmetric) property from the other end, an open statement whose phrase
+normalizes to it, or one whose phrase is bound to the property. The answer echoes what was matched
+(`missing.relation_type_id`, `missing.phrases`); membership itself is unchanged (`entities.type_id`).
+
 **One statement draws one edge** [#755]. The typed graph is a view, so the canvas and the entity
 panel show one edge per statement: the property's name when a live typed row was computed from it,
 the document's phrase when none was. The document's wording is not lost with the folded edge, it
