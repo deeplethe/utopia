@@ -212,14 +212,17 @@ $2 million on March 4, 2011.\" gives:\n\
 /// 用不上它，而它占系统消息的一成不到
 const OPEN_TABLE_RULES: &str = "\
  In a \
-table, a cell is a statement about its row's thing whose phrase is the column heading. When \
+table, a cell is a statement about its row's thing whose phrase is the column heading and \
+whose value is the cell as written; a cell is the object only when it names a thing of its own \
+(a person, an organization, a place). When \
 the column heading names one time (a date, a quarter, a period), it is when instead, the \
 statement is about the thing the table's caption names (the company of a financial statement) \
 and the phrase is the row label as written, path included (\"Operating expenses › Research and \
 development\"); a heading that names a comparison between periods (a change from the quarter \
 before, a change from a year ago) is not a time, it stays the phrase; a unit the caption or a \
-heading gives (\"In millions\") is a qualifier on each such statement. Leave out cells whose \
-column heading is not in the passage.";
+heading gives (\"In millions\") is a qualifier on each such statement. Otherwise a row is about \
+the thing its first column (or its name, title or ID column) names, not the table or the \
+sheet. Leave out cells whose column heading is not in the passage.";
 
 /// 这一段里有没有表格：Markdown 的竖线、HTML 的单元格、制表符，或者一行里用成串空格
 /// 隔开的三栏以上。宁可多认：认错了只是多带一段规则，和从前一样
@@ -646,19 +649,30 @@ pub fn parse_open_response(raw: &str) -> anyhow::Result<OpenExtraction> {
 /// 挪完以后没有陈述再指着它、也不是别名的那个「东西」从 `e` 里拿掉，免得建出一个叫
 /// 「2015年3月12日」的实体。还当主语用着的留下：那是模型真把它当成了一样东西
 fn values_are_not_things(x: &mut OpenExtraction) {
-    let named: std::collections::HashMap<String, bool> = x
+    let listed: std::collections::HashMap<String, (bool, String)> = x
         .entities
         .iter()
-        .map(|e| (name_key(&e.name), e.named))
+        .map(|e| (name_key(&e.name), (e.named, name_key(&e.kind))))
         .collect();
+    let mut moved = HashSet::new();
     for s in &mut x.statements {
         let Some(object) = s.object.as_deref() else {
             continue;
         };
+        let (named, kind) = listed
+            .get(&name_key(object))
+            .map_or((false, ""), |(n, k)| (*n, k.as_str()));
+        // 表格里的一格：模型把「待审核」列成一样没点名的东西，种类词就是列名，再写成
+        // 以列名为短语的宾语——它自己说了这是那一列的值。实测一张需求表三行里两行
+        // 这么写，处理状态、优先级、需求编号全成了宾语，一个属性也绑不上。
+        // 编号（REQ-0019）模型会点名，可它是这一行那样东西的编号，不是另一样东西；
+        // 点了名的只在名字里带数字时才算——带数字的是编号、型号，人名、机构名不带
+        let a_cell = !kind.is_empty()
+            && kind == name_key(&s.phrase)
+            && (!named || object.chars().any(|c| c.is_ascii_digit()));
         // 宾语和值都给了的，解析层不裁（见 `parse_statement`）
-        if s.value.is_none()
-            && crate::literal_object(object, *named.get(&name_key(object)).unwrap_or(&false))
-        {
+        if s.value.is_none() && (a_cell || crate::literal_object(object, named)) {
+            moved.insert(name_key(object));
             s.value = s.object.take();
         }
     }
@@ -670,8 +684,10 @@ fn values_are_not_things(x: &mut OpenExtraction) {
         .chain(x.names.iter().flat_map(|n| [&n.entity, &n.name]))
         .map(|n| name_key(n))
         .collect();
-    x.entities
-        .retain(|e| used.contains(&name_key(&e.name)) || !crate::literal_object(&e.name, e.named));
+    x.entities.retain(|e| {
+        let key = name_key(&e.name);
+        used.contains(&key) || !(moved.contains(&key) || crate::literal_object(&e.name, e.named))
+    });
 }
 
 #[cfg(test)]
@@ -1123,6 +1139,42 @@ mod tests {
         let names: Vec<&str> = x.entities.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, vec!["星河科技有限公司", "杭州", "1984", "2020年"]);
         assert_eq!(x.skipped, 0);
+    }
+
+    /// 实测的需求表（#987）：一格被列成没点名的东西、种类词就是列名，再写成以列名为
+    /// 短语的宾语。那是这一格的值；点了名的、种类词和短语不同的照旧是宾语
+    #[test]
+    fn a_table_cell_listed_as_a_thing_becomes_the_value() {
+        let row = "| 修改体重时App出现bug | 待审核 | P1 | 个人资料 | 张伟 |";
+        let raw = format!(
+            r#"{{"e": [["修改体重时App出现bug", "需求", 0], ["待审核", "处理状态", 0],
+                      ["P1", "优先级", 0], ["个人资料", "模块", 0], ["张伟", "负责人", 1],
+                      ["REQ-0019", "需求编号", 1]],
+                "s": [["{row}", "修改体重时App出现bug", "处理状态", "待审核", null, null, null, null],
+                      ["{row}", "修改体重时App出现bug", "优先级", "P1", null, null, null, null],
+                      ["{row}", "修改体重时App出现bug", "需求编号", "REQ-0019", null, null, null, null],
+                      ["{row}", "修改体重时App出现bug", "功能模块", "个人资料", null, null, null, null],
+                      ["{row}", "修改体重时App出现bug", "负责人", "张伟", null, null, null, null]]}}"#
+        );
+        let x = parse_open_response(&raw).unwrap();
+        let shape: Vec<(Option<&str>, Option<&str>)> = x
+            .statements
+            .iter()
+            .map(|s| (s.object.as_deref(), s.value.as_deref()))
+            .collect();
+        assert_eq!(
+            shape,
+            vec![
+                (None, Some("待审核")),
+                (None, Some("P1")),
+                (None, Some("REQ-0019")),
+                (Some("个人资料"), None),
+                (Some("张伟"), None),
+            ]
+        );
+        // 挪成值的格子不再列着，免得建出一个叫 REQ-0019 的孤立实体
+        let names: Vec<&str> = x.entities.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["修改体重时App出现bug", "个人资料", "张伟"]);
     }
 
     /// named 认 1/0 与 true/false，缺了当点了名；kind 缺了是空串
