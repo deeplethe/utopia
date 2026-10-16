@@ -179,6 +179,8 @@ impl FromRequestParts<AppState> for AuthUser {
 /// 用这个提取器的只有文档原件（0052）、「把一个库搭起来」那几条和读图那几条：搜实体、
 /// 实体详情、认知历史、事实证据、图总览、邻域（决定 7）。
 ///
+/// 按推送时的 `external_id` 读回一篇文档（#1276）也是文档原件，开给令牌的理由写在决定 7。
+///
 /// 令牌只收窄：`pat` 在的时候，路由先问 [`Self::require_write`] 或
 /// [`Self::reaches`]，角色照旧由 `require_kb` 与工作区角色判。
 pub struct SessionOrToken {

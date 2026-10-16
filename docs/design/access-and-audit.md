@@ -23,6 +23,13 @@ creates no base. These routes, document content and six graph reads (entity sear
 history, fact evidence, overview, neighbourhood; Viewer suffices, `kb_ids` answers 404) take
 `SessionOrToken`; apart from MCP, every other route is session-only [0014 d6, d7]. `ingest_token` on a source is a different kind: plaintext, push-only [0014].
 
+**A client reads a pushed document back by its `external_id`.**
+`GET /kbs/{id}/sources/{sid}/documents/by-external-id?external_id=…` finds an `api` or `statements`
+source's document by the id it was pushed under and returns its metadata, current text and version
+list. It is document content: Viewer, a session or any token whose `kb_ids` reach the base, and not
+the source's push key, so a leaked key stays push-only; a document in the trash, a tombstoned id
+and one never pushed are all 404 [0014 d7, 0052].
+
 **Another app can trade its user's fresh ID token for a session.** `POST /auth/oidc/exchange`
 accepts an ID token from the configured issuer whose audience is in
 `UTOPIA_OIDC_EXCHANGE_AUDIENCES` and that was issued in the last ten minutes, maps it only to an
