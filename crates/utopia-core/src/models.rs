@@ -446,6 +446,17 @@ pub struct ChunkView {
     pub filename: String,
 }
 
+/// 分块带上它来自哪个来源。`external_id` 只有推送来源（api / statements）才有：
+/// 推送方给的那个 id，去掉库里加的 `{kind}:` 前缀，好让它拿回去对自己的记录（#1271）
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct SourcedChunk {
+    #[serde(flatten)]
+    #[sqlx(flatten)]
+    pub chunk: ChunkView,
+    pub source_id: Option<Uuid>,
+    pub external_id: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct LlmSettings {
     pub workspace_id: Uuid,
