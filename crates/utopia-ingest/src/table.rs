@@ -351,7 +351,44 @@ fn depth_of(cell: &Cell) -> u32 {
 /// 一张表 → 说明句（可选）+ 带真表头的 Markdown 表，连同它用的列头（给续表接着用）。
 /// 表里什么都没有时返回 None。
 fn render_table(tbl: &Selection<'_>, inherited: &[String]) -> Option<(String, Vec<String>)> {
-    render_rows(grid(tbl), inherited, None)
+    let (md, headers) = render_rows(grid(tbl), inherited, None)?;
+    // <caption> 不在任何 tr 里，读网格时看不见；整张表又换成了占位段落，htmd 本来会写出的
+    // 这句话也跟着没了。照 htmd 和 Word 题注的样子写回表前，单独一段，不像标题行那样硬加冒号：
+    // 短的由分块器当说明句带进表的每一块，长的（表名后面还跟着几句说明的）和别的长段落一样只写
+    // 一次。硬加了冒号，长的也得每块重复，300 token 的预算剩不下几行。
+    // 用 formatted_text：text() 把 <br> 两边的字首尾相接
+    let captions: String = tbl
+        .select("caption")
+        .iter()
+        .map(|c| clean(&c.formatted_text()))
+        .filter(|t| !t.is_empty())
+        .map(|t| as_paragraph(&t) + "\n\n")
+        .collect();
+    Some((captions + &md, headers))
+}
+
+/// 以 Markdown 块标记开头的说明句（「# of wells」「1. Demographics」「- Totals」「> 5 years」
+/// 「~~~ Notes」）会读成标题、列表、引用或代码块：分块器只认段落作说明句，表的续块就没有它；
+/// 读成标题还会顶替后面每一块的面包屑，读成代码块则没有收尾，把表和后文一直吞到文末。照 htmd
+/// 转义正文的办法，在标记前加反斜杠；只是像标记的（「#1 well」「~5 km」）照原样写
+fn as_paragraph(line: &str) -> String {
+    let b = line.as_bytes();
+    let spaced = |i: usize| b.get(i).is_none_or(|&c| c == b' ');
+    let hashes = b.iter().take_while(|&&c| c == b'#').count();
+    let digits = b.iter().take_while(|c| c.is_ascii_digit()).count();
+    let at = match b.first() {
+        Some(b'>') => 0,
+        Some(b'-' | b'+' | b'*') if spaced(1) => 0,
+        Some(b'#') if spaced(hashes) => 0,
+        Some(b'`' | b'~') if b.get(1) == b.first() && b.get(2) == b.first() => 0,
+        Some(b'0'..=b'9')
+            if digits <= 9 && matches!(b.get(digits), Some(b'.' | b')')) && spaced(digits + 1) =>
+        {
+            digits
+        }
+        _ => return line.to_string(),
+    };
+    format!("{}\\{}", &line[..at], &line[at..])
 }
 
 /// 别的解析器用的入口：一行是若干 (文字, 跨几列, 左内边距 pt)。`first_is_header` 为真时，
@@ -791,6 +828,58 @@ mod tests {
             md.contains("| Number of shares Against | 1,399,727 |"),
             "{md}"
         );
+    }
+
+    /// <caption> 是表写明的名字：单独一段写在标题行前面，和 Word 的题注一样不加冒号；
+    /// 模板常留的空 <caption> 什么都不写
+    #[test]
+    fn an_html_table_keeps_its_caption() {
+        let table = |caption: &str| {
+            render(&format!(
+                "<table><caption>{caption}</caption>\
+                 <tr><td colspan=\"2\">Spring survey 2026</td></tr>\
+                 <tr><th>Well</th><th>Depth</th></tr><tr><td>North</td><td>1200</td></tr></table>"
+            ))
+        };
+        let rest = "Spring survey 2026:\n\n| Well | Depth |\n| --- | --- |\n| North | 1200 |";
+        assert_eq!(
+            table("Table 2<br>Readings by well."),
+            format!("Table 2 Readings by well.\n\n{rest}")
+        );
+        assert_eq!(table("&nbsp;"), rest);
+    }
+
+    #[test]
+    fn a_caption_that_starts_like_markdown_stays_a_paragraph() {
+        let table = |caption: &str| {
+            render(&format!(
+                "<table><caption>{caption}</caption>\
+                 <tr><th>Well</th><th>Depth</th></tr><tr><td>North</td><td>1200</td></tr></table>"
+            ))
+        };
+        for caption in [
+            "# of wells",
+            "1. Demographics",
+            "2) Totals",
+            "- Totals",
+            "+ Totals",
+            "* Preliminary",
+            "&gt; 5 years in service",
+            "~~~ Notes",
+            "``` Notes",
+        ] {
+            let md = table(caption);
+            assert_eq!(
+                crate::blocks::blocks(&md)[0].kind,
+                crate::blocks::Kind::Paragraph,
+                "{md}"
+            );
+        }
+        // 只是像标记的照原样写，块里的原文不多出反斜杠
+        for caption in ["#1 well", "~5 km"] {
+            let md = table(caption);
+            assert!(md.starts_with(&format!("{caption}\n\n")), "{md}");
+        }
     }
 
     #[test]
