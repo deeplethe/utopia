@@ -48,6 +48,7 @@ import {
   SearchSelect,
   Status,
   cn,
+  localDate,
   type ChipTone,
 } from "../ui";
 
@@ -478,7 +479,7 @@ function MergeRow({
             ? S.review.mergedBy(merge.merged_by_name)
             : S.review.mergedByAi}
           {" · "}
-          {merge.created_at.slice(0, 10)}
+          {localDate(merge.created_at)}
           {merge.reason ? ` · ${escalationText(merge.reason)}` : ""}
         </div>
       </div>
@@ -523,7 +524,7 @@ function precedentText(p: AgentPrecedent): string {
       : p.action === "review.keep"
         ? S.review.agentPrecedentKept
         : S.review.agentPrecedentMerged;
-  const line = `${p.left} ≟ ${p.right} · ${verb} · ${p.at.slice(0, 10)}`;
+  const line = `${p.left} ≟ ${p.right} · ${verb} · ${localDate(p.at)}`;
   // 人写的那一句（0026）跟在后面：先例不只是结果
   return p.why ? `${line} · “${p.why}”` : line;
 }
@@ -596,8 +597,8 @@ function AgentRow({
       <div className="mt-2 flex items-center gap-2">
         <span className="text-fine text-ink-2">
           {d.decided_by_name
-            ? S.review.agentAnsweredBy(d.decided_by_name, (d.decided_at ?? d.created_at).slice(0, 10))
-            : d.created_at.slice(0, 10)}
+            ? S.review.agentAnsweredBy(d.decided_by_name, localDate(d.decided_at ?? d.created_at))
+            : localDate(d.created_at)}
         </span>
         <div className="ml-auto flex items-center gap-2 shrink-0">
           {/* 回答 agent 也能带一句理由（0026）——它走的正是人的裁决路径 */}
@@ -691,7 +692,7 @@ function DecisionRow({ e }: { e: ReviewHistoryEvent }) {
       <span className="ml-auto shrink-0 text-small text-ink-2">
         {e.actor_name ?? S.review.aiActor}
         {" · "}
-        <span className="u-num">{e.created_at.slice(0, 10)}</span>
+        <span className="u-num">{localDate(e.created_at)}</span>
       </span>
     </div>
   );

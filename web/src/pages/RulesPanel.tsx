@@ -37,6 +37,7 @@ import {
   Th,
   THead,
   Tr,
+  localDate,
 } from "../ui";
 import { toast } from "../toast";
 import { expressionText, metadataOnly, metadataPatch } from "./ruleExpressions";
@@ -303,7 +304,7 @@ function History({ kbId, ruleId, attributes }: { kbId: string; ruleId: string; a
               <span className="u-num text-small text-ink">{S.ontology.ruleVersion(v.seq)}</span>
               {!v.superseded_at && <Chip tone="success">{S.ontology.ruleVersionCurrent}</Chip>}
               <span className="u-num text-fine text-ink-2">
-                {S.ontology.ruleVersionSince(v.recorded_at.slice(0, 10), v.superseded_at ? v.superseded_at.slice(0, 10) : null)}
+                {S.ontology.ruleVersionSince(localDate(v.recorded_at), v.superseded_at ? localDate(v.superseded_at) : null)}
               </span>
               <span className="u-num text-fine text-ink-2">{S.ontology.ruleVersionStanding(v.derived_count)}</span>
             </div>
