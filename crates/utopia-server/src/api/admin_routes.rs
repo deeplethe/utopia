@@ -198,3 +198,35 @@ pub async fn reactivate_user(
     .await;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
+
+#[derive(Deserialize)]
+pub struct SetSystemAdminReq {
+    pub is_admin: bool,
+}
+
+/// 授予或收回系统管理员。首个注册的人之外，这是唯一能拿到它的路（#1233）。
+pub async fn set_system_admin(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path(target): Path<Uuid>,
+    Json(req): Json<SetSystemAdminReq>,
+) -> ApiResult<Json<serde_json::Value>> {
+    require_admin(&user)?;
+    utopia_store::accounts::set_system_admin(&state.pool, target, user.id, req.is_admin).await?;
+    let action = if req.is_admin {
+        "user.admin_granted"
+    } else {
+        "user.admin_revoked"
+    };
+    let _ = utopia_store::audit::record(
+        &state.pool,
+        None,
+        user.id,
+        action,
+        "user",
+        Some(target),
+        serde_json::json!({}),
+    )
+    .await;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}

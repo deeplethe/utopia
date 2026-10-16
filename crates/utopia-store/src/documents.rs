@@ -619,6 +619,57 @@ pub async fn get(pool: &PgPool, id: Uuid) -> AppResult<Document> {
         .ok_or(AppError::NotFound)
 }
 
+/// 一次处理的输入；版本号区分内容 A → B → A，不能只比较 SHA。
+pub struct ProcessingInput {
+    pub document: Document,
+    pub version: i32,
+}
+
+pub async fn processing_input(pool: &PgPool, id: Uuid) -> AppResult<ProcessingInput> {
+    let mut tx = pool.begin().await?;
+    let document = sqlx::query_as("SELECT * FROM documents WHERE id = $1 FOR NO KEY UPDATE")
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let version = processing_version_tx(&mut tx, id).await?;
+    tx.commit().await?;
+    Ok(ProcessingInput { document, version })
+}
+
+async fn processing_version_tx(tx: &mut Transaction<'_, Postgres>, id: Uuid) -> AppResult<i32> {
+    Ok(sqlx::query_scalar(
+        "SELECT coalesce(max(version), 0) FROM document_versions WHERE document_id = $1",
+    )
+    .bind(id)
+    .fetch_one(&mut **tx)
+    .await?)
+}
+
+/// 锁后再读版本：等待内容更新的事务提交后，要看到它刚追加的版本。
+async fn lock_processing_input_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    input: &ProcessingInput,
+) -> AppResult<bool> {
+    let current: Option<(String, bool)> = sqlx::query_as(
+        "SELECT sha256, deleted_at IS NOT NULL FROM documents WHERE id = $1 FOR NO KEY UPDATE",
+    )
+    .bind(input.document.id)
+    .fetch_optional(&mut **tx)
+    .await?;
+    if !matches!(current, Some((ref sha, false)) if sha == &input.document.sha256) {
+        return Ok(false);
+    }
+    Ok(processing_version_tx(tx, input.document.id).await? == input.version)
+}
+
+pub async fn processing_is_current(pool: &PgPool, input: &ProcessingInput) -> AppResult<bool> {
+    let mut tx = pool.begin().await?;
+    let current = lock_processing_input_tx(&mut tx, input).await?;
+    tx.commit().await?;
+    Ok(current)
+}
+
 /// A recorded original, with only the facts the ingestion ledger guarantees.
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct DocumentVersion {
@@ -771,6 +822,12 @@ pub async fn record_version(
     sha256: &str,
     size_bytes: i64,
 ) -> AppResult<()> {
+    let mut tx = pool.begin().await?;
+    // 版本追加也要和处理回写互斥，外键的 KEY SHARE 锁不会挡住它。
+    sqlx::query("SELECT id FROM documents WHERE id = $1 FOR NO KEY UPDATE")
+        .bind(document_id)
+        .execute(&mut *tx)
+        .await?;
     sqlx::query(
         "INSERT INTO document_versions (id, document_id, version, sha256, size_bytes, doc_time)
          VALUES ($1, $2,
@@ -781,8 +838,9 @@ pub async fn record_version(
     .bind(document_id)
     .bind(sha256)
     .bind(size_bytes)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
+    tx.commit().await?;
     Ok(())
 }
 
@@ -858,32 +916,51 @@ pub async fn set_status(pool: &PgPool, id: Uuid, status: &str) -> AppResult<()> 
     Ok(())
 }
 
-pub async fn set_failed(pool: &PgPool, id: Uuid, error: &str) -> AppResult<()> {
+pub async fn set_status_if_current(
+    pool: &PgPool,
+    input: &ProcessingInput,
+    status: &str,
+) -> AppResult<bool> {
+    let mut tx = pool.begin().await?;
+    if !lock_processing_input_tx(&mut tx, input).await? {
+        return Ok(false);
+    }
     sqlx::query(
-        "UPDATE documents SET status = 'failed', error = $2, reader_task = NULL, updated_at = now()
+        "UPDATE documents SET status = $2, error = NULL, reader_needed = NULL, updated_at = now()
           WHERE id = $1",
     )
-    .bind(id)
-    .bind(error)
-    .execute(pool)
+    .bind(input.document.id)
+    .bind(status)
+    .execute(&mut *tx)
     .await?;
-    Ok(())
+    tx.commit().await?;
+    Ok(true)
 }
 
-/// 这份文件要 `reader` 那一种模型才读得出字，而那种模型没配（0040）：停在 failed，
-/// 记下缺的是哪一种，配上之后按它重新排队
-pub async fn set_needs_reader(pool: &PgPool, id: Uuid, reader: &str, error: &str) -> AppResult<()> {
+/// 当前输入失败才记下原因；缺读取模型时仍按原语义等待配上后重排。
+pub async fn set_failed_if_current(
+    pool: &PgPool,
+    input: &ProcessingInput,
+    error: &str,
+    reader: Option<&str>,
+) -> AppResult<bool> {
+    let mut tx = pool.begin().await?;
+    if !lock_processing_input_tx(&mut tx, input).await? {
+        return Ok(false);
+    }
     sqlx::query(
-        "UPDATE documents SET status = 'failed', error = $3, reader_needed = $2, reader_task = NULL,
+        "UPDATE documents SET status = 'failed', error = $2,
+                reader_needed = coalesce($3, reader_needed), reader_task = NULL,
                 updated_at = now()
           WHERE id = $1",
     )
-    .bind(id)
-    .bind(reader)
+    .bind(input.document.id)
     .bind(error)
-    .execute(pool)
+    .bind(reader)
+    .execute(&mut *tx)
     .await?;
-    Ok(())
+    tx.commit().await?;
+    Ok(true)
 }
 
 /// 配上了 `reader` 那一种模型：这个工作区里等着它的文档（活着的）重新排进处理队列。
@@ -969,6 +1046,44 @@ pub async fn set_ready(pool: &PgPool, id: Uuid, text_len: i32, chunk_count: i32)
     .execute(pool)
     .await?;
     Ok(())
+}
+
+/// 就绪、抽取状态和入队一起提交，过期任务不能留下新版的后续工作。
+pub async fn finish_processing_if_current(
+    pool: &PgPool,
+    input: &ProcessingInput,
+    text_len: i32,
+    chunk_count: i32,
+    graph_status: Option<&str>,
+) -> AppResult<bool> {
+    let mut tx = pool.begin().await?;
+    if !lock_processing_input_tx(&mut tx, input).await? {
+        return Ok(false);
+    }
+    sqlx::query(
+        "UPDATE documents SET status = 'ready', error = NULL, reader_needed = NULL, reader_task = NULL,
+                text_len = $2, chunk_count = $3,
+                graph_status = coalesce($4, graph_status),
+                graph_error = CASE WHEN $4 IS NULL THEN graph_error ELSE NULL END,
+                updated_at = now() WHERE id = $1",
+    )
+    .bind(input.document.id)
+    .bind(text_len)
+    .bind(chunk_count)
+    .bind(graph_status)
+    .execute(&mut *tx)
+    .await?;
+    if graph_status == Some("queued") {
+        crate::jobs::enqueue_with_max_attempts_tx(
+            &mut tx,
+            "extract_document",
+            serde_json::json!({ "document_id": input.document.id }),
+            3,
+        )
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(true)
 }
 
 /// 一次删除的产出，给审计与界面提示用。
@@ -1407,12 +1522,17 @@ pub async fn replace_chunks(
 /// 返回 None 表示输入已过期，调用方应结束本次处理。
 pub async fn replace_chunks_if_current(
     pool: &PgPool,
-    kb_id: Uuid,
-    document_id: Uuid,
+    input: &ProcessingInput,
     pieces: &[ChunkPiece],
-    sha256: &str,
 ) -> AppResult<Option<Vec<(String, String)>>> {
-    replace_chunks_for_snapshot(pool, kb_id, document_id, pieces, Some(sha256)).await
+    replace_chunks_for_snapshot(
+        pool,
+        input.document.kb_id,
+        input.document.id,
+        pieces,
+        Some(input),
+    )
+    .await
 }
 
 async fn replace_chunks_for_snapshot(
@@ -1420,7 +1540,7 @@ async fn replace_chunks_for_snapshot(
     kb_id: Uuid,
     document_id: Uuid,
     pieces: &[ChunkPiece],
-    sha256: Option<&str>,
+    input: Option<&ProcessingInput>,
 ) -> AppResult<Option<Vec<(String, String)>>> {
     let mut tx = pool.begin().await?;
     // 两个任务可能同时处理同一文档。先锁父记录，即使还没有分块，
@@ -1430,16 +1550,15 @@ async fn replace_chunks_for_snapshot(
     // 冲突，于是这个事务活着的时候，这份文档所有子表的插入都被挡住（chunks、
     // document_versions、memory::append），而这个事务是每个分块一个来回——四千块的
     // 文档要锁四秒。两者对另一个 `replace_chunks` 的互斥是一样的
-    let current: Option<(String, bool)> = sqlx::query_as(
-        "SELECT sha256, deleted_at IS NOT NULL FROM documents WHERE id = $1 FOR NO KEY UPDATE",
-    )
-    .bind(document_id)
-    .fetch_optional(&mut *tx)
-    .await?;
-    if let Some(expected) = sha256 {
-        if !matches!(current, Some((ref sha, false)) if sha == expected) {
+    if let Some(input) = input {
+        if !lock_processing_input_tx(&mut tx, input).await? {
             return Ok(None);
         }
+    } else {
+        sqlx::query("SELECT id FROM documents WHERE id = $1 FOR NO KEY UPDATE")
+            .bind(document_id)
+            .execute(&mut *tx)
+            .await?;
     }
     let (version,): (i32,) = sqlx::query_as(
         "SELECT COALESCE(MAX(version), 1) FROM document_versions WHERE document_id = $1",
@@ -1705,7 +1824,29 @@ pub async fn chunks_pending_embedding(
 }
 
 pub async fn set_embeddings(pool: &PgPool, items: &[(Uuid, Vec<f32>)]) -> AppResult<()> {
+    set_embeddings_for_input(pool, items, None).await?;
+    Ok(())
+}
+
+pub async fn set_embeddings_if_current(
+    pool: &PgPool,
+    input: &ProcessingInput,
+    items: &[(Uuid, Vec<f32>)],
+) -> AppResult<bool> {
+    set_embeddings_for_input(pool, items, Some(input)).await
+}
+
+async fn set_embeddings_for_input(
+    pool: &PgPool,
+    items: &[(Uuid, Vec<f32>)],
+    input: Option<&ProcessingInput>,
+) -> AppResult<bool> {
     let mut tx = pool.begin().await?;
+    if let Some(input) = input {
+        if !lock_processing_input_tx(&mut tx, input).await? {
+            return Ok(false);
+        }
+    }
     for (id, emb) in items {
         sqlx::query("UPDATE chunks SET embedding = $2 WHERE id = $1")
             .bind(id)
@@ -1719,7 +1860,7 @@ pub async fn set_embeddings(pool: &PgPool, items: &[(Uuid, Vec<f32>)]) -> AppRes
         crate::vector_index::request(pool, crate::vector_index::Target::Chunks, first.len())
             .await?;
     }
-    Ok(())
+    Ok(true)
 }
 
 /// 向量近邻检索（余弦距离）。维度写成字面量、两侧 cast、`relaxed_order`——三条

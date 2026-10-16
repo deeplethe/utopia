@@ -101,6 +101,7 @@ mod a_trimmed_description_is_not_stale;
 mod a_viewer_never_sees_a_credential;
 mod a_wrong_time_can_be_corrected;
 mod adopting_an_iri_adopts_the_shape;
+mod an_admin_grants_system_admin;
 mod an_agent_can_record;
 mod an_automatic_merge_is_gated_by_what_it_can_undo;
 mod an_axiom_that_moved_closes_its_findings;

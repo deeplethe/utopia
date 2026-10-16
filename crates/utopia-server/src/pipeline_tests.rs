@@ -22,6 +22,7 @@
 //! 没有 `UTOPIA_DATABASE_URL` 时跳过而不是失败。自建自拆，绝不碰已有的库。
 
 use std::fmt::Write as _;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use utopia_core::models::Proposer;
@@ -231,7 +232,8 @@ impl Fx {
             .await?
             .expect("settings were written by the fixture");
         let client = crate::llm_util::embed_client(&settings).expect("embed model is configured");
-        super::embed_pending(&self.state, &settings, &client, doc).await
+        let input = utopia_store::documents::processing_input(&self.pool, doc).await?;
+        super::embed_pending(&self.state, &settings, &client, &input).await
     }
 
     /// (正文, 向量) 按 seq；向量为空就是没嵌
@@ -353,14 +355,276 @@ async fn a_failed_batch_does_not_strand_the_document() -> anyhow::Result<()> {
         return Ok(());
     };
     let doc = f.document_to_process(20).await?;
-    assert!(super::process_document(&f.state, doc).await.is_err());
+    let original = utopia_store::documents::get(&f.pool, doc).await?;
+    let error = super::process_document(&f.state, doc)
+        .await
+        .expect_err("the current revision really failed");
+    assert!(utopia_core::is_deferred(&error).is_none());
+    assert!(!utopia_core::is_terminal(&error));
+    let error_message = error.to_string();
+    assert!(error_message.contains("model is down"));
     let row = utopia_store::documents::get(&f.pool, doc).await?;
     assert_eq!(row.status, "failed", "not left sitting in embedding");
-    assert!(
-        row.error.as_deref().is_some_and(|e| !e.is_empty()),
-        "the reason is on the document"
+    assert_eq!(row.error.as_deref(), Some(error_message.as_str()));
+    assert_eq!(
+        (row.text_len, row.chunk_count),
+        (original.text_len, original.chunk_count)
     );
     f.cleanup().await
+}
+
+/// #1215：第一批嵌入必须等测试放行；新版请求立即完成，不靠延时猜并发顺序。
+async fn pause_embedding(
+    f: &Fx,
+    doc: Uuid,
+    fail_old: bool,
+) -> anyhow::Result<(
+    Arc<tokio::sync::Notify>,
+    tokio::task::JoinHandle<anyhow::Result<()>>,
+    tokio::task::JoinHandle<()>,
+)> {
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let resume = Arc::new(tokio::sync::Notify::new());
+    let first_request = Arc::new(AtomicBool::new(true));
+    let app = axum::Router::new().route(
+        "/embeddings",
+        axum::routing::post({
+            let entered = entered.clone();
+            let resume = resume.clone();
+            move |axum::Json(body): axum::Json<serde_json::Value>| {
+                let entered = entered.clone();
+                let resume = resume.clone();
+                let first_request = first_request.clone();
+                async move {
+                    let is_old = first_request.swap(false, Ordering::SeqCst);
+                    if is_old {
+                        entered.notify_one();
+                        resume.notified().await;
+                        if fail_old {
+                            return (
+                                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                                axum::Json(serde_json::json!({"error": "old embedding failed"})),
+                            );
+                        }
+                    }
+                    let data: Vec<_> = body["input"]
+                        .as_array()
+                        .expect("embedding input is an array")
+                        .iter()
+                        .map(|input| {
+                            let mut vector = vector_of(input.as_str().expect("input is text"));
+                            // 同 SHA 的新版本可能复用 chunk ID，旧向量仍必须丢弃。
+                            if is_old {
+                                vector[0] += 10_000.0;
+                            }
+                            serde_json::json!({"embedding": vector})
+                        })
+                        .collect();
+                    (
+                        axum::http::StatusCode::OK,
+                        axum::Json(serde_json::json!({"data": data})),
+                    )
+                }
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let base = format!("http://{}", listener.local_addr()?);
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    utopia_store::settings::upsert(
+        &f.pool,
+        f.ws,
+        Some(&base),
+        None,
+        Some("fake-chat"),
+        Some(&base),
+        None,
+        Some("fake-embed"),
+        Some(4),
+    )
+    .await?;
+    let state = f.state.clone();
+    let processing = tokio::spawn(async move { super::process_document(&state, doc).await });
+    tokio::time::timeout(Duration::from_secs(10), entered.notified()).await?;
+    Ok((resume, processing, server))
+}
+
+async fn replace_document_text(f: &Fx, doc: Uuid, text: &str) -> anyhow::Result<()> {
+    use sha2::{Digest, Sha256};
+    let sha: String = Sha256::digest(text.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    f.state.blob.put(&sha, text.as_bytes()).await?;
+    utopia_store::documents::replace_content_and_enqueue_processing(
+        &f.pool,
+        doc,
+        "long.md",
+        "text/markdown",
+        text.len() as i64,
+        &sha,
+        None,
+    )
+    .await?;
+    Ok(())
+}
+
+async fn processing_snapshot(f: &Fx, doc: Uuid) -> anyhow::Result<serde_json::Value> {
+    Ok(sqlx::query_scalar(
+        "SELECT jsonb_build_object(
+            'document', (SELECT to_jsonb(d) FROM documents d WHERE d.id = $1),
+            'chunks', (SELECT coalesce(jsonb_agg(to_jsonb(c) ORDER BY c.seq, c.id), '[]')
+                         FROM chunks c WHERE c.document_id = $1 AND c.superseded_at IS NULL),
+            'jobs', (SELECT coalesce(jsonb_agg(to_jsonb(j) ORDER BY j.id), '[]')
+                       FROM jobs j WHERE j.payload->>'document_id' = $1::text),
+            'alerts', (SELECT coalesce(jsonb_agg(to_jsonb(a) ORDER BY a.id), '[]')
+                         FROM alerts a WHERE a.kb_id = $2))",
+    )
+    .bind(doc)
+    .bind(f.kb)
+    .fetch_one(&f.pool)
+    .await?)
+}
+
+async fn late_embedding_preserves_newer_revision(
+    fail_old: bool,
+    restore_original: bool,
+) -> anyhow::Result<()> {
+    let Some(f) = fixture(FakeEmbed::new(Duration::ZERO)).await? else {
+        return Ok(());
+    };
+    let doc = f.document_to_process(4).await?;
+    let original = utopia_store::documents::get(&f.pool, doc).await?;
+    let versions = utopia_store::documents::versions(&f.pool, doc).await?;
+    let original_version = versions.last().expect("the document has a version").version;
+    let original_text = String::from_utf8(f.state.blob.get(&original.sha256).await?)?;
+    let (resume, old, server) = pause_embedding(&f, doc, fail_old).await?;
+    let old_chunks: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM chunks WHERE document_id = $1 AND superseded_at IS NULL ORDER BY seq",
+    )
+    .bind(doc)
+    .fetch_all(&f.pool)
+    .await?;
+    assert!(old_chunks.len() > 1 && old_chunks.len() <= super::EMBED_BATCH);
+
+    let new_text = "The NEW budget is 200.";
+    replace_document_text(&f, doc, new_text).await?;
+    if restore_original {
+        // B 尚未解析，恢复 A 时会认领旧任务正在嵌入的同一批 chunk ID。
+        replace_document_text(&f, doc, &original_text).await?;
+    }
+    super::process_document(&f.state, doc).await?;
+    let newer = utopia_store::documents::get(&f.pool, doc).await?;
+    assert_eq!(newer.status, "ready");
+    assert_eq!(newer.error, None);
+    if restore_original {
+        assert_eq!(newer.sha256, original.sha256);
+        let versions = utopia_store::documents::versions(&f.pool, doc).await?;
+        assert!(versions.last().expect("the document has a version").version > original_version);
+        let current_chunks: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM chunks
+              WHERE document_id = $1 AND superseded_at IS NULL ORDER BY seq",
+        )
+        .bind(doc)
+        .fetch_all(&f.pool)
+        .await?;
+        assert_eq!(
+            current_chunks, old_chunks,
+            "restoring A reuses the chunks held by the old request"
+        );
+    } else {
+        assert_ne!(newer.chunk_count, old_chunks.len() as i32);
+    }
+
+    // 新版抽取也已完成，旧任务不能再把它改成 queued 或另排一次抽取。
+    utopia_store::documents::set_graph_status(&f.pool, doc, "done").await?;
+    sqlx::query("UPDATE jobs SET status = 'done' WHERE payload->>'document_id' = $1")
+        .bind(doc.to_string())
+        .execute(&f.pool)
+        .await?;
+    let completed = processing_snapshot(&f, doc).await?;
+    resume.notify_one();
+    let old_result = tokio::time::timeout(Duration::from_secs(10), old).await??;
+    server.abort();
+    let current = processing_snapshot(&f, doc).await?;
+    sqlx::query("DELETE FROM jobs WHERE payload->>'document_id' = $1")
+        .bind(doc.to_string())
+        .execute(&f.pool)
+        .await?;
+    f.cleanup().await?;
+    old_result?;
+    assert_eq!(
+        current, completed,
+        "a late embedding must leave the newer revision intact"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_late_successful_embedding_preserves_a_newer_revision() -> anyhow::Result<()> {
+    late_embedding_preserves_newer_revision(false, false).await
+}
+
+#[tokio::test]
+async fn a_late_failed_embedding_preserves_a_newer_revision() -> anyhow::Result<()> {
+    late_embedding_preserves_newer_revision(true, false).await
+}
+
+#[tokio::test]
+async fn a_late_embedding_cannot_accept_a_restored_sha_as_its_revision() -> anyhow::Result<()> {
+    late_embedding_preserves_newer_revision(false, true).await
+}
+
+#[tokio::test]
+async fn a_late_embedding_preserves_a_deleted_document() -> anyhow::Result<()> {
+    for fail_old in [false, true] {
+        let Some(f) = fixture(FakeEmbed::new(Duration::ZERO)).await? else {
+            return Ok(());
+        };
+        let doc = f.document_to_process(4).await?;
+        let (resume, old, server) = pause_embedding(&f, doc, fail_old).await?;
+        utopia_store::documents::delete(&f.pool, f.kb, doc, None).await?;
+        let deleted = processing_snapshot(&f, doc).await?;
+        assert!(deleted["document"]["deleted_at"].is_string());
+        assert_eq!(deleted["chunks"], serde_json::json!([]));
+        resume.notify_one();
+        let result = tokio::time::timeout(Duration::from_secs(10), old).await??;
+        server.abort();
+        let current = processing_snapshot(&f, doc).await?;
+        f.cleanup().await?;
+        result?;
+        assert_eq!(
+            current, deleted,
+            "deleted documents reject old success and failure"
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn an_embedding_failure_does_not_hide_a_database_write_error() -> anyhow::Result<()> {
+    let Some(mut f) = fixture(FakeEmbed::new(Duration::ZERO)).await? else {
+        return Ok(());
+    };
+    let url = utopia_store::test_db::url().expect("the fixture has a configured database");
+    let doc = f.document_to_process(4).await?;
+    let (resume, processing, server) = pause_embedding(&f, doc, true).await?;
+    f.pool.close().await;
+    resume.notify_one();
+    let result = tokio::time::timeout(Duration::from_secs(10), processing).await??;
+    server.abort();
+    // 重新连接只为拆夹具，处理器持有的旧连接池仍然关闭。
+    f.pool = sqlx::PgPool::connect(&url).await?;
+    f.cleanup().await?;
+    let error = result.expect_err("failure status could not be persisted");
+    assert!(
+        matches!(
+            error.downcast_ref::<utopia_core::AppError>(),
+            Some(utopia_core::AppError::Db(sqlx::Error::PoolClosed))
+        ),
+        "the database error must reach the caller: {error:#}"
+    );
+    Ok(())
 }
 
 /// #611：一个 NUL 从前让整篇文档失败——坏的只是几个字节，丢的是整篇

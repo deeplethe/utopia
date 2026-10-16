@@ -847,4 +847,115 @@ mod tests {
         assert!(err.contains("schema read returned 1 rows"), "{err}");
         assert!(err.contains("99"), "{err}");
     }
+
+    /// 401/403 一类：token 失效或 PAT 撤销。`error_for_status()` 会把非 2xx
+    /// 抛成 reqwest 错误——表现上等价「连接失败 / 鉴权失败」。把这层向上层送
+    /// 调用者时仍可分辨：「reqwest」还是业务 message 的边界
+    #[tokio::test]
+    async fn an_unauthorized_http_status_is_surfaced_as_a_connection_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/2.0/sql/statements"))
+            .respond_with(ResponseTemplate::new(401).set_body_string("Unauthorized"))
+            .mount(&server)
+            .await;
+        let err = DatabricksEngine::new(conn(&server))
+            .execute("SELECT 1")
+            .await
+            .unwrap_err()
+            .to_string();
+        // reqwest 的 error_for_status 把 status 包成 builder 错误；我们要确保
+        // 调用者看到的是 HTTP 401 字样，不是「Snowflake: …」的错形态
+        assert!(err.contains("401"), "{err}");
+    }
+
+    /// 5xx 一类（warehouse suspended / cluster down）走同一条 error_for_status
+    /// 路径——表面上仍是 reqwest 错误，需要可识别的 status code
+    #[tokio::test]
+    async fn a_5xx_response_is_surfaced_with_status_code() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/2.0/sql/statements"))
+            .respond_with(
+                ResponseTemplate::new(503)
+                    .set_body_string("Service Unavailable — warehouse suspended"),
+            )
+            .mount(&server)
+            .await;
+        let err = DatabricksEngine::new(conn(&server))
+            .execute("SELECT 1")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("503"), "{err}");
+    }
+
+    /// 用户主动取消（cancel button 或 stmt cancellation）是 Databricks 的合法
+    /// 状态：`CANCELED`。业务错误带 message 后应能让上层识别这是「取消」
+    /// 而不是「失败」，所以 message 应完整透传
+    #[tokio::test]
+    async fn a_canceled_statement_carries_a_distinct_message() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/2.0/sql/statements"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "statement_id": "s3",
+                "status": { "state": "CANCELED", "error": { "error_code": "CANCELED", "message": "Statement was canceled by user." } }
+            })))
+            .mount(&server)
+            .await;
+        let err = DatabricksEngine::new(conn(&server))
+            .execute("SELECT 1")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("CANCELED"), "{err}");
+        assert!(err.contains("canceled by user"), "{err}");
+    }
+
+    /// PENDING 响应里若缺失 `statement_id`，现有逻辑会以「Databricks returned
+    /// no statement_id」抛出——把这条兜底钉住，免得一改 polling 就把它吞掉
+    #[tokio::test]
+    async fn pending_state_without_statement_id_is_surfaced() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/2.0/sql/statements"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "status": { "state": "PENDING" }
+            })))
+            .mount(&server)
+            .await;
+        let err = DatabricksEngine::new(conn(&server))
+            .execute("SELECT 1")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("no statement_id"),
+            "PENDING 但没 statement_id 应被显式提示，避免 polling 失效时不报错：{err}"
+        );
+    }
+
+    /// `SUCCEEDED` 但 `result.data_array` 是空（0 行查询 / DDL 走过 execute 路径），
+    /// rows 取 []、columns 也取空向量——`rows_to_json_lines` 仍要返回空集、不崩
+    #[tokio::test]
+    async fn a_succeeded_statement_with_no_rows_returns_empty() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/2.0/sql/statements"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "statement_id": "s4",
+                "status": { "state": "SUCCEEDED" },
+                "manifest": { "schema": { "columns": [] } },
+                "result": { "data_array": [] }
+            })))
+            .mount(&server)
+            .await;
+        let out = DatabricksEngine::new(conn(&server))
+            .execute("SELECT 1 WHERE 1=0")
+            .await
+            .unwrap();
+        assert!(out.rows.is_empty(), "{out:?}");
+        assert!(!out.truncated);
+    }
 }

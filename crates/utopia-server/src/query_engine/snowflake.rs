@@ -491,4 +491,78 @@ mod tests {
             assert!(err.contains(expected_error), "{err}");
         }
     }
+
+    /// 401/403 一类（auth、权限）也是 status 路径——message 字段照样送出。
+    /// 与 422 的区别仅在状态码，调用者拿到的错误形态应保持一致（都是
+    /// `Snowflake {status}: {message}`），便于上层按错误形态分类
+    #[tokio::test]
+    async fn auth_failure_body_is_surfaced() {
+        for status in [401u16, 403, 503] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/api/v2/statements"))
+                .respond_with(ResponseTemplate::new(status).set_body_json(json!({
+                    "code": "390100",
+                    "message": format!("HTTP {status}: not authorized — token expired or missing role"),
+                })))
+                .mount(&server)
+                .await;
+            let err = SnowflakeEngine::new(conn(&server))
+                .execute("SELECT 1")
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains(&status.to_string()), "{err}");
+            assert!(err.contains("token expired"), "{err}");
+        }
+    }
+
+    /// 5xx 一类（如 Snowflake 内部 504 / 503 + GW 错配）时 body 不是 JSON——
+    /// 现有逻辑会尝试 JSON.parse 然后退回原文，所以「消息文案」仍能送达
+    /// 调用者。把这层兜底路径钉住，免得被人「美化」掉
+    #[tokio::test]
+    async fn non_json_error_body_falls_back_to_plain_text() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v2/statements"))
+            .respond_with(
+                ResponseTemplate::new(500).set_body_string("Internal error: warehouse suspended\n"),
+            )
+            .mount(&server)
+            .await;
+        let err = SnowflakeEngine::new(conn(&server))
+            .execute("SELECT 1")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("500"), "{err}");
+        assert!(
+            err.contains("warehouse suspended"),
+            "非 JSON body 应原样透传，给上层一份能落库的描述：{err}"
+        );
+    }
+
+    /// 2xx body 里若带非「成功」code（如 query canceled 取消信号），必须以业务
+    /// 错误形态抛出，不让屏蔽在「看似 OK」的响应里——这是 Snowflake 的双层错误
+    /// 模型，应当与 4xx/5xx 共用同一条 message 通道
+    #[tokio::test]
+    async fn business_error_code_in_a_2xx_body_is_bubbled_up() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v2/statements"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "code": "000605",
+                "message": "Statement was canceled by user.",
+                // 没有 resultSetMetaData，与状态一致——成功响应必有 meta 或 data
+            })))
+            .mount(&server)
+            .await;
+        let err = SnowflakeEngine::new(conn(&server))
+            .execute("SELECT 1")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("000605"), "{err}");
+        assert!(err.contains("canceled"), "{err}");
+    }
 }

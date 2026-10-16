@@ -365,8 +365,9 @@ pub(super) fn base_tools() -> serde_json::Value {
             "type": "function",
             "function": {
                 "name": "get_document",
-                "description": "Read the full text of ONE knowledge base document, all sections \
-                    in order, by the document_id shown in search_chunks results. Use it whenever \
+                "description": "Read ONE knowledge base document, all sections in order, up to \
+                    24,000 body characters per call, by the document_id shown in search_chunks \
+                    results. If truncated, call again with the offset in the notice to continue. Use it whenever \
                     a search hit looks like the right document but the excerpt does not contain \
                     the answer — action items, decisions and lists usually sit past the excerpt \
                     or in a section that did not match the query.",
@@ -377,6 +378,11 @@ pub(super) fn base_tools() -> serde_json::Value {
                             "type": "string",
                             "format": "uuid",
                             "description": "Document id (uuid) from a search_chunks result line."
+                        },
+                        "offset": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Optional zero-based Unicode character position (default 0) across trimmed section bodies in order, excluding headers and separators. Use the next offset from a truncation notice; at or past the end returns no remaining text."
                         }
                     },
                     "required": ["document_id"]
@@ -599,7 +605,7 @@ pub(super) fn base_tools() -> serde_json::Value {
 }
 
 const SYSTEM_PROMPT: &str = "You are the assistant of Utopia, a temporal knowledge platform. \
-    You have tools: search_chunks (document search) and get_document (the full text of one \
+    You have tools: search_chunks (document search) and get_document (paged text of one \
     document found by search), find_entities, entity_facts, neighbors, timeline, \
     paths_between and changes (a bi-temporal knowledge graph), and search_docs (Utopia's \
     own manual, the Charter).\n\
@@ -610,7 +616,9 @@ const SYSTEM_PROMPT: &str = "You are the assistant of Utopia, a temporal knowled
     reason to skip the tools. Never say the base lacks something you have not searched for.\n\
     search_chunks returns short excerpts of the best-matching sections only. When a hit is \
     clearly the right document but the excerpt does not carry the answer, read the whole \
-    document with get_document before saying the knowledge base does not have it.\n\
+    document with get_document before saying the knowledge base does not have it. If a \
+    document read is truncated, continue with the offset in its notice; a partial read is \
+    not the full document and cannot establish that the document lacks the answer.\n\
     The graph has TWO independent time axes:\n\
     - World time — when something was true. entity_facts(`at` = as of that date).\n\
     - Record time — when we came to believe it, and when we revised it. entity_facts and search_chunks take `as_of` = the base as it stood at that moment, before later corrections, retractions and merges; changes lists what moved in a window.\n\

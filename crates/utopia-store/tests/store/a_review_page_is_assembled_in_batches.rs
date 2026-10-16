@@ -206,7 +206,7 @@ async fn shared_sides_keep_their_summaries_and_the_page_keeps_its_order() -> any
             "Knows ← Neighbor (2020-01 → 2021-02)",
             "Knows → Neighbor (2020-01 → now)",
             "works alongside → Neighbor",
-            "Knows → ?",
+            "Knows → text",
         ];
         for item in &all {
             assert_eq!(item.score, 0.8);

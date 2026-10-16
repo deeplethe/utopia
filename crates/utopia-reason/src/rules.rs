@@ -357,8 +357,7 @@ pub fn evaluate_with_pool(
                 }
 
                 // 封顶按组算：一组展不开，不该把另一组也拦下
-                let combos: usize = per_slot.iter().map(|v| v.len()).product();
-                if combos > MAX_COMBOS {
+                if combinations_exceed_cap(&per_slot) {
                     capped_here = true;
                     continue;
                 }
@@ -521,8 +520,7 @@ fn joined_evaluate(
                 if !satisfiable {
                     continue;
                 }
-                let combos: usize = per_slot.iter().map(|v| v.len()).product();
-                if combos > MAX_COMBOS {
+                if combinations_exceed_cap(&per_slot) {
                     capped_here = true;
                     continue;
                 }
@@ -617,6 +615,21 @@ fn group_conditions(conditions: &[Condition]) -> Vec<Vec<&Condition>> {
     keys.into_iter()
         .map(|g| conditions.iter().filter(|c| c.group == g).collect())
         .collect()
+}
+
+/// 调用方已排除空槽；任一前缀超过上限，完整组合也必定超限。
+fn combinations_exceed_cap(per_slot: &[Vec<Uuid>]) -> bool {
+    let mut combinations = 1_usize;
+    for candidates in per_slot {
+        let Some(next) = combinations.checked_mul(candidates.len()) else {
+            return true;
+        };
+        if next > MAX_COMBOS {
+            return true;
+        }
+        combinations = next;
+    }
+    false
 }
 
 /// 每个条件取一条，穷举组合。调用方已经把上限挡在外面。
@@ -1209,6 +1222,80 @@ mod tests {
         let (hits, report) = evaluate(&[rule], &facts, &spans, &[]);
         assert_eq!(report.capped, 1, "100 种组合超过上限，要计数");
         assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn combination_limits_apply_before_overflow_in_both_rule_paths() {
+        let facts = vec![
+            fact(1, 50, 10, json!(120.0)),
+            fact(2, 50, 10, json!(130.0)),
+            fact(3, 50, 20, json!(true)),
+        ];
+        let spans = HashMap::from([
+            (id(1), (Some(100), None)),
+            (id(2), (Some(100), None)),
+            (id(3), (Some(100), None)),
+            (id(4), (Some(100), None)),
+        ]);
+        for joined in [false, true] {
+            let edges = if joined {
+                vec![RuleEdge {
+                    id: id(4),
+                    predicate: id(11),
+                    subject: id(50),
+                    object: id(51),
+                }]
+            } else {
+                Vec::new()
+            };
+            // 每个条件有两条候选：6 个条件是 64 种，7 个是 128 种，usize::BITS 个会溢出。
+            for (condition_count, has_other_group, expected_capped, expected_hits) in [
+                (6, false, 0, 1),
+                (7, false, 1, 0),
+                (usize::BITS as usize, false, 1, 0),
+                (usize::BITS as usize, true, 1, 1),
+            ] {
+                let presence_condition = Condition {
+                    group: 0,
+                    side: Side::X,
+                    predicate: id(10),
+                    op: Op::Present,
+                    operand: Operand::None,
+                };
+                let mut conditions = vec![presence_condition.clone(); condition_count];
+                if has_other_group {
+                    conditions.push(Condition {
+                        group: 1,
+                        predicate: id(20),
+                        ..presence_condition
+                    });
+                }
+                let rule = BusinessRule {
+                    id: id(90),
+                    join_predicate: joined.then_some(id(11)),
+                    conclusion: if joined {
+                        Conclusion::Relation { predicate: id(12) }
+                    } else {
+                        Conclusion::Typing { class: "X".into() }
+                    },
+                    conditions,
+                };
+                let (hits, report) = evaluate(&[rule], &facts, &spans, &edges);
+                let case = format!(
+                    "joined={joined}, conditions={condition_count}, other_group={has_other_group}"
+                );
+                assert_eq!(report.capped, expected_capped, "{case}");
+                assert_eq!(report.hits, expected_hits, "{case}");
+                assert_eq!(hits.len(), expected_hits, "{case}");
+                if has_other_group {
+                    let mut expected_premises = vec![id(3)];
+                    if joined {
+                        expected_premises.push(id(4));
+                    }
+                    assert_eq!(hits[0].premises, expected_premises, "{case}");
+                }
+            }
+        }
     }
 
     fn attr(p: u8) -> Expr {
