@@ -17,6 +17,7 @@ struct Rig {
     source: Uuid,
     statement: Uuid,
     test: Uuid,
+    other: Uuid,
     validated_by: Uuid,
     _dir: tempfile::TempDir,
 }
@@ -79,6 +80,7 @@ impl Rig {
             source,
             statement,
             test,
+            other,
             validated_by,
             _dir: dir,
         }))
@@ -137,6 +139,23 @@ impl Rig {
             quotes: Vec::new(),
             example_statement_ids: Vec::new(),
         }
+    }
+
+    /// 配上一个不通的对话端点：对齐照跑，真问了模型这一轮会记失败、再排
+    async fn unreachable_model(&self) -> anyhow::Result<()> {
+        utopia_store::settings::upsert(
+            &self.pool,
+            self.ws,
+            Some("http://127.0.0.1:9"),
+            None,
+            Some("unreachable"),
+            None,
+            None,
+            None,
+            None,
+        )
+        .await?;
+        Ok(())
     }
 
     async fn queued(&self, kind: &str) -> anyhow::Result<i64> {
@@ -310,18 +329,7 @@ async fn the_aligner_leaves_a_binding_the_ontology_decided_alone() -> anyhow::Re
     };
     rig.push("obs-1", ["S-1", "statement", "validated_by", "T-1", "test"])
         .await?;
-    utopia_store::settings::upsert(
-        &rig.pool,
-        rig.ws,
-        Some("http://127.0.0.1:9"),
-        None,
-        Some("unreachable"),
-        None,
-        None,
-        None,
-        None,
-    )
-    .await?;
+    rig.unreachable_model().await?;
     rig.clear_jobs().await?;
     align_phrases_reasking(&rig.state, rig.kb, 0).await?;
     let found: Vec<_> = rig
@@ -332,5 +340,102 @@ async fn the_aligner_leaves_a_binding_the_ontology_decided_alone() -> anyhow::Re
         .collect();
     assert_eq!(found, vec![("bound".to_string(), "ontology".to_string())]);
     assert_eq!(rig.queued("align_phrases").await?, 0);
+    rig.cleanup().await
+}
+
+/// 关系改了名，本体判的行就像代理的一样重判：签名送去问模型。端点不通——这一轮记失败、再排；
+/// 本体还认的行不会走到这一步（上一条）
+#[tokio::test]
+async fn a_renamed_relation_sends_the_ontology_binding_back_to_the_aligner() -> anyhow::Result<()> {
+    let Some(rig) = Rig::new().await? else {
+        return Ok(());
+    };
+    rig.push("obs-1", ["S-1", "statement", "validated_by", "T-1", "test"])
+        .await?;
+    sqlx::query("UPDATE relation_types SET key='verified_by', label='verifiedBy' WHERE id=$1")
+        .bind(rig.validated_by)
+        .execute(&rig.pool)
+        .await?;
+    rig.unreachable_model().await?;
+    rig.clear_jobs().await?;
+    align_phrases_reasking(&rig.state, rig.kb, 0).await?;
+    assert_eq!(rig.queued("align_phrases").await?, 1);
+    rig.cleanup().await
+}
+
+/// 状态关系本体不判：绑上它还得说只带一个日期的陈述那个日期标哪一端，那是对齐器的题——
+/// 它绑上、顺带问这一格，问不到的进队列等人。同一个库里那条不是状态的照样绑上
+#[tokio::test]
+async fn a_pushed_phrase_equal_to_a_declared_state_relation_is_left_to_the_aligner(
+) -> anyhow::Result<()> {
+    let Some(rig) = Rig::new().await? else {
+        return Ok(());
+    };
+    let assigned_to = Uuid::now_v7();
+    sqlx::raw_sql(&format!(
+        "INSERT INTO relation_types(id,kb_id,key,label,kind,temporal,description) VALUES
+             ('{assigned_to}','{kb}','assigned_to','assignedTo','relation','state','');
+         INSERT INTO relation_type_domains(relation_type_id,entity_type_id) VALUES ('{assigned_to}','{s}');
+         INSERT INTO relation_type_ranges(relation_type_id,entity_type_id) VALUES ('{assigned_to}','{t}');",
+        kb = rig.kb,
+        s = rig.statement,
+        t = rig.test,
+    ))
+    .execute(&rig.pool)
+    .await?;
+    rig.push("obs-1", ["S-1", "statement", "assigned_to", "T-1", "test"])
+        .await?;
+    rig.push("obs-2", ["S-2", "statement", "validated_by", "T-2", "test"])
+        .await?;
+    let bound: Vec<_> = rig
+        .bindings()
+        .await?
+        .into_iter()
+        .map(|b| (b.phrase, b.decided_by))
+        .collect();
+    assert_eq!(
+        bound,
+        vec![("validated_by".to_string(), "ontology".to_string())]
+    );
+    rig.cleanup().await
+}
+
+/// 本体判的绑定，关系不再声明它（这里是域收窄到别的类）就和代理的判定一样重判：这条签名
+/// 没了候选，对齐器不问模型就记成 none，物化收回那一行。端点不通——真问了，这一轮会记失败、再排
+#[tokio::test]
+async fn an_ontology_binding_is_redecided_once_the_relation_stops_declaring_it(
+) -> anyhow::Result<()> {
+    let Some(rig) = Rig::new().await? else {
+        return Ok(());
+    };
+    rig.push("obs-1", ["S-1", "statement", "validated_by", "T-1", "test"])
+        .await?;
+    materialize::materialize(&rig.pool, rig.kb).await?;
+    assert_eq!(materialize::count(&rig.pool, rig.kb).await?, 1);
+    sqlx::query("UPDATE relation_type_domains SET entity_type_id=$1 WHERE relation_type_id=$2")
+        .bind(rig.other)
+        .bind(rig.validated_by)
+        .execute(&rig.pool)
+        .await?;
+    rig.unreachable_model().await?;
+    rig.clear_jobs().await?;
+    align_phrases_reasking(&rig.state, rig.kb, 0).await?;
+    let found: Vec<(String, String, Option<String>)> = sqlx::query_as(
+        "SELECT status, decided_by, votes->>'reason' FROM phrase_bindings WHERE kb_id=$1",
+    )
+    .bind(rig.kb)
+    .fetch_all(&rig.pool)
+    .await?;
+    assert_eq!(
+        found,
+        vec![(
+            "none".to_string(),
+            "agent".to_string(),
+            Some("no_candidates".to_string())
+        )]
+    );
+    assert_eq!(rig.queued("align_phrases").await?, 0);
+    materialize::materialize(&rig.pool, rig.kb).await?;
+    assert_eq!(materialize::count(&rig.pool, rig.kb).await?, 0);
     rig.cleanup().await
 }

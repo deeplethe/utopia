@@ -171,8 +171,10 @@ fn named_by(p: &RelationTypeView, phrase: &str) -> bool {
 
 /// 签名的短语正好是一条声明了的关系（#1242）：它叫这个短语，主语的类落在声明的域里、
 /// 宾语的类落在值域里（经继承也算），只认正向。域或值域没声明的不算——没声明是「不限」，
-/// 不是「就是它」；一端没有类的也不算。叫这个短语、两端也都对得上的不止一条，谁也不认：
-/// 两条关系叫得一样，该由人或模型来挑
+/// 不是「就是它」；一端没有类的也不算。状态关系不算：绑上它还得说只带一个日期的陈述那个
+/// 日期标哪一端（`marks`，#966），本体答不了，留给对齐器——它绑上、顺带问这一格，问不到的
+/// 进队列等人。叫这个短语、两端也都对得上的不止一条，谁也不认：两条关系叫得一样，该由人
+/// 或模型来挑
 fn declared<'a>(
     sig: &PhraseSignature,
     props: &'a [RelationTypeView],
@@ -183,6 +185,7 @@ fn declared<'a>(
     }
     let mut fitting = props.iter().filter(|p| {
         p.kind == "relation"
+            && p.temporal != "state"
             && !p.domains.is_empty()
             && !p.ranges.is_empty()
             && named_by(p, &sig.phrase)
