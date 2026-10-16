@@ -194,6 +194,18 @@ async fn an_open_statement_shows_under_its_phrase_and_reuses_its_row() -> anyhow
             .expect("overview shows it");
         assert_eq!(e.label.as_deref(), Some("acquired"));
         assert!(e.inferred, "名字来自原文，不是本体认下的关系");
+        // 角色词属性跟着边读回来（#1267），不混进按本体属性记的 qualifiers
+        let amount = |q: &[utopia_core::models::StatementQualifier]| {
+            serde_json::to_value(q).unwrap()
+                == serde_json::json!([{ "role": "amount",
+                    "value": { "value": "$1.2 billion" }, "entity_id": null, "entity_name": null }])
+        };
+        assert!(
+            amount(&e.statement_qualifiers),
+            "{:?}",
+            e.statement_qualifiers
+        );
+        assert!(e.qualifiers.is_empty());
 
         let (_, facts) = graph::entity_detail(&pool, f.kb, f.acme, None, None).await?;
         let d = facts
@@ -202,6 +214,11 @@ async fn an_open_statement_shows_under_its_phrase_and_reuses_its_row() -> anyhow
             .expect("entity detail shows it");
         assert_eq!(d.predicate_label.as_deref(), Some("acquired"));
         assert_eq!(d.other_id, Some(f.beta));
+        assert!(
+            amount(&d.statement_qualifiers),
+            "{:?}",
+            d.statement_qualifiers
+        );
 
         let (_, edges) = graph::neighborhood(&pool, f.kb, f.acme, 1, None, None).await?;
         let n = edges

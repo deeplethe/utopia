@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use utopia_core::models::{
     ChunkFactView, EntityFact, EntityHistoryEvent, EntityType, EvidenceView, FactQualifier,
-    FactReviewItem, GraphChange, GraphEdge, GraphNode, RelationType,
+    FactReviewItem, GraphChange, GraphEdge, GraphNode, RelationType, StatementQualifier,
 };
 use utopia_core::{AppError, AppResult};
 use uuid::Uuid;
@@ -197,17 +197,6 @@ pub async fn fact_qualifiers_for(
         });
     }
     Ok(out)
-}
-
-/// 开放陈述上的一个属性（0044 第一刀）：按文档的角色词记，不按本体属性。
-/// 值或实体二选一；实体那一格带上它的显示名
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct StatementQualifier {
-    /// 文档自己的角色词（"amount"、"buyer"）
-    pub role: String,
-    pub value: Option<serde_json::Value>,
-    pub entity_id: Option<Uuid>,
-    pub entity_name: Option<String>,
 }
 
 /// 往一条开放陈述上写一个按角色词记的属性。**先写者留着**：同一条陈述同一个角色词
@@ -1467,14 +1456,16 @@ async fn edges_among(
     .bind(as_of)
     .fetch_all(pool)
     .await?;
-    // 边上的属性另一张表（0037），按 id 一次取回补上
+    // 边上的属性另两张表（0037 按本体属性、0061 按角色词），按 id 一次取回补上
     {
         let ids: Vec<Uuid> = edges.iter().map(|x| x.id).collect();
-        let mut by_fact = fact_qualifiers_for(pool, &ids).await?;
+        let (mut typed, mut worded) = tokio::try_join!(
+            fact_qualifiers_for(pool, &ids),
+            statement_qualifiers_for(pool, &ids)
+        )?;
         for x in edges.iter_mut() {
-            if let Some(q) = by_fact.remove(&x.id) {
-                x.qualifiers = q;
-            }
+            x.qualifiers = typed.remove(&x.id).unwrap_or_default();
+            x.statement_qualifiers = worded.remove(&x.id).unwrap_or_default();
         }
     }
     Ok(edges)
@@ -1814,14 +1805,16 @@ pub async fn entity_detail(
     .bind(at)
     .fetch_all(pool)
     .await?;
-    // 边上的属性另一张表（0037），按 id 一次取回补上
+    // 边上的属性另两张表（0037 按本体属性、0061 按角色词），按 id 一次取回补上
     {
         let ids: Vec<Uuid> = facts.iter().map(|x| x.id).collect();
-        let mut by_fact = fact_qualifiers_for(pool, &ids).await?;
+        let (mut typed, mut worded) = tokio::try_join!(
+            fact_qualifiers_for(pool, &ids),
+            statement_qualifiers_for(pool, &ids)
+        )?;
         for x in facts.iter_mut() {
-            if let Some(q) = by_fact.remove(&x.id) {
-                x.qualifiers = q;
-            }
+            x.qualifiers = typed.remove(&x.id).unwrap_or_default();
+            x.statement_qualifiers = worded.remove(&x.id).unwrap_or_default();
         }
     }
 

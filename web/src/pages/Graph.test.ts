@@ -38,6 +38,7 @@ const base: EntityFact = {
   other_name: null,
   object_value: null,
   qualifiers: [],
+  statement_qualifiers: [],
   valid_from: null,
   valid_to: null,
   holds_from: null,
