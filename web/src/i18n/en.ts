@@ -145,6 +145,10 @@ export const en = {
     unknown_marks: "A single date marks the start, the end, or neither.",
     marks_needs_state:
       "Only a state property says what a single date marks. Events and timeless properties don't.",
+    // 采纳提案（0061 决定 3）：撞上别的写、整次回滚了；复用要写的都已由人另定
+    alignment_busy: "Something else is updating the same items. Nothing was saved; try again shortly.",
+    proposal_stale:
+      "Nothing in this proposal is left to adopt: each of its phrases or kind words is decided differently by a person or no longer appears in any statement. Reject it to clear it.",
   },
   /** 机器给的补充（cron 解析器的原话之类）缀在措辞后面 */
   errDetail: (msg: string, detail: string) => `${msg} (${detail})`,
@@ -1800,6 +1804,12 @@ export const en = {
     rejectReasonPrompt:
       "Why not? (optional — the agent reads it before proposing again)",
     rejectedProposal: "Rejected",
+    /* 复用时人另定了的，照人的留着没写（0061 决定 3）：只说留了几条。不说是代理读过之后定的：
+       没记下读到哪一刻的旧提案，人在提案之前定的也照留 */
+    adoptKept: (n: number) =>
+      n === 1
+        ? "Saved. One of these was decided differently by a person and stays as they decided."
+        : `Saved. ${n} of these were decided differently by a person and stay as they decided.`,
     questions: "Competency questions",
     questionsHint:
       "What this knowledge base should be able to answer. The agent proposes classes and properties that serve these; they are the ontology's acceptance test.",

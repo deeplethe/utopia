@@ -428,7 +428,8 @@ async fn an_unbound_shape_becomes_a_proposal_that_serves_a_question_and_adoption
         },
         f.user,
     )
-    .await?;
+    .await?
+    .id;
     let props = utopia_store::ontology::relation_type_views(&f.pool, f.kb).await?;
     let built = props
         .iter()
@@ -670,7 +671,8 @@ async fn a_declined_shape_returns_when_its_statements_double_and_an_existing_ans
         AdoptEdits::default(),
         f.user,
     )
-    .await?;
+    .await?
+    .id;
     assert_eq!(id, f.located_in);
     let bindings = phrase_bindings::bindings(&f.pool, f.kb).await?;
     for (phrase, dir) in [("located in", "forward"), ("founded in", "reverse")] {
@@ -946,6 +948,217 @@ async fn a_class_reuse_queues_its_own_phrase_alignment() -> anyhow::Result<()> {
         (Some(f.organization), vec!["align_phrases".to_string(); 2]),
         "company is the person's, and the adoption queues its own phrase alignment"
     );
+    f.cleanup().await
+}
+
+/// 复用替掉的是代理读到的那个判定，读过之后人定的照人留着。founded in、firm 是人在代理读之前
+/// 说的「没有」，照样替掉（firm 是第一轮读的，company 下一轮并进同一行，并的时候不丢它读到的时刻）；
+/// located in、company 是读过之后人绑到别处的，留着、列在回执里，located in 还是同事在采纳等着那一行
+/// 时才提交的；headquartered in、wharf 是读过之后人绑得和提案一样的，算已写：不重写、不列，形状照样
+/// 有回归用例；只有 wharf 的那条复用什么都没写，不另排短语对齐。venue 那条一个也写不了，整条不算
+/// 采纳；没记下读到哪一刻的旧提案，人的判定一概不改
+#[tokio::test]
+async fn a_reuse_keeps_what_a_person_decided_after_the_agent_read_it() -> anyhow::Result<()> {
+    let Some(f) = Fx::new(vec![
+        // 形状按短语排：s0 founded in、s1 headquartered in、s2 located in；
+        // 类别词 k0 firm、k1 venue、k2 wharf
+        json!({ "p": [], "existing": [{ "key": "located_in", "s": [0, 1, 2] },
+            { "key": "organization", "k": [0] }, { "key": "place", "k": [1] },
+            { "key": "site", "k": [2] }] }),
+        json!({ "p": [], "existing": [{ "key": "organization", "k": [0] }] }),
+    ])
+    .await?
+    else {
+        return Ok(());
+    };
+    f.decide_none().await?;
+    f.seed_question().await?;
+    let based_in = Uuid::now_v7();
+    let site = Uuid::now_v7();
+    // 类别词放在不出现在陈述里的实体上：归了类，形状的两端也不跟着变
+    sqlx::raw_sql(&format!(
+        "INSERT INTO relation_types(id,kb_id,key,label,kind,temporal,description)
+             VALUES ('{based_in}','{kb}','based_in','based in','relation','state','x');
+         INSERT INTO entity_types(id,kb_id,key,label,color,shape,description)
+             VALUES ('{site}','{kb}','site','Site','#000','circle','x');
+         INSERT INTO facts(id,kb_id,subject_id,object_id,layer,phrase)
+             SELECT '{fact}', kb_id, subject_id, object_id, 'open', 'headquartered in'
+               FROM facts WHERE kb_id='{kb}' AND phrase='located in';
+         INSERT INTO entities(id,kb_id,canonical_name,specific_type) VALUES
+             ('{}','{kb}','Initech','firm'), ('{}','{kb}','Hall','venue'),
+             ('{}','{kb}','Globex','company'), ('{}','{kb}','Pier','wharf');",
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        kb = f.kb,
+        fact = Uuid::now_v7(),
+    ))
+    .execute(&f.pool)
+    .await?;
+    let votes = json!({ "person": "test" });
+    let word = |w: &'static str, class: Option<Uuid>, by: &'static str| {
+        let status = if class.is_some() { "bound" } else { "none" };
+        type_bindings::decide(&f.pool, f.kb, w, &[], class, status, &votes, by)
+    };
+    let sigs = phrase_bindings::signatures(&f.pool, f.kb).await?;
+    let sig = |phrase: &str| sigs.iter().find(|s| s.phrase == phrase).unwrap();
+    let person = |property: Option<Uuid>| Decision {
+        relation_type_id: property,
+        direction: property.map(|_| "forward"),
+        status: if property.is_some() { "bound" } else { "none" },
+        votes: &votes,
+        decided_by: "person",
+        basis: None,
+        marks: None,
+        marks_asked: false,
+    };
+    let shape = |phrase: &str, property: Option<Uuid>| {
+        phrase_bindings::decide(&f.pool, f.kb, sig(phrase), person(property))
+    };
+    shape("founded in", None).await?;
+    shape("headquartered in", None).await?;
+    word("firm", None, "person").await?;
+    word("venue", None, "agent").await?;
+    word("wharf", None, "agent").await?;
+    // company 还没判过，这一轮不送；判成「没有」后下一轮才送
+    propose(&f.state, f.kb).await?;
+    word("company", None, "agent").await?;
+    propose(&f.state, f.kb).await?;
+    assert_eq!(f.requests().await, 2);
+
+    // 代理读过之后人定的
+    shape("headquartered in", Some(f.located_in)).await?;
+    word("company", Some(f.place), "person").await?;
+    word("venue", Some(f.organization), "person").await?;
+    word("wharf", Some(site), "person").await?;
+    // located in 是同事定的，等 located_in 的采纳排到那一行后面才提交。那次的事务在代理读到的判定
+    // 之前就开始了：decided_at 是事务开始的时刻，比读到的还早，照样是读过之后定的
+    let mut deciding = f.pool.begin().await?;
+    let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *deciding)
+        .await?;
+    let colleague = person(Some(based_in));
+    phrase_bindings::decide_on(&mut deciding, f.kb, sig("located in"), colleague).await?;
+    sqlx::query(
+        "UPDATE phrase_bindings SET decided_at = decided_at - interval '1 day'
+          WHERE kb_id = $1 AND phrase = 'located in'",
+    )
+    .bind(f.kb)
+    .execute(&mut *deciding)
+    .await?;
+    let pool = f.pool.clone();
+    let commit = async move {
+        for _ in 0..500 {
+            let waiting: bool = sqlx::query_scalar(
+                "SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid)))",
+            )
+            .bind(pid)
+            .fetch_one(&pool)
+            .await?;
+            if waiting {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        deciding.commit().await?;
+        anyhow::Ok(())
+    };
+
+    let adopt = |key: &str| json!({ "section": "map_to", "key": key });
+    let ((status, body), ()) = tokio::try_join!(
+        f.post("/ontology/proposals/adopt", adopt("located_in")),
+        commit
+    )?;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["skipped"],
+        json!([{ "phrase": "located in", "subject": "organization", "object": "place", "value": false,
+                 "person": { "status": "bound", "property": "based_in", "direction": "forward" } }])
+    );
+    let (status, body) = f
+        .post("/ontology/proposals/adopt", adopt("organization"))
+        .await?;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body["skipped"],
+        json!([{ "kind_word": "company", "person": { "status": "bound", "class": "place" } }])
+    );
+    let (status, body) = f.post("/ontology/proposals/adopt", adopt("site")).await?;
+    assert_eq!(
+        (status, &body["skipped"]),
+        (StatusCode::OK, &json!([])),
+        "{body}"
+    );
+    let (status, body) = f.post("/ontology/proposals/adopt", adopt("place")).await?;
+    assert_eq!(
+        (status, &body["code"]),
+        (StatusCode::CONFLICT, &json!("proposal_stale")),
+        "{body}"
+    );
+    // 这一格之前存的复用没记读到的时刻：founded in 此刻是人的判定，不改，整条不算采纳
+    let reuse = json!({ "key": "based_in", "kind": "relation", "proposed_by": "agent" });
+    let shapes = json!({ "phrases": [f.shape("founded in").await?] });
+    f.seed("map_to", "based_in", reuse, shapes).await?;
+    let (status, body) = f
+        .post("/ontology/proposals/adopt", adopt("based_in"))
+        .await?;
+    assert_eq!(
+        (status, &body["code"]),
+        (StatusCode::CONFLICT, &json!("proposal_stale")),
+        "{body}"
+    );
+
+    type Row = (String, Option<String>, Option<String>);
+    let row = |s: &str, key: &str, via: Option<&str>| -> Row {
+        (s.into(), Some(key.into()), via.map(Into::into))
+    };
+    let shapes: Vec<Row> = sqlx::query_as(
+        "SELECT b.phrase, r.key, b.votes #>> '{person,via}' FROM phrase_bindings b
+           LEFT JOIN relation_types r ON r.id = b.relation_type_id WHERE b.kb_id = $1 ORDER BY 1",
+    )
+    .bind(f.kb)
+    .fetch_all(&f.pool)
+    .await?;
+    let words: Vec<Row> = sqlx::query_as(
+        "SELECT b.kind_word, t.key, b.votes->>'via' FROM type_bindings b
+           LEFT JOIN entity_types t ON t.id = b.type_id WHERE b.kb_id = $1 ORDER BY 1",
+    )
+    .bind(f.kb)
+    .fetch_all(&f.pool)
+    .await?;
+    let via = Some("ontology_agent");
+    assert_eq!(
+        (shapes, words),
+        (
+            vec![
+                row("founded in", "located_in", via),
+                row("headquartered in", "located_in", None),
+                row("located in", "based_in", None),
+            ],
+            vec![
+                row("company", "place", None),
+                row("firm", "organization", via),
+                row("venue", "organization", None),
+                row("wharf", "site", None),
+            ]
+        ),
+        "what the agent read is replaced; what a person decided after it stays theirs"
+    );
+    let cases: Vec<String> = sqlx::query_scalar(
+        "SELECT f.phrase FROM ontology_regression_cases c JOIN facts f ON f.id = c.statement_id
+          WHERE c.kb_id = $1 ORDER BY 1",
+    )
+    .bind(f.kb)
+    .fetch_all(&f.pool)
+    .await?;
+    assert_eq!(
+        cases,
+        ["founded in", "headquartered in"],
+        "none for the kept shape"
+    );
+    // venue 那条还开着。后三次都没多排任务、没多写用例：两份任务、两条用例都是前两次采纳的
+    assert_eq!(f.left_by("place").await?, (true, "open".to_string(), 2, 2));
     f.cleanup().await
 }
 
