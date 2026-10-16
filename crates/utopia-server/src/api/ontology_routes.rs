@@ -7,6 +7,7 @@ use serde::Deserialize;
 use serde_json::json;
 use utopia_core::models::Role;
 use utopia_core::AppError;
+use utopia_store::ontology::{Lacking, LinkEnd};
 use uuid::Uuid;
 
 use crate::auth::{AuthUser, SessionOrToken};
@@ -44,26 +45,83 @@ pub struct InstancesQuery {
     pub page: i64,
     #[serde(default = "default_per")]
     pub per: i64,
+    /// 只列缺这条关系的成员：属性的 key，或一个开放短语（#1269）
+    #[serde(default)]
+    pub missing_predicate: Option<String>,
+    /// out（缺省，成员是主语）| in（成员是宾语）| either
+    #[serde(default)]
+    pub missing_direction: Option<String>,
 }
 
 fn default_per() -> i64 {
     12
 }
 
+/// 「缺哪条关系、看哪一端」：没给谓词就是不筛；给了空谓词或认不得的方向是 422
+fn missing_link(q: &InstancesQuery) -> Result<Option<(&str, LinkEnd)>, AppError> {
+    let end = match q.missing_direction.as_deref() {
+        None | Some("out") => LinkEnd::Out,
+        Some("in") => LinkEnd::In,
+        Some("either") => LinkEnd::Either,
+        Some(other) => {
+            return Err(AppError::invalid(
+                "bad_missing_direction",
+                format!("missing_direction must be out, in or either, not `{other}`"),
+            ))
+        }
+    };
+    let Some(predicate) = q.missing_predicate.as_deref() else {
+        return Ok(None);
+    };
+    if predicate.trim().is_empty() {
+        return Err(AppError::invalid(
+            "bad_missing_predicate",
+            "missing_predicate must name a relation or a phrase",
+        ));
+    }
+    Ok(Some((predicate.trim(), end)))
+}
+
 /// 某个类下的实体实例列表（详情区右侧，分页）。
+/// 带 `missing_predicate` 时只列缺那条关系的成员，并回显认作它的属性与短语。
 pub async fn list_entity_instances(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
     Path((kb_id, type_id)): Path<(Uuid, Uuid)>,
     Query(q): Query<InstancesQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
+    let missing = missing_link(&q)?;
     require_kb(&state, &user, kb_id, Role::Viewer).await?;
     let per = q.per.clamp(1, 100);
     let page = q.page.max(0);
-    let (rows, total) =
-        utopia_store::ontology::entity_instances(&state.pool, kb_id, type_id, per, page * per)
-            .await?;
-    Ok(Json(json!({ "entities": rows, "total": total })))
+    let predicate = match missing {
+        Some((p, end)) => Some((
+            utopia_store::ontology::link_predicate(&state.pool, kb_id, p).await?,
+            end,
+        )),
+        None => None,
+    };
+    let lacking = predicate.as_ref().map(|(predicate, end)| Lacking {
+        predicate,
+        end: *end,
+    });
+    let (rows, total) = utopia_store::ontology::entity_instances(
+        &state.pool,
+        kb_id,
+        type_id,
+        lacking,
+        per,
+        page * per,
+    )
+    .await?;
+    let mut body = json!({ "entities": rows, "total": total });
+    if let Some((p, _)) = &predicate {
+        body["missing"] = json!({
+            "relation_type_id": p.relation_type_id,
+            "phrases": p.phrases(),
+        });
+    }
+    Ok(Json(body))
 }
 
 #[derive(Deserialize)]
@@ -541,15 +599,17 @@ pub async fn stored_proposals(
 pub struct DecideProposalReq {
     pub section: String,
     pub key: String,
-    /// adopted | rejected
+    /// 只收 rejected；采纳走 `/ontology/proposals/adopt`
     pub status: String,
-    /// 拒绝的理由（0061：下一轮代理读得到）。采纳时忽略
+    /// 拒绝的理由（0061：下一轮代理读得到）
     #[serde(default)]
     pub reason: Option<String>,
 }
 
-/// 一条提案有人表态了。**改状态不删行**：采纳发生过、拒绝也发生过，
-/// 而拒绝留痕正是下一轮 Suggest 不再把它刷回待看的依据。
+/// 拒绝一条提案。**改状态不删行**：拒绝留痕正是下一轮代理不再把它刷回待看的依据。
+///
+/// 从前这里也收 adopted，只把状态改成采纳，元素、回归用例、对齐一样都没有。采纳要把
+/// 这些和状态一起提交，只有 `/ontology/proposals/adopt` 做得到（0061 决定 3）
 pub async fn decide_proposal(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
@@ -557,35 +617,25 @@ pub async fn decide_proposal(
     Json(req): Json<DecideProposalReq>,
 ) -> ApiResult<Json<serde_json::Value>> {
     require_kb(&state, &user, kb_id, Role::Editor).await?;
-    if !matches!(req.status.as_str(), "adopted" | "rejected") {
-        return Err(AppError::invalid("bad_status", "status 只能是 adopted 或 rejected").into());
-    }
-    let reason = req
-        .reason
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
-    if req.status == "rejected" && reason.is_some() {
-        utopia_store::ontology::reject_proposal(
-            &state.pool,
-            kb_id,
-            &req.section,
-            &req.key,
-            reason,
-            user.id,
+    if req.status == "adopted" {
+        return Err(AppError::invalid(
+            "adoption_endpoint",
+            "Adopt a proposal through /ontology/proposals/adopt; this endpoint only rejects",
         )
-        .await?;
-    } else {
-        utopia_store::ontology::decide_proposal(
-            &state.pool,
-            kb_id,
-            &req.section,
-            &req.key,
-            &req.status,
-            user.id,
-        )
-        .await?;
+        .into());
     }
+    if req.status != "rejected" {
+        return Err(AppError::invalid("bad_status", "status 只能是 rejected").into());
+    }
+    utopia_store::ontology::reject_proposal(
+        &state.pool,
+        kb_id,
+        &req.section,
+        &req.key,
+        req.reason.as_deref(),
+        user.id,
+    )
+    .await?;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -822,4 +872,50 @@ pub async fn approve_refinement(
     )
     .await;
     Ok(Json(json!({ "moved": moved, "batch": batch })))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn query(predicate: Option<&str>, direction: Option<&str>) -> InstancesQuery {
+        InstancesQuery {
+            page: 0,
+            per: 12,
+            missing_predicate: predicate.map(str::to_owned),
+            missing_direction: direction.map(str::to_owned),
+        }
+    }
+
+    fn code(r: Result<Option<(&str, LinkEnd)>, AppError>) -> &'static str {
+        match r {
+            Err(AppError::Invalid { code, .. }) => code,
+            _ => "",
+        }
+    }
+
+    #[test]
+    fn a_missing_link_reads_its_predicate_and_end() {
+        assert_eq!(missing_link(&query(None, None)).ok(), Some(None));
+        assert_eq!(
+            missing_link(&query(Some(" works_for "), None)).ok(),
+            Some(Some(("works_for", LinkEnd::Out)))
+        );
+        assert_eq!(
+            missing_link(&query(Some("acquired"), Some("either"))).ok(),
+            Some(Some(("acquired", LinkEnd::Either)))
+        );
+    }
+
+    #[test]
+    fn a_blank_predicate_or_an_unknown_end_is_422() {
+        assert_eq!(
+            code(missing_link(&query(Some("  "), None))),
+            "bad_missing_predicate"
+        );
+        assert_eq!(
+            code(missing_link(&query(Some("works_for"), Some("up")))),
+            "bad_missing_direction"
+        );
+    }
 }

@@ -246,12 +246,14 @@ pub async fn adjudicate_entities(state: &AppState, kb_id: Uuid) -> anyhow::Resul
             .collect();
         let messages = utopia_extract::build_adjudication_messages(&pairs);
         // 调用/解析失败 → 任务按退避重试；重试耗尽后行停留在队列里，人工仍可定夺
-        let _permit = settings.as_ref().map(|s| llm_util::acquire_chat(state, s));
-        let _permit = match _permit {
-            Some(f) => f.await,
-            None => None,
+        let reply = {
+            // 第二眼会再取同一个模型的许可；攒批调用结束就还，否则限额为 1 时会等自己。
+            let _permit = match settings.as_ref() {
+                Some(s) => llm_util::acquire_chat(state, s).await,
+                None => None,
+            };
+            client.chat(&messages).await?
         };
-        let reply = client.chat(&messages).await?;
         let (verdicts, repaired) = utopia_extract::parse_adjudication_repairing(&reply)?;
         if repaired {
             // 模型在引号里的理由中间直接换行：修补后照读，但记下是哪一批（#894/#895 同款）
@@ -496,6 +498,99 @@ async fn apply_verdict(
 mod tests {
     use super::*;
     use utopia_core::models::{ReviewItem, ReviewSide};
+
+    #[tokio::test]
+    async fn a_second_look_releases_the_batch_model_permit() -> anyhow::Result<()> {
+        use serde_json::{json, Value};
+        use std::time::Duration;
+        use wiremock::{
+            matchers::method, matchers::path, Mock, MockServer, Request, ResponseTemplate,
+        };
+
+        let Some(url) = utopia_store::test_db::url() else {
+            return Ok(());
+        };
+        let pool = sqlx::PgPool::connect(&url).await?;
+        utopia_store::db::migrate(&pool).await?;
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(|request: &Request| {
+                let body: Value = request.body_json().unwrap();
+                let message = if body["tools"].is_array() {
+                    json!({"role":"assistant","content":null,"tool_calls":[{
+                        "id":"defer-1","type":"function","function":{
+                            "name":"defer","arguments":r#"{"question":"Which source identifies this person?"}"#
+                        }
+                    }]})
+                } else {
+                    json!({"role":"assistant","content":json!({"verdicts":[{
+                        "i":0,"verdict":"unsure","confidence":0.5
+                    }]}).to_string()})
+                };
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "choices":[{"message":message,"finish_reason":"stop"}]
+                }))
+            })
+            .mount(&server)
+            .await;
+        let (org, workspace, kb, left, right) = (
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+        );
+        let endpoint = server.uri();
+        let result = async {
+            sqlx::raw_sql(&format!(
+                "INSERT INTO organizations(id,name) VALUES ('{org}','permit-test');
+                 INSERT INTO workspaces(id,org_id,name) VALUES ('{workspace}','{org}','permit-test');
+                 INSERT INTO knowledge_bases(id,workspace_id,name) VALUES ('{kb}','{workspace}','permit-test');
+                 INSERT INTO entities(id,kb_id,canonical_name) VALUES ('{left}','{kb}','Alex Lee'),('{right}','{kb}','Alex Lee');"
+            )).execute(&pool).await?;
+            utopia_store::resolution::create_review(
+                &pool, kb, left, right, 0.7, "ambiguous_name|0.7",
+                utopia_store::resolution::ReviewStage::Adjudicating,
+            ).await?;
+            utopia_store::settings::upsert(
+                &pool, workspace, Some(&endpoint), None, Some("permit-test"),
+                None, None, None, None,
+            ).await?;
+            utopia_store::model_limits::set(&pool, &endpoint, "permit-test", Some(1)).await?;
+            let dir = tempfile::tempdir()?;
+            let cfg = utopia_core::config::AppConfig {
+                data_dir: dir.path().to_string_lossy().into_owned(),
+                ..Default::default()
+            };
+            let search = Arc::new(utopia_search::SearchIndex::open(&dir.path().join("search"))?);
+            let state = AppState::new(pool.clone(), &cfg, search, "test-only".into());
+            let run = tokio::time::timeout(
+                Duration::from_secs(5), adjudicate_entities(&state, kb),
+            ).await;
+            let requests = server.received_requests().await.unwrap();
+            anyhow::ensure!(run.is_ok(), "second look blocked after {} model requests", requests.len());
+            run.unwrap()?;
+            assert_eq!(requests.len(), 2);
+            assert!(!requests[0].body_json::<Value>()?["tools"].is_array());
+            assert!(requests[1].body_json::<Value>()?["tools"].is_array());
+            let decision: (String, String, String, i32) = sqlx::query_as(
+                "SELECT action, status, question, calls FROM agent_decisions WHERE kb_id=$1",
+            ).bind(kb).fetch_one(&pool).await?;
+            assert_eq!(decision, (
+                "unsure".into(), "proposed".into(),
+                "Which source identifies this person?".into(), 1,
+            ));
+            Ok(())
+        }.await;
+        utopia_store::model_limits::set(&pool, &endpoint, "permit-test", None).await?;
+        sqlx::query("DELETE FROM organizations WHERE id=$1")
+            .bind(org)
+            .execute(&pool)
+            .await?;
+        pool.close().await;
+        result
+    }
 
     fn item(reason: &str) -> ReviewItem {
         let side = |name: &str| ReviewSide {

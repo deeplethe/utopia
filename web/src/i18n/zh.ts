@@ -528,6 +528,7 @@ export const zh: Strings = {
       chunk_unextracted: "这一段端点没能答上，没有进图",
       phrase_is_value: "已保留，但短语就是那个值",
       phrase_is_subject: "已保留，但短语就是主语的名字",
+      object_is_value: "已保留，宾语按值记下",
     },
     reExtractSource: "重新抽取",
     reExtractTitle: "重新抽取这个来源？",
