@@ -5,3 +5,8 @@ export function loginSections(status: SsoStatus | undefined) {
   const sso = !!status?.enabled;
   return { password: !sso || status?.password_login !== false, sso };
 }
+
+/** 单点登录失败时查哪句措辞。密码表单藏起来了，就别再叫人「先用密码登录」 */
+export function ssoErrorKey(code: string, passwordShown: boolean) {
+  return code === "unlinked" && !passwordShown ? "unlinked_sso_only" : code;
+}

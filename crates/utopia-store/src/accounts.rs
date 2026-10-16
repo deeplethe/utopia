@@ -27,10 +27,30 @@ pub async fn register(
     open_registration: bool,
 ) -> AppResult<Registered> {
     let mut tx = pool.begin().await?;
+    let registered = register_in(
+        &mut tx,
+        email,
+        password_hash,
+        display_name,
+        org_name,
+        open_registration,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(registered)
+}
 
+async fn register_in(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    email: &str,
+    password_hash: &str,
+    display_name: &str,
+    org_name: Option<&str>,
+    open_registration: bool,
+) -> AppResult<Registered> {
     let existing_org: Option<(Uuid,)> =
         sqlx::query_as("SELECT id FROM organizations ORDER BY created_at LIMIT 1")
-            .fetch_optional(&mut *tx)
+            .fetch_optional(&mut **tx)
             .await?;
 
     let result = match existing_org {
@@ -40,11 +60,10 @@ pub async fn register(
             sqlx::query("INSERT INTO organizations (id, name) VALUES ($1, $2)")
                 .bind(org_id)
                 .bind(org_name.unwrap_or("Default Organization"))
-                .execute(&mut *tx)
+                .execute(&mut **tx)
                 .await?;
 
-            let user =
-                insert_user(&mut tx, org_id, email, password_hash, display_name, true).await?;
+            let user = insert_user(tx, org_id, email, password_hash, display_name, true).await?;
 
             let workspace: Workspace = sqlx::query_as(
                 "INSERT INTO workspaces (id, org_id, name) VALUES ($1, $2, $3) RETURNING *",
@@ -52,11 +71,11 @@ pub async fn register(
             .bind(Uuid::now_v7())
             .bind(org_id)
             .bind("Default Workspace")
-            .fetch_one(&mut *tx)
+            .fetch_one(&mut **tx)
             .await?;
 
-            insert_membership(&mut tx, user.id, workspace.id, Role::Owner).await?;
-            let kb_id = insert_general_kb(&mut tx, workspace.id, user.id).await?;
+            insert_membership(tx, user.id, workspace.id, Role::Owner).await?;
+            let kb_id = insert_general_kb(tx, workspace.id, user.id).await?;
             (user, workspace, Some(kb_id))
         }
         Some((org_id,)) => {
@@ -66,20 +85,19 @@ pub async fn register(
                     "Registration is closed for this deployment. Contact your administrator.",
                 ));
             }
-            let user =
-                insert_user(&mut tx, org_id, email, password_hash, display_name, false).await?;
+            let user = insert_user(tx, org_id, email, password_hash, display_name, false).await?;
 
             // 加入默认（最早的）工作区；异常情况下组织没有工作区则补建一个
             let default_ws: Option<Workspace> = sqlx::query_as(
                 "SELECT * FROM workspaces WHERE org_id = $1 ORDER BY created_at LIMIT 1",
             )
             .bind(org_id)
-            .fetch_optional(&mut *tx)
+            .fetch_optional(&mut **tx)
             .await?;
 
             match default_ws {
                 Some(ws) => {
-                    insert_membership(&mut tx, user.id, ws.id, Role::Viewer).await?;
+                    insert_membership(tx, user.id, ws.id, Role::Viewer).await?;
                     (user, ws, None)
                 }
                 None => {
@@ -89,16 +107,15 @@ pub async fn register(
                     .bind(Uuid::now_v7())
                     .bind(org_id)
                     .bind("Default Workspace")
-                    .fetch_one(&mut *tx)
+                    .fetch_one(&mut **tx)
                     .await?;
-                    insert_membership(&mut tx, user.id, ws.id, Role::Owner).await?;
+                    insert_membership(tx, user.id, ws.id, Role::Owner).await?;
                     (user, ws, None)
                 }
             }
         }
     };
 
-    tx.commit().await?;
     let (user, workspace, general_kb) = result;
     Ok(Registered {
         user,
@@ -356,20 +373,63 @@ pub async fn set_system_admin(
 }
 
 /// 单点登录允许自动开户时，用身份提供方核实过的 email 找账号；找不到就按注册的
-/// 规则开一个（默认工作区的 viewer；部署里还没人时就是首个管理员）。
+/// 规则开一个（默认工作区的 viewer；部署里还没人时就是首个管理员），并把这个
+/// subject 绑上。开户与绑定同一个事务：绑定撞车（`taken` / `already_linked`）时
+/// 不留下一个没人能登进去的账号。
+///
+/// 这个 email 只剩一个停用的账号时返回 `None`：停用的人不能换个新号回来——
+/// email 的唯一索引只管启用中的账号，挡不住这一步，得在这里查。
 ///
 /// 开出来的账号**没有可用的密码**：`!` 不是合法的哈希，密码登录永远验不过。
-pub async fn account_for_sso(pool: &PgPool, email: &str, display_name: &str) -> AppResult<User> {
-    let existing: Option<User> = sqlx::query_as(
+pub async fn account_for_sso(
+    pool: &PgPool,
+    issuer: &str,
+    subject: &str,
+    email: &str,
+    display_name: &str,
+) -> AppResult<Option<User>> {
+    let mut tx = pool.begin().await?;
+    let active: Option<User> = sqlx::query_as(
         "SELECT * FROM users WHERE lower(email) = lower($1) AND deactivated_at IS NULL",
     )
     .bind(email)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *tx)
     .await?;
-    match existing {
-        Some(user) => Ok(user),
-        None => Ok(register(pool, email, "!", display_name, None, true)
-            .await?
-            .user),
-    }
+    let user = match active {
+        Some(u) => u,
+        None => {
+            let deactivated: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM users WHERE lower(email) = lower($1))",
+            )
+            .bind(email)
+            .fetch_one(&mut *tx)
+            .await?;
+            if deactivated {
+                return Ok(None);
+            }
+            register_in(&mut tx, email, "!", display_name, None, true)
+                .await?
+                .user
+        }
+    };
+    sqlx::query("INSERT INTO oidc_identities (issuer, subject, user_id) VALUES ($1, $2, $3)")
+        .bind(issuer)
+        .bind(subject)
+        .bind(user.id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| match &e {
+            // 两个约束各对应一种撞车：subject 已绑在别人身上，或者这个账号已经有一个
+            sqlx::Error::Database(db) if db.is_unique_violation() => AppError::CodedConflict {
+                code: if db.constraint().is_some_and(|n| n.contains("user")) {
+                    "already_linked"
+                } else {
+                    "taken"
+                },
+                message: "This SSO identity cannot be linked to that account".into(),
+            },
+            _ => AppError::Db(e),
+        })?;
+    tx.commit().await?;
+    Ok(Some(user))
 }

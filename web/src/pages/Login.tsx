@@ -25,7 +25,7 @@ import {
   Wordmark,
 } from "../ui";
 import { LoginScene } from "./LoginScene";
-import { loginSections } from "./loginSections";
+import { loginSections, ssoErrorKey } from "./loginSections";
 import { usePageTitle } from "../useTitle";
 
 export function Login() {
@@ -101,7 +101,7 @@ export function Login() {
 
           {ssoError && (
             <p role="alert" className="mb-3 text-small text-danger">
-              {S.login.ssoErrors[ssoError] ?? S.login.ssoErrorOther}
+              {S.login.ssoErrors[ssoErrorKey(ssoError, sections.password)] ?? S.login.ssoErrorOther}
             </p>
           )}
 

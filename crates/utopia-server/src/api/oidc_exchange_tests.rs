@@ -35,6 +35,48 @@ async fn exchange_maps_only_linked_active_people_and_spends_each_token_once() ->
         )
         .route("/jwks", get(move || async move { Json(jwks) }));
     let server = tokio::spawn(async move { axum::serve(listener, provider).await.unwrap() });
+
+    // 关掉密码登录只在 SSO 配好时生效：配置读的是进程环境变量，所以和换会话放在一个测试里
+    let dir = tempfile::tempdir()?;
+    let no_password = AppState::new(
+        pool.clone(),
+        &utopia_core::config::AppConfig {
+            data_dir: dir.path().to_string_lossy().into_owned(),
+            password_login: false,
+            ..Default::default()
+        },
+        Arc::new(utopia_search::SearchIndex::open(
+            &dir.path().join("search"),
+        )?),
+        "test-only".into(),
+    );
+    let call = |method: &'static str, path: &'static str, body: Value| {
+        let state = no_password.clone();
+        async move {
+            let request = Request::builder()
+                .method(method)
+                .uri(path)
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))?;
+            let response = super::router(state, &Default::default())
+                .oneshot(request)
+                .await?;
+            let body = axum::body::to_bytes(response.into_body(), 65536).await?;
+            anyhow::Ok(serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null))
+        }
+    };
+    let credentials = json!({"email": format!("{}@example.test", Uuid::now_v7()), "password": "wrong-but-long-1"});
+    let password_rule = || async {
+        let login = call("POST", "/api/v1/auth/login", credentials.clone()).await?;
+        let status = call("GET", "/api/v1/auth/oidc/status", Value::Null).await?;
+        anyhow::Ok((login["code"].clone(), status["password_login"].clone()))
+    };
+    assert_eq!(
+        password_rule().await?,
+        (Value::Null, json!(true)),
+        "without SSO the switch is ignored"
+    );
+
     // 只有这个测试读写这几个变量
     std::env::set_var("UTOPIA_OIDC_ISSUER", &issuer);
     std::env::set_var("UTOPIA_OIDC_CLIENT_ID", "utopia-test");
@@ -44,6 +86,11 @@ async fn exchange_maps_only_linked_active_people_and_spends_each_token_once() ->
     );
     std::env::set_var("UTOPIA_OIDC_ALLOW_LOOPBACK_HTTP", "1");
     std::env::remove_var("UTOPIA_OIDC_EXCHANGE_AUDIENCES");
+    assert_eq!(
+        password_rule().await?,
+        (json!("password_login_disabled"), json!(false)),
+        "with SSO configured the switch holds"
+    );
 
     let (org, user) = (Uuid::now_v7(), Uuid::now_v7());
     let subject = format!("person-{user}");
@@ -173,6 +220,30 @@ async fn exchange_maps_only_linked_active_people_and_spends_each_token_once() ->
 
         let (status, body) = exchange(sign_email("sub-unverified", &format!("{}@example.test", Uuid::now_v7()), false)?).await?;
         anyhow::ensure!(body["code"] == "oidc_unlinked", "unverified: {status} {body}");
+
+        let accounts = |email: String| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query_scalar::<_, i64>("SELECT count(*) FROM users WHERE lower(email) = lower($1)")
+                    .bind(email)
+                    .fetch_one(&pool)
+                    .await
+            }
+        };
+        // 停用的人换个新 subject 回来：email 还被他的停用账号占着，不开新号
+        let (status, body) = exchange(sign_email("sub-comeback", &format!("{user}@example.test"), true)?).await?;
+        anyhow::ensure!(body["code"] == "oidc_unlinked", "deactivated email: {status} {body}");
+        anyhow::ensure!(accounts(format!("{user}@example.test")).await? == 1);
+
+        // subject 已绑在停用的账号上，新 email 开户撞车：什么都不留，内部原因也不回给调用方
+        let stray = format!("{}@example.test", Uuid::now_v7().simple());
+        let (status, body) = exchange(sign_email(&subject, &stray, true)?).await?;
+        anyhow::ensure!(
+            body["code"] == "oidc_unavailable"
+                && body["error"] == "The identity could not be mapped to an account",
+            "taken: {status} {body}"
+        );
+        anyhow::ensure!(accounts(stray).await? == 0);
         anyhow::Ok(())
     }
     .await;

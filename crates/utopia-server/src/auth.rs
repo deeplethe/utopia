@@ -35,13 +35,16 @@ pub fn hash_password(password: &str) -> Result<String, AppError> {
 }
 
 pub fn verify_password(password: &str, hash: &str) -> bool {
-    PasswordHash::new(hash)
-        .map(|parsed| {
-            Argon2::default()
-                .verify_password(password.as_bytes(), &parsed)
-                .is_ok()
-        })
-        .unwrap_or(false)
+    // 单点登录开的账号存的是 `!`，解析不了。照样跑一遍 argon2（对着 dummy），
+    // 否则响应快得多，能据此分辨出哪些账号只走 SSO
+    let Ok(parsed) = PasswordHash::new(hash) else {
+        let dummy = PasswordHash::new(dummy_password_hash()).expect("the dummy parses");
+        let _ = Argon2::default().verify_password(password.as_bytes(), &dummy);
+        return false;
+    };
+    Argon2::default()
+        .verify_password(password.as_bytes(), &parsed)
+        .is_ok()
 }
 
 /// 「邮箱不存在」分支用的常量时间伙伴：一个用真实参数算出来的 argon2 哈希，明文是随机

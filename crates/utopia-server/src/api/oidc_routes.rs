@@ -7,7 +7,9 @@
 //! （包括别的管理员）登录的路：绑定不经本人、本人看不见、改密码也断不掉，之后的
 //! 操作在台账上记成被冒充的人（0014：身份来自本人）。管理员现在只能看与解绑。
 //!
-//! 绝不按身份提供方的 email 这类可变声明自动关联，首次登录也绝不自动开账号。
+//! 默认绝不按身份提供方的 email 这类可变声明自动关联，首次登录也不自动开账号。
+//! 例外是部署列了 `UTOPIA_OIDC_ALLOWED_DOMAINS`：那些域名里核实过的 email 首次登录时
+//! 关联已有账号或开一个（0069：身份提供方对这些域名说了算）。
 //!
 //! **另一个应用可以拿它刚登录到的 ID token 换一个会话**（`exchange`，0066）：同一个
 //! 身份提供方、受信的 audience 列表、十分钟内签发、只换一次，映射规则与登录相同。
@@ -281,7 +283,30 @@ fn form_encode(s: &str) -> String {
 }
 
 pub async fn status(State(s): State<AppState>) -> Json<Value> {
-    Json(json!({"enabled": config().is_ok(), "password_login": s.password_login}))
+    Json(json!({"enabled": config().is_ok(), "password_login": password_login(&s)}))
+}
+
+/// 密码登录实际开没开：`UTOPIA_PASSWORD_LOGIN=false` 只在 SSO 配好时生效。
+/// 没有 SSO 还关掉密码，谁都进不来——那就当这个开关没设，与登录页同一条规则
+pub fn password_login(s: &AppState) -> bool {
+    s.password_login || config().is_err()
+}
+
+/// 启动时把关掉密码登录的两种后果说出来：没配 SSO 时这个开关不生效；
+/// 没有允许名单时只有绑定过身份的人进得来，新人既注册不了也开不了户
+pub fn warn_about_password_login(s: &AppState) {
+    if s.password_login {
+        return;
+    }
+    match config() {
+        Err(_) => {
+            tracing::warn!("UTOPIA_PASSWORD_LOGIN=false 被忽略：没配单点登录，关掉密码就谁都进不来")
+        }
+        Ok(c) if c.allowed_domains.is_empty() => tracing::warn!(
+            "密码登录已关、UTOPIA_OIDC_ALLOWED_DOMAINS 为空：只有绑定过身份的人能登录"
+        ),
+        Ok(_) => {}
+    }
 }
 
 #[derive(Deserialize)]
@@ -393,10 +418,30 @@ struct Claims {
     aud: Value,
     #[serde(default)]
     email: Option<String>,
-    #[serde(default)]
+    /// 每个令牌都要过这里：有的身份提供方发字符串 `"true"`，严格按 bool 解析会让所有人
+    /// 都登不进来。只有 `true` / `"true"` 算核实过，其它一律不算
+    #[serde(default, deserialize_with = "lenient_true")]
     email_verified: bool,
     #[serde(default)]
     name: Option<String>,
+}
+
+fn lenient_true<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    Ok(match Value::deserialize(d)? {
+        Value::Bool(b) => b,
+        Value::String(v) => v == "true",
+        _ => false,
+    })
+}
+
+/// 开户用的显示名：`name` 声明去掉首尾空白、最多 64 个字符；空的就用 email 的本地部分
+fn display_name(claim: Option<&str>, email: &str) -> String {
+    let name: String = claim.unwrap_or_default().trim().chars().take(64).collect();
+    if name.is_empty() {
+        email.split('@').next().unwrap_or_default().to_string()
+    } else {
+        name
+    }
 }
 
 /// 能自动开户或按 email 关联的那个 email：身份提供方核实过，而且域名在允许名单里。
@@ -494,7 +539,7 @@ pub struct Exchange {
 
 /// 另一个应用（client id 在 `UTOPIA_OIDC_EXCHANGE_AUDIENCES` 里）让它的用户在同一个
 /// 身份提供方登录，再拿刚到手的 ID token 换一个 Utopia 会话，以那个人的身份调这里的
-/// API。映射与 SSO 登录一样只认本人绑定过的身份；这里不开账号，也不绑定。
+/// API。映射与 SSO 登录相同：本人绑定过的身份，或者允许名单里的域名（0069）。
 /// 没配 SSO 或没配受信 audience 时就当这个端点不存在
 pub async fn exchange(
     State(s): State<AppState>,
@@ -547,9 +592,13 @@ pub async fn exchange(
         );
     }
 
-    let user_id = account_of(&s, &c, &claims)
-        .await
-        .map_err(|r| AppError::invalid("oidc_unavailable", r.reason))?;
+    let user_id = account_of(&s, &c, &claims).await.map_err(|r| {
+        tracing::warn!(code = r.code, reason = %r.reason, "SSO exchange refused");
+        AppError::invalid(
+            "oidc_unavailable",
+            "The identity could not be mapped to an account",
+        )
+    })?;
     let user_id = user_id.ok_or_else(|| {
         AppError::invalid(
             "oidc_unlinked",
@@ -743,14 +792,32 @@ async fn account_of(s: &AppState, c: &Config, claims: &Claims) -> Result<Option<
     else {
         return Ok(linked);
     };
-    let name = claims
-        .name
-        .clone()
-        .unwrap_or_else(|| email.split('@').next().unwrap_or_default().to_string());
-    let user = utopia_store::accounts::account_for_sso(&s.pool, &email, &name)
-        .await
-        .map_err(|e| refuse("unavailable", format!("provision: {e}")))?;
-    link(s, c, user.id, &claims.sub).await?;
+    let provisioned = utopia_store::accounts::account_for_sso(
+        &s.pool,
+        &c.issuer,
+        &claims.sub,
+        &email,
+        &display_name(claims.name.as_deref(), &email),
+    )
+    .await
+    .map_err(|e| match e {
+        AppError::CodedConflict { code, message } => refuse(code, message),
+        e => refuse("unavailable", format!("provision: {e}")),
+    })?;
+    let Some(user) = provisioned else {
+        tracing::warn!(%email, "单点登录：这个 email 属于一个停用的账号，不开新号");
+        return Ok(None);
+    };
+    let _ = utopia_store::audit::record(
+        &s.pool,
+        None,
+        user.id,
+        "auth.oidc_link",
+        "user",
+        Some(user.id),
+        json!({"issuer": c.issuer, "subject": claims.sub, "by": "allowed_domain"}),
+    )
+    .await;
     Ok(Some(user.id))
 }
 
@@ -901,6 +968,59 @@ pub async fn unbind(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn email_verified_is_true_only_for_true_or_the_string_true() {
+        let verified = |v: serde_json::Value| {
+            let mut claims = serde_json::json!({"sub": "p", "iat": 0, "aud": "a"});
+            if !v.is_null() {
+                claims["email_verified"] = v;
+            }
+            serde_json::from_value::<super::Claims>(claims)
+                .map(|c| c.email_verified)
+                .ok()
+        };
+        let cases = [
+            serde_json::json!(true),
+            serde_json::json!("true"),
+            serde_json::json!("TRUE"),
+            serde_json::json!(false),
+            serde_json::json!("false"),
+            serde_json::json!(1),
+            serde_json::Value::Null,
+        ];
+        assert_eq!(
+            cases.map(verified),
+            [
+                Some(true),
+                Some(true),
+                Some(false),
+                Some(false),
+                Some(false),
+                Some(false),
+                Some(false)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_display_name_is_trimmed_capped_at_64_and_falls_back_to_the_local_part() {
+        let long = "名".repeat(70);
+        assert_eq!(
+            [
+                super::display_name(Some("  Ann Lee \n"), "ann@x.test"),
+                super::display_name(Some("   "), "bea@x.test"),
+                super::display_name(None, "cid@x.test"),
+                super::display_name(Some(&long), "dee@x.test"),
+            ],
+            [
+                "Ann Lee".to_string(),
+                "bea".into(),
+                "cid".into(),
+                "名".repeat(64)
+            ]
+        );
+    }
+
     #[test]
     fn only_local_callbacks_can_use_http() {
         assert!(super::secure_url("http://localhost:1516/callback", true).is_ok());

@@ -257,7 +257,7 @@ pub async fn change_password(
 }
 
 fn password_login_enabled(state: &AppState) -> Result<(), AppError> {
-    if state.password_login {
+    if super::oidc_routes::password_login(state) {
         Ok(())
     } else {
         Err(AppError::invalid(
