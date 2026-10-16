@@ -72,7 +72,10 @@ sources for the citation numbers it repeats (#943).
 "now" only; neither takes `at` [0035, 0019, 0022]. Confirmed mappings and a schema document reach
 the prompt through retrieval; a conventions document works today where a rule would be exact
 [0011, 0036]. A turn embeds its question once: choosing the mappings, `search_chunks` and the
-graph lookups share the turn's embedding cache (#971).
+graph lookups share the turn's embedding cache (#971). The search route answers with each hit's RRF score, its
+1-based rank in each channel, `vector_used` (false when the vector channel was skipped) and
+`offset`/`has_more` paging to a depth of 100; a pushed source's hit carries its `external_id`. An
+RRF score ranks hits within one query only; it is not comparable across queries (#1271).
 
 **`remember`** writes a memory document at once; its statements go through open extraction and wait
 in `pending_facts`; the assistant says the sentence is recorded and its statements will be shown

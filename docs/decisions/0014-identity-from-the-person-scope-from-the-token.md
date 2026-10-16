@@ -76,8 +76,8 @@ push documents in.
    session still creates every kind. The audit rows these routes write (`source.created`,
    `alignment.kind_word_decided`, `ontology.imported`) carry the acting token's id as
    `detail.token_id`, so before revoking a leaked token an admin can see what it did (decision
-   5). One extractor, `SessionOrToken`, takes either credential, and only these routes and
-   document content (0052) use it; `AuthUser` still reads every bearer as a JWT, so the routes
+   5). One extractor, `SessionOrToken`, takes either credential, and only these routes,
+   document content (0052) and chunk search (revision 2026-10-16) use it; `AuthUser` still reads every bearer as a JWT, so the routes
    behind it stay session-only until someone has a reason to open one and says it here.
 
    Not done: rotating or deleting a source, changing a base's settings or members, and every
@@ -104,6 +104,10 @@ push documents in.
 - 2026-10-15: the status line still said `can_write` was hard-coded false. #318 had already
   computed it from the token's scope and the person's role, and `remember` has been reachable
   over MCP with a write token since then. The line now names what is open.
+- 2026-10-16: chunk search (`POST /kbs/{id}/search`) takes `SessionOrToken` too (#1271). A
+  service that mirrors its records into a base needs to ask it questions with the token it
+  already holds; the token's `kb_ids` and the owner's Viewer role decide, as for document
+  content. It reads only, so any scope will do.
 
 ## Open questions
 
