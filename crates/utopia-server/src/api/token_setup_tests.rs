@@ -102,6 +102,24 @@ impl Fixture {
         self.respond(request).await
     }
 
+    /// 真导入一份 Turtle：字段要带文件名，读上传只收带文件名的，同网页的导入面板
+    async fn import_turtle(
+        &self,
+        kb: Uuid,
+        token: &str,
+        ttl: &str,
+    ) -> anyhow::Result<(StatusCode, Value)> {
+        let body = format!(
+            "--x\r\nContent-Disposition: form-data; name=\"file\"; filename=\"o.ttl\"\r\n\r\n\
+             {ttl}\r\n--x--\r\n"
+        );
+        let request = Request::post(format!("/api/v1/kbs/{kb}/ontology/imports"))
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "multipart/form-data; boundary=x")
+            .body(Body::from(body))?;
+        self.respond(request).await
+    }
+
     async fn respond(&self, request: Request<Body>) -> anyhow::Result<(StatusCode, Value)> {
         let response = self.app.clone().oneshot(request).await?;
         let status = response.status();
@@ -179,6 +197,14 @@ impl Fixture {
     }
 
     async fn cleanup(self) -> anyhow::Result<()> {
+        // 任务按载荷里的 kb_id 挂在库上，没有外键，删组织带不走它们
+        sqlx::query(
+            "DELETE FROM jobs WHERE payload->>'kb_id' IN
+                 (SELECT id::text FROM knowledge_bases WHERE workspace_id = $1)",
+        )
+        .bind(self.ws)
+        .execute(&self.pool)
+        .await?;
         sqlx::query("DELETE FROM organizations WHERE id = $1")
             .bind(self.org)
             .execute(&self.pool)
@@ -374,6 +400,42 @@ async fn a_write_token_reaches_no_further_than_its_owners_role_and_its_base_list
         anyhow::ensure!(
             status == StatusCode::OK && names == ["a"],
             "{status} {listed}"
+        );
+        anyhow::Ok(())
+    }
+    .await;
+    f.cleanup().await?;
+    result
+}
+
+/// 文档先到、本体后导（建库对话框说本体以后还能再导）：没有类时类别词判成「没有」，
+/// 短语签名对不上属性。导进来的类与属性要接住它们就得重排对齐，同编辑器的入口一样先排
+/// `embed_ontology` 再排对齐；不排的话要等下一篇文档，最后一篇之后导进来的类没有实例
+#[tokio::test]
+async fn importing_an_ontology_queues_alignment_behind_the_index_refresh() -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    let result = async {
+        let kb = f.seeded_kb("robots").await?;
+        let token = f.token(f.admin, "write", None).await;
+        let ttl = "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n\
+                   @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n\
+                   @prefix ex: <http://example.org/> .\n\
+                   ex:Robot a owl:Class ; rdfs:label \"Robot\" .\n";
+        let (status, body) = f.import_turtle(kb, &token, ttl).await?;
+        anyhow::ensure!(status == StatusCode::OK, "{status} {body}");
+
+        let queued: Vec<String> = sqlx::query_scalar(
+            "SELECT kind FROM jobs WHERE status = 'queued' AND payload->>'kb_id' = $1
+              ORDER BY run_at, id",
+        )
+        .bind(kb.to_string())
+        .fetch_all(&f.pool)
+        .await?;
+        anyhow::ensure!(
+            queued == ["embed_ontology", "align_types"],
+            "the alignment is queued behind the index refresh: {queued:?}"
         );
         anyhow::Ok(())
     }

@@ -88,13 +88,13 @@ pub struct EntityTypeReq {
     pub description: Option<String>,
 }
 
-/// 编辑器改了本体之后：先补向量索引，再排对齐。
+/// 编辑器或导入改了本体之后：先补向量索引，再排对齐。
 ///
 /// **新元素要有向量，对齐的短名单才看得见它。** 候选多于短名单长度时按向量挑
 /// （`phrase_alignment::shortlist`），类别词的候选类也按向量检索
 /// （`type_alignment::candidates_for`）；没向量的元素永远进不了名单，形状的指纹就不变，
 /// 建了也不重判——第一次真跑 `bordered_by` 就是这样（0061 cut 1.1 的采纳路径已经补了，
-/// 这里是编辑器的四个入口）。描述改了也算：向量按「当时嵌的原文」判陈，改了描述的行
+/// 这里是编辑器的四个入口与 OWL 导入）。描述改了也算：向量按「当时嵌的原文」判陈，改了描述的行
 /// 会被同一个任务重嵌。
 ///
 /// **排任务，不就地跑。** 就地嵌一次要付一趟嵌入请求的固定开销，本体页一口气建 28 条
@@ -648,6 +648,10 @@ pub async fn apply_import(
     let violations =
         utopia_store::reasoning::reconcile_ontology(&mut tx, kb_id, &was_detected).await?;
     tx.commit().await?;
+    // 本体多了类和属性：没有类时判成「没有」的类别词、对不上属性的签名要重判（0044 对齐）。
+    // 与编辑器同一步：先补向量再排类别词对齐，它收尾时排短语对齐。补向量那份 apply 已经
+    // 排了，撞上排着的不再排；导入已经落库，排不上也不把它报成失败
+    let _ = reindex_then_align(&state, kb_id, "align_types").await;
     state.emit_review(kb_id);
     Ok(Json(
         json!({ "import_id": import_id, "plan": plan, "violations": violations }),

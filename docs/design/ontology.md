@@ -71,10 +71,10 @@ label shares a word with the phrase; without an embedding model the model sees e
 candidate. A property without a vector never enters the shortlist, so the fingerprint of the
 shapes it could bind does not change and they are never re-decided: every path that adds or
 relabels an element therefore refreshes the index before alignment. The ontology agent's adoption,
-like the editor's create and update handlers, queues `embed_ontology` ahead of the alignment job;
-adoption queues both in the element's commit [0061]. Both aligners wait while that job is queued or
-running, so the order is vectors, then kind words, then phrases. The shortlist is part of the
-decision's basis, so a changed list re-asks. The candidate
+like the editor's create and update handlers and an OWL import, queues `embed_ontology` ahead of
+the alignment job; adoption queues both in the element's commit [0061]. Both aligners wait while
+that job is queued or running, so the order is vectors, then kind words, then phrases. The
+shortlist is part of the decision's basis, so a changed list re-asks. The candidate
 properties are described once per batch and each item names only its keys. A signature the votes disagree on is `undecided` for the alignment queue of #725; one with no
 fitting property is `none`, its statements stay in the open graph and it counts toward the
 workbench's suggestions. Bindings live in `phrase_bindings`. A binding to a state property also
