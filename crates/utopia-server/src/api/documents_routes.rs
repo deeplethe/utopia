@@ -81,7 +81,7 @@ fn content_headers(
     Ok(headers)
 }
 
-async fn require_reader_kb(
+pub(crate) async fn require_reader_kb(
     state: &AppState,
     reader: &SessionOrToken,
     kb_id: Uuid,
