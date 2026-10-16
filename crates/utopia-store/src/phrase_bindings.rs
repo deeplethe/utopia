@@ -17,7 +17,7 @@ use uuid::Uuid;
 /// SQL 侧的归一：与 [`normalize`] 一致。`$col` 由调用处替换成列名。
 const PHRASE_SQL: &str = "lower(btrim(regexp_replace($col, '\\s+', ' ', 'g')))";
 
-fn phrase_sql(col: &str) -> String {
+pub(crate) fn phrase_sql(col: &str) -> String {
     PHRASE_SQL.replace("$col", col)
 }
 
