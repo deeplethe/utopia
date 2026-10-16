@@ -204,3 +204,337 @@ async fn a_namesake_tie_creates_an_entity_and_two_reviews() -> anyhow::Result<()
         .await?;
     run
 }
+
+// #1136: topic scores, missing profiles and fact counts cannot choose between known namesakes.
+#[tokio::test]
+async fn namesakes_without_a_clue_are_reviewed_outside_the_tie_margin() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let mut outcomes = Vec::new();
+    for case in [
+        "unequal_scores",
+        "unprofiled",
+        "no_context",
+        "shared_alias",
+        "unbound_typed",
+        "unbound_mixed",
+    ] {
+        let f = seed(&pool).await?;
+        let run = async {
+            sqlx::query("UPDATE entities SET profile_embedding = $2::vector WHERE id = $1")
+                .bind(f.zhang_b)
+                .bind(if case == "unprofiled" {
+                    None
+                } else {
+                    Some("[0.8,0.6,0]")
+                })
+                .execute(&pool)
+                .await?;
+            if case == "shared_alias" {
+                for (id, name) in [
+                    (f.zhang_a, "Engineering Zhang Wei"),
+                    (f.zhang_b, "Finance Zhang Wei"),
+                ] {
+                    sqlx::query(
+                        "UPDATE entities SET canonical_name = $2, type_id = NULL WHERE id = $1",
+                    )
+                    .bind(id)
+                    .bind(name)
+                    .execute(&pool)
+                    .await?;
+                    utopia_store::names::record(&pool, f.kb, id, "Zhang Wei", None, None).await?;
+                }
+            }
+            if case == "unbound_mixed" {
+                sqlx::query("UPDATE entities SET type_id = NULL WHERE id = $1")
+                    .bind(f.zhang_b)
+                    .execute(&pool)
+                    .await?;
+            }
+            let ctx = if case == "unprofiled" {
+                [0.0, 0.0, 1.0]
+            } else {
+                [1.0, 0.0, 0.0]
+            };
+            let r = utopia_store::resolution::resolve_mention(
+                &pool,
+                f.kb,
+                (!matches!(case, "shared_alias" | "unbound_typed" | "unbound_mixed"))
+                    .then_some(f.person),
+                "Zhang Wei",
+                (case != "no_context").then_some(ctx.as_slice()),
+                None,
+                Some("Zhang Wei received an award."),
+                &[],
+            )
+            .await?;
+            let mut others: Vec<_> = r.reviews.iter().map(|v| v.other_id).collect();
+            others.sort();
+            let mut expected = vec![f.zhang_a, f.zhang_b];
+            expected.sort();
+            outcomes.push((
+                case,
+                r.created
+                    && !expected.contains(&r.entity_id)
+                    && others == expected
+                    && r.reviews.iter().all(|v| v.stage == ReviewStage::Human),
+            ));
+            Ok::<_, anyhow::Error>(())
+        }
+        .await;
+        sqlx::query("DELETE FROM organizations WHERE id = $1")
+            .bind(f.org)
+            .execute(&pool)
+            .await?;
+        run?;
+    }
+    assert!(
+        outcomes.iter().all(|(_, safe)| *safe),
+        "silent namesake attachment: {outcomes:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_single_namesake_still_resolves_without_a_clue() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let f = seed(&pool).await?;
+    let run = async {
+        sqlx::query("DELETE FROM entities WHERE id = $1")
+            .bind(f.zhang_b)
+            .execute(&pool)
+            .await?;
+        for ctx in [None, Some([1.0, 0.0, 0.0])] {
+            let r = utopia_store::resolution::resolve_mention(
+                &pool,
+                f.kb,
+                Some(f.person),
+                "Zhang Wei",
+                ctx.as_ref().map(|v| v.as_slice()),
+                None,
+                Some("Zhang Wei received an award."),
+                &[],
+            )
+            .await?;
+            assert_eq!(r.entity_id, f.zhang_a);
+            assert!(!r.created && r.reviews.is_empty());
+        }
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    sqlx::query("DELETE FROM organizations WHERE id = $1")
+        .bind(f.org)
+        .execute(&pool)
+        .await?;
+    run
+}
+
+#[tokio::test]
+async fn a_namesakes_fact_outweighs_a_higher_topic_score() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let f = seed(&pool).await?;
+    let run = async {
+        sqlx::query("UPDATE entities SET profile_embedding = '[0.8,0.6,0]'::vector WHERE id = $1")
+            .bind(f.zhang_b)
+            .execute(&pool)
+            .await?;
+        for type_id in [Some(f.person), None] {
+            let r = utopia_store::resolution::resolve_mention(
+                &pool,
+                f.kb,
+                type_id,
+                "Zhang Wei",
+                Some(&[1.0, 0.0, 0.0]),
+                None,
+                Some("Zhang Wei of Finance signed the report."),
+                &[],
+            )
+            .await?;
+            assert_eq!(
+                r.entity_id, f.zhang_b,
+                "Finance belongs to the lower-scoring namesake"
+            );
+            assert!(!r.created && r.reviews.is_empty());
+        }
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    sqlx::query("DELETE FROM organizations WHERE id = $1")
+        .bind(f.org)
+        .execute(&pool)
+        .await?;
+    run
+}
+
+// Every call can be a new document: an unresolved mention is not a third known namesake.
+#[tokio::test]
+async fn a_governance_kept_ambiguity_still_reuses_the_unresolved_namesake() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let f = seed(&pool).await?;
+    let result = async {
+        sqlx::query("UPDATE entities SET canonical_name='Zhang Wei' WHERE id IN ($1,$2)").bind(f.zhang_a).bind(f.zhang_b).execute(&pool).await?;
+        let first = utopia_store::resolution::resolve_mention(&pool, f.kb, Some(f.person), "Zhang Wei", None, None, Some("Zhang Wei received an award."), &[]).await?;
+        let reviews: Vec<(Uuid,String)> = sqlx::query_as("SELECT id,reason FROM resolution_reviews WHERE kb_id=$1 AND stage='human' AND status='pending'").bind(f.kb).fetch_all(&pool).await?;
+        assert_eq!(reviews.len(), 2);
+        for (id, original) in reviews {
+            // Governance preserves which side was unresolved when it closes review work.
+            let reason = format!("kept_apart|no_checkable_identity_evidence|unresolved_namesake_left|{original}");
+            utopia_store::resolution::close_review_auto(&pool, id, "kept", &reason).await?;
+        }
+        for _ in 0..20 {
+            let next = utopia_store::resolution::resolve_mention(&pool, f.kb, Some(f.person), "Zhang Wei", None, None, Some("Zhang Wei received another award."), &[]).await?;
+            assert_eq!(next.entity_id, first.entity_id, "keeping apart cannot make an unresolved mention into an identified person");
+            for rv in &next.reviews {
+                // Exercise the real caller too, not just create_entity's atomic insertion.
+                utopia_store::resolution::create_review(&pool, f.kb, next.entity_id, rv.other_id, rv.score, &rv.reason, rv.stage).await?;
+            }
+        }
+        let entities: i64 = sqlx::query_scalar("SELECT count(*) FROM entities WHERE kb_id=$1 AND merged_into IS NULL AND lower(canonical_name)='zhang wei'").bind(f.kb).fetch_one(&pool).await?;
+        let human: i64 = sqlx::query_scalar("SELECT count(*) FROM resolution_reviews WHERE kb_id=$1 AND stage='human' AND status='pending'").bind(f.kb).fetch_one(&pool).await?;
+        assert_eq!((entities,human),(3,0));
+        Ok(())
+    }.await;
+    sqlx::query("DELETE FROM organizations WHERE id=$1")
+        .bind(f.org)
+        .execute(&pool)
+        .await?;
+    result
+}
+
+#[tokio::test]
+async fn recurring_ambiguous_mentions_share_one_unresolved_entity() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let f = seed(&pool).await?;
+    let run = async {
+        sqlx::query("UPDATE entities SET profile_embedding = '[0.8,0.6,0]'::vector WHERE id = $1")
+            .bind(f.zhang_b)
+            .execute(&pool)
+            .await?;
+        let mut ids = Vec::new();
+        for _ in 0..20 {
+            let r = utopia_store::resolution::resolve_mention(
+                &pool, f.kb, Some(f.person), "Zhang Wei", Some(&[1.0, 0.0, 0.0]),
+                None, Some("Zhang Wei received an award."), &[],
+            ).await?;
+            for rv in &r.reviews {
+                utopia_store::resolution::create_review(
+                    &pool, f.kb, r.entity_id, rv.other_id, rv.score, &rv.reason, rv.stage,
+                ).await?;
+            }
+            ids.push(r.entity_id);
+        }
+        let entities: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM entities WHERE kb_id = $1 AND lower(canonical_name) = 'zhang wei' AND merged_into IS NULL",
+        ).bind(f.kb).fetch_one(&pool).await?;
+        let reviews: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM resolution_reviews WHERE kb_id = $1 AND status = 'pending' AND stage = 'human'",
+        ).bind(f.kb).fetch_one(&pool).await?;
+        assert_eq!((entities, reviews), (3, 2), "20 mentions must add one unresolved entity and two reviews");
+        assert!(ids.iter().all(|id| *id == ids[0]));
+        assert!(![f.zhang_a, f.zhang_b].contains(&ids[0]));
+        Ok::<_, anyhow::Error>(())
+    }.await;
+    sqlx::query("DELETE FROM organizations WHERE id = $1")
+        .bind(f.org)
+        .execute(&pool)
+        .await?;
+    run
+}
+
+#[tokio::test]
+async fn parallel_mentions_do_not_create_two_unresolved_entities() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let f = seed(&pool).await?;
+    let run = async {
+        let resolve = |type_id, name| utopia_store::resolution::resolve_mention(
+            &pool, f.kb, type_id, name, Some(&[1.0, 0.0, 0.0]), None,
+            Some("Zhang Wei received an award."), &[],
+        );
+        let (a, b) = tokio::join!(resolve(Some(f.person), "Zhang Wei"), resolve(None, "zhang wei"));
+        let (a, b) = (a?, b?);
+        assert_eq!(a.entity_id, b.entity_id);
+        assert_ne!(a.created, b.created);
+        // No caller has persisted returned reviews yet: the unresolved marker must be atomic.
+        let reviews: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM resolution_reviews WHERE kb_id = $1 AND status = 'pending' AND stage = 'human'",
+        ).bind(f.kb).fetch_one(&pool).await?;
+        assert_eq!(reviews, 2);
+        // Facts of an unresolved mention are not evidence that it is the finance namesake.
+        sqlx::query(
+            "INSERT INTO facts (id, kb_id, subject_id, predicate_id, object_id)
+             SELECT $1, kb_id, $2, predicate_id, object_id FROM facts WHERE subject_id = $3",
+        ).bind(Uuid::now_v7()).bind(a.entity_id).bind(f.zhang_b).execute(&pool).await?;
+        let placed = utopia_store::resolution::resolve_mention(
+            &pool, f.kb, None, "Zhang Wei", Some(&[1.0, 0.0, 0.0]), None,
+            Some("Zhang Wei of Finance signed the report."), &[],
+        ).await?;
+        assert_eq!(placed.entity_id, f.zhang_b);
+        assert!(!placed.created && placed.reviews.is_empty());
+        Ok::<_, anyhow::Error>(())
+    }.await;
+    sqlx::query("DELETE FROM organizations WHERE id = $1")
+        .bind(f.org)
+        .execute(&pool)
+        .await?;
+    run
+}
+
+#[tokio::test]
+async fn a_merged_namesake_is_no_longer_unresolved() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    for bucket_survives in [false, true] {
+        let f = seed(&pool).await?;
+        let run = async {
+            let r = utopia_store::resolution::resolve_mention(
+                &pool, f.kb, Some(f.person), "Zhang Wei", None, None,
+                Some("Zhang Wei received an award."), &[],
+            ).await?;
+            let review: Uuid = sqlx::query_scalar(
+                "SELECT id FROM resolution_reviews WHERE kb_id = $1 AND left_id = $2 AND right_id = $3 AND status = 'pending'",
+            ).bind(f.kb).bind(r.entity_id).bind(f.zhang_a).fetch_one(&pool).await?;
+            let (source, target) = if bucket_survives { (f.zhang_a, r.entity_id) } else { (r.entity_id, f.zhang_a) };
+            utopia_store::resolution::merge_entities(&pool, f.kb, source, target, None, "review fixture").await?;
+            utopia_store::resolution::close_review_auto(&pool, review, "merged", "review fixture").await?;
+            // One namesake review remains (redirected if the bucket was the source).
+            // It must not hide the now-identified survivor from the ambiguity guard.
+            let next = utopia_store::resolution::resolve_mention(
+                &pool, f.kb, Some(f.person), "Zhang Wei", None, None,
+                Some("Zhang Wei received an award."), &[],
+            ).await?;
+            assert!(next.created, "merged survivor is known, not an unresolved bucket");
+            assert!(![target, f.zhang_b].contains(&next.entity_id));
+            let placed = utopia_store::resolution::resolve_mention(
+                &pool, f.kb, Some(f.person), "Zhang Wei", None, None,
+                Some("Zhang Wei of Platform Engineering received an award."), &[],
+            ).await?;
+            assert_eq!(placed.entity_id, target);
+            Ok::<_, anyhow::Error>(())
+        }.await;
+        sqlx::query("DELETE FROM organizations WHERE id = $1")
+            .bind(f.org)
+            .execute(&pool)
+            .await?;
+        run?;
+    }
+    Ok(())
+}
