@@ -1532,6 +1532,7 @@ mod tests {
             stale: false,
             corrected: false,
             end_derived: false,
+            end_after_period: false,
             time_corrected: false,
             corrected_ends: None,
             closed_by_id: None,

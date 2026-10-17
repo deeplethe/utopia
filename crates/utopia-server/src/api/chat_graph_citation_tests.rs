@@ -696,6 +696,7 @@ async fn a_fact_line_says_when_a_date_is_not_the_passages() -> anyhow::Result<()
                 to_precision: Some("day"),
                 attested_at: None,
                 from_grade: None,
+                end_after_period: false,
             },
         )
         .await?
@@ -820,6 +821,7 @@ async fn a_fact_line_says_when_a_date_is_not_the_passages() -> anyhow::Result<()
                 to_precision: Some("day"),
                 attested_at: None,
                 from_grade: None,
+                end_after_period: false,
             },
         )
         .await?

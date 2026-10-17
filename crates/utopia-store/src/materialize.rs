@@ -289,7 +289,8 @@ async fn materialize_in_tx(
         let reverse = d.direction == "reverse";
         // 一刻的陈述在状态属性下按绑定说的读（#966）：开始写成从那一刻起，结束写成到那一刻
         // 为止（走 `insert_fact_on`「某天结束了」那条路，关上开放的那段）。什么都不算的
-        // 在查询里已经排掉了（[`MOMENT_UNREAD`]）
+        // 在查询里已经排掉了（[`MOMENT_UNREAD`]）。陈述不带 `end_after_period`：终点挪没挪到
+        // 时段的尽头由写入路径定（#994 第一刀）
         let moment = d.temporal.as_deref() == Some("state")
             && d.valid_from.is_some()
             && d.valid_from == d.valid_to;
@@ -301,6 +302,7 @@ async fn materialize_in_tx(
                 to: d.valid_to,
                 to_precision: d.valid_to_precision.as_deref(),
                 attested_at: d.attested_from,
+                end_after_period: false,
             },
             (true, Some("start")) => Validity {
                 from: d.valid_from,
@@ -309,6 +311,7 @@ async fn materialize_in_tx(
                 to: None,
                 to_precision: None,
                 attested_at: d.attested_from,
+                end_after_period: false,
             },
             (true, Some("end")) => Validity {
                 from: None,
@@ -317,6 +320,7 @@ async fn materialize_in_tx(
                 to: d.valid_from,
                 to_precision: d.valid_from_precision.as_deref(),
                 attested_at: d.attested_from,
+                end_after_period: false,
             },
             (true, _) => continue,
         };
@@ -592,6 +596,7 @@ async fn imply_in_tx(
             to: d.valid_to,
             to_precision: d.valid_to_precision.as_deref(),
             attested_at: d.attested_from,
+            end_after_period: false,
         };
         let value;
         let object = match (d.object_id, &d.object_value) {

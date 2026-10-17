@@ -36,6 +36,7 @@ fn between(from: &str, to: Option<&str>) -> Validity<'static> {
         to_precision: to.map(|_| "day"),
         attested_at: None,
         from_grade: None,
+        ..Default::default()
     }
 }
 

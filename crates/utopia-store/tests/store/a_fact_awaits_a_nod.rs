@@ -120,6 +120,7 @@ async fn a_remembered_fact_waits_for_a_nod() -> anyhow::Result<()> {
                         to_precision: None,
                         attested_at: None,
                         from_grade: None,
+                        ..Default::default()
                     },
                     confidence: 0.9,
                     chunk_id: f.chunk,
