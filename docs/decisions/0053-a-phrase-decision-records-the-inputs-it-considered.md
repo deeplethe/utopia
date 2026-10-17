@@ -1,6 +1,6 @@
 # 0053 · A phrase decision records the inputs it considered
 
-- **Status**: Implemented 2026-09-23 (#878, migration 0072) · revised 2026-09-26 (migration 0092) · revised 2026-09-27 (#975, migration 0098) · revised 2026-10-17 (migration 0114) · open: printing the named period (#994 cut 1), derived rows, time resolution's ends (cut 2)
+- **Status**: Implemented 2026-09-23 (#878, migration 0072) · revised 2026-09-26 (migration 0092) · revised 2026-09-27 (#975, migration 0098) · revised 2026-10-17 (#1295, migration 0114) · open: printing the named period (#994 cut 1), derived rows, time resolution's ends (cut 2)
 - **Written**: 2026-09-23
 - **Related**: [0044](0044-the-ontology-is-a-view-over-what-documents-say.md) decision 3; [0051](0051-a-human-phrase-decision-carries-its-materialization-work.md); #807, #795, #801 (withdrawn), #773, #754, #966, #994
 
@@ -379,7 +379,7 @@ Not doing:
 - **Cut 2**: time resolution storing a named period's end as the instant after its last unit, a
   marked end read backwards by `insert_fact_on`, start-less marked rows, `combine`.
 - **The three closes by date** above: they write the date given, and an end before the start among
-  them is a separate issue.
+  them is #1294.
 - **The merge's duplicate removal**, which compares neither ends nor marks; it predates this.
 - **History rows**: an invalidated row keeps the stored instant.
 - **MCP `names[]`**, which carries no precisions, so a mark alone would mean nothing there.
