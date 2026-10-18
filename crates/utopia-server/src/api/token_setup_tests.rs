@@ -297,6 +297,33 @@ async fn a_live_write_token_of_a_workspace_admin_sets_up_a_base_and_a_dead_one_d
 }
 
 #[tokio::test]
+async fn a_write_token_creates_an_api_source_and_reads_its_push_key() -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    let result = async {
+        let kb = f.seeded_kb("docs-mirror").await?;
+        let token = f.token(f.admin, "write", None).await;
+
+        let (status, created) = f.create_source_of_kind(kb, &token, "api").await?;
+        anyhow::ensure!(status == StatusCode::OK, "{status} {created}");
+        let source: Uuid = serde_json::from_value(created["source"]["id"].clone())?;
+
+        let (status, key) = f.push_key(kb, source, &token).await?;
+        anyhow::ensure!(
+            status == StatusCode::OK
+                && key["ingest_token"] == created["ingest_token"]
+                && key["ingest_token"].is_string(),
+            "{status} {key} vs {created}"
+        );
+        anyhow::Ok(())
+    }
+    .await;
+    f.cleanup().await?;
+    result
+}
+
+#[tokio::test]
 async fn a_write_token_creating_a_url_source_is_refused_with_token_source_kind(
 ) -> anyhow::Result<()> {
     let Some(f) = Fixture::new().await? else {

@@ -70,9 +70,11 @@ push documents in.
    it cannot create one, since a base that does not exist yet is in no list
    (`token_kb_out_of_scope`); revocation and expiry are judged in SQL on every request. Nothing
    here is a base-level machine token or a service account. A token creates only `statements`
-   sources: a `url`, `rss` or `custom` source starts the server fetching on a schedule, with
-   stored credentials for `custom`, which would turn a leaked CI token into a way to make the
-   server call any address; other kinds from a token are refused with `token_source_kind`, and a
+   and `api` sources, both push-only: the server fetches nothing for them and the client pushes
+   with the source key, so a backend mirroring code and docs as plain documents sets up its `api`
+   source the same way. A `url`, `rss` or `custom` source starts the server fetching on a
+   schedule, with stored credentials for `custom`, which would turn a leaked CI token into a way
+   to make the server call any address; other kinds from a token are refused with `token_source_kind`, and a
    session still creates every kind. The audit rows these routes write (`source.created`,
    `alignment.kind_word_decided`, `ontology.imported`) carry the acting token's id as
    `detail.token_id`, so before revoking a leaked token an admin can see what it did (decision
@@ -104,6 +106,9 @@ push documents in.
 - 2026-10-15: the status line still said `can_write` was hard-coded false. #318 had already
   computed it from the token's scope and the person's role, and `remember` has been reachable
   over MCP with a write token since then. The line now names what is open.
+- 2026-10-16: decision 6 let a token create only `statements` sources, though an `api` source is
+  push-only as well; a backend mirroring several kinds of documents pushes them through one. A
+  token now creates `api` sources too.
 
 ## Open questions
 
