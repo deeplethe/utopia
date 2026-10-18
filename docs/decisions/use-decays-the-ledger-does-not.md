@@ -1,4 +1,4 @@
-# 0071 · Use decays; the ledger does not
+# Use decays; the ledger does not
 
 - **Status**: Proposed · 2026-10-16 · #1277 · open: all of it
 - **Written**: 2026-10-16 (conventions in the [README](README.md))
