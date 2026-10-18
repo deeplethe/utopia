@@ -7,6 +7,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -107,6 +108,8 @@ struct Merged {
     shapes: Vec<Value>,
     phrases: Vec<String>,
     words: Vec<String>,
+    /// 复用时代理读到每个类别词的判定是哪一刻定的，同形状上的 `seen_decided_at`
+    words_seen: serde_json::Map<String, Value>,
     quotes: Vec<String>,
     serves: Vec<Uuid>,
 }
@@ -405,6 +408,10 @@ async fn propose_locked(
         })
         .collect();
     tracing::info!(%kb_id, shapes = open.len(), kind_words = open_words.len(), questions = questions.len(), calls, "本体代理开始");
+    // 复用提案记下代理读到的判定是哪一刻定的：采纳时人的判定不是那一刻的，就是代理读过之后定的，
+    // 复用不替人改。不拿提案行存入的时刻比：那在全部模型调用之后，下一轮并进同一行时还会再挪
+    let seen_shape = |s: &PhraseSignature| bindings.get(&s.key()).map(|b| b.decided_at);
+    let seen_word = |w: &KindWordSignature| word_bindings.get(&w.kind_word).map(|b| b.decided_at);
 
     let mut merged: HashMap<String, Merged> = HashMap::new();
     let mut order: Vec<String> = Vec::new();
@@ -485,6 +492,7 @@ async fn propose_locked(
                     shapes: Vec::new(),
                     phrases: Vec::new(),
                     words: Vec::new(),
+                    words_seen: serde_json::Map::new(),
                     quotes: Vec::new(),
                     serves: Vec::new(),
                 }
@@ -493,14 +501,14 @@ async fn propose_locked(
                 // 类接的是类别词；形状指给类是答错了格，不记
                 for id in &e.kind_words {
                     if let Some(w) = open_words.get(*id as usize) {
-                        push_word(entry, w);
+                        push_word(entry, w, seen_word(w));
                         word_outcome.insert(*id, ("existing", e.key.clone()));
                     }
                 }
             } else {
                 for id in &e.signatures {
                     if let Some(sig) = open.get(*id as usize) {
-                        push_shape(entry, sig, e.direction.as_deref());
+                        push_shape(entry, sig, e.direction.as_deref(), seen_shape(sig));
                         sig_outcome.insert(*id, ("existing", e.key.clone()));
                     }
                 }
@@ -530,23 +538,25 @@ async fn propose_locked(
                     shapes: Vec::new(),
                     phrases: Vec::new(),
                     words: Vec::new(),
+                    words_seen: serde_json::Map::new(),
                     quotes: Vec::new(),
                     serves: Vec::new(),
                 }
             });
             let target = format!("{}:{}", section_of(&p), p.key);
+            // 新元素不记读到的时刻：采纳它不替换哪条判定，这一格没人读
             for id in p.signatures {
                 let Some(s) = open.get(id as usize) else {
                     continue;
                 };
-                push_shape(entry, s, None);
+                push_shape(entry, s, None, None);
                 sig_outcome.insert(id, ("proposed", target.clone()));
             }
             for id in p.kind_words {
                 let Some(w) = open_words.get(id as usize) else {
                     continue;
                 };
-                push_word(entry, w);
+                push_word(entry, w, None);
                 word_outcome.insert(id, ("proposed", target.clone()));
             }
             for id in p.questions {
@@ -625,7 +635,8 @@ async fn propose_locked(
                         "proposed_by": "agent",
                     }),
                     serves: Vec::new(),
-                    signatures: json!({ "phrases": m.shapes, "kind_words": m.words }),
+                    signatures: json!({ "phrases": m.shapes, "kind_words": m.words,
+                                        "kind_words_seen_decided_at": m.words_seen }),
                 };
             }
             let section = section_of(p);
@@ -752,10 +763,18 @@ fn same_shape(a: &Value, b: &Value) -> bool {
         .all(|k| a.get(k) == b.get(k))
 }
 
-fn push_shape(entry: &mut Merged, s: &PhraseSignature, direction: Option<&str>) {
+fn push_shape(
+    entry: &mut Merged,
+    s: &PhraseSignature,
+    direction: Option<&str>,
+    seen: Option<DateTime<Utc>>,
+) {
     let mut shape = shape_of(s);
     if let Some(d) = direction {
         shape["direction"] = json!(d);
+    }
+    if let Some(at) = seen {
+        shape["seen_decided_at"] = json!(at);
     }
     if entry.shapes.iter().any(|x| same_shape(x, &shape)) {
         return;
@@ -771,11 +790,14 @@ fn push_shape(entry: &mut Merged, s: &PhraseSignature, direction: Option<&str>) 
     }
 }
 
-fn push_word(entry: &mut Merged, w: &KindWordSignature) {
+fn push_word(entry: &mut Merged, w: &KindWordSignature, seen: Option<DateTime<Utc>>) {
     if entry.words.contains(&w.kind_word) {
         return;
     }
     entry.words.push(w.kind_word.clone());
+    if let Some(at) = seen {
+        entry.words_seen.insert(w.kind_word.clone(), json!(at));
+    }
     for e in w.examples.iter().take(1) {
         if entry.quotes.len() < 3 && !entry.quotes.contains(e) {
             entry.quotes.push(e.clone());
@@ -822,10 +844,24 @@ fn merge_map_to(
     let words = union("kind_words", false);
     let forms = union("forms", true);
     let examples: Vec<String> = union("examples", true).into_iter().take(3).collect();
+    // 形状带着各自读到的时刻并过来了；类别词的另存一格，也要并。只留这一轮的，上一轮的词就
+    // 没了读到的时刻，采纳时连代理读过的那个人的判定也不替换了
+    let seen_of = |signatures: &Value| {
+        signatures
+            .get("kind_words_seen_decided_at")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default()
+    };
+    let mut words_seen = seen_of(&prev.signatures);
+    for (w, at) in seen_of(&it.signatures) {
+        words_seen.entry(w).or_insert(at);
+    }
     it.payload["forms"] = json!(forms);
     it.payload["kind_words"] = json!(words);
     it.payload["examples"] = json!(examples);
-    it.signatures = json!({ "phrases": shapes, "kind_words": words });
+    it.signatures = json!({ "phrases": shapes, "kind_words": words,
+                            "kind_words_seen_decided_at": words_seen });
 }
 
 fn datatype_or_text(d: Option<&str>) -> &str {
@@ -854,9 +890,52 @@ fn strings(v: Option<&Value>) -> Vec<String> {
         .collect()
 }
 
+/// 采纳的回执
+#[derive(Debug)]
+pub struct Adopted {
+    /// 新元素的 id；复用时是目标的 id
+    pub id: Uuid,
+    /// 复用时留着没写的形状或类别词，各带人定成了什么：代理读过之后人另定了、和提案不一样的。
+    /// 两个人的判断不一样，采纳的人得看见，所以列出来而不是悄悄跳过
+    pub skipped: Vec<Value>,
+}
+
+/// 一条绑定此刻的判定：谁、什么时候定的、定成了什么（比的时候用 id，回执里写键）
+#[derive(sqlx::FromRow)]
+struct Decided {
+    decided_by: String,
+    decided_at: DateTime<Utc>,
+    status: String,
+    target_id: Option<Uuid>,
+    target: Option<String>,
+    #[sqlx(default)]
+    direction: Option<String>,
+}
+
+impl Decided {
+    /// 人在代理读过它之后定的。提案答的是代理读到的那个判定，那个照样替掉；之后人定的，提案和
+    /// 采纳的人看的卡片都没见过，不替人改。只看是不是代理读到的那一刻，不比先后：`decided_at`
+    /// 是定它的事务开始的时刻，先开始、后提交的人的判定，时刻会早于代理读到的那个。没记下读到
+    /// 哪一刻的（这一格之前存的提案），人的判定一概不改
+    fn by_person_after_read(&self, read: Option<DateTime<Utc>>) -> bool {
+        self.decided_by == "person" && read.is_none_or(|at| at != self.decided_at)
+    }
+
+    /// 和提案定得一样：绑到同一个属性、同一个方向，或同一个类（类别词没有方向）
+    fn agrees(&self, target: Uuid, direction: Option<&str>) -> bool {
+        self.status == "bound"
+            && self.target_id == Some(target)
+            && self.direction.as_deref() == direction
+    }
+}
+
+/// 代理读到这条判定时它的 `decided_at`（`push_shape`、`push_word` 记下的）
+fn read_at(seen: Option<&Value>) -> Option<DateTime<Utc>> {
+    seen.and_then(|v| serde_json::from_value(v.clone()).ok())
+}
+
 /// 采纳一条代理提案（0061 决定 3）：锁住提案，在一个事务里重读并锁住它要的类或复用的目标，
-/// 写元素（复用时写人的判定）、回归用例、采纳的状态和后续任务，一次提交。返回新元素的 id，
-/// 复用时是目标的 id。
+/// 写元素（复用时写人的判定）、回归用例、采纳的状态和后续任务，一次提交。
 ///
 /// 从前这几步各自提交：属性先落库，例句写回归用例时才发现宾语是实体（`bad_property_shape`），
 /// 留下一个没有提案采纳过的属性、一份排着的对齐，和一条键已被占、再也采纳不了的提案
@@ -867,10 +946,10 @@ pub async fn adopt(
     key: &str,
     edits: AdoptEdits,
     actor: Uuid,
-) -> Result<Uuid, AppError> {
+) -> Result<Adopted, AppError> {
     let pool = &state.pool;
     let mut tx = pool.begin().await?;
-    let (id, detail) = match adopt_on(&mut tx, kb_id, section, key, edits, actor).await {
+    let (adopted, detail) = match adopt_on(&mut tx, kb_id, section, key, edits, actor).await {
         Ok(done) => done,
         Err(error) => {
             // 回滚完再答：马上重试的请求不会撞上这次还没放掉的锁
@@ -890,7 +969,7 @@ pub async fn adopt(
         actor,
         "ontology_proposal.adopted",
         section.trim_end_matches('s'),
-        Some(id),
+        Some(adopted.id),
         detail,
     )
     .await;
@@ -898,7 +977,7 @@ pub async fn adopt(
     if section == "map_to" {
         state.emit_review(kb_id);
     }
-    Ok(id)
+    Ok(adopted)
 }
 
 /// 采纳和别的写撞上、整个事务回滚了，什么都没留下，重试是安全的：答审核页认得、可以重试的
@@ -957,7 +1036,7 @@ struct Locked {
     proposal: StoredProposal,
 }
 
-/// 采纳在事务里的全部；返回元素的 id 和审计要记的几格
+/// 采纳在事务里的全部；返回回执和审计要记的几格
 async fn adopt_on(
     tx: &mut Transaction<'_, Postgres>,
     kb_id: Uuid,
@@ -965,7 +1044,7 @@ async fn adopt_on(
     key: &str,
     edits: AdoptEdits,
     actor: Uuid,
-) -> Result<(Uuid, Value), AppError> {
+) -> Result<(Adopted, Value), AppError> {
     // 先锁提案：同一条的另一次采纳、拒绝和代理的刷新都等这次提交，提交后它已不再开着。
     // 只认代理提的：旧 Suggest 留下的提案没有采纳的入口
     let locked: Option<Locked> = sqlx::query_as(
@@ -1005,9 +1084,10 @@ async fn adopt_on(
         .unwrap_or("")
         .trim()
         .to_string();
+    let mut skipped = Vec::new();
     let id = match section {
         // 「用已有的」：形状各写一条人的绑定判定（同审核页），类别词各归到那个类
-        "map_to" => adopt_map_to(tx, kb_id, p).await?,
+        "map_to" => adopt_map_to(tx, kb_id, p, &mut skipped).await?,
         "entity_types" => {
             let parents = lock_classes(
                 tx,
@@ -1090,10 +1170,10 @@ async fn adopt_on(
             ))
         }
     };
-    finish_adoption(tx, kb_id, &locked, id, actor, edited).await?;
+    finish_adoption(tx, kb_id, &locked, id, actor, edited, &skipped).await?;
     let detail =
         json!({ "key": key, "label": label, "proposed_by": p.proposed_by, "serves": p.serves });
-    Ok((id, detail))
+    Ok((Adopted { id, skipped }, detail))
 }
 
 /// 新元素的后续任务，和元素一起提交：先补向量、再对齐，同编辑器的次序。新元素要有向量，对齐
@@ -1124,7 +1204,8 @@ async fn embed_then_align(
 }
 
 /// 回归用例和采纳的状态（决定 4），在采纳的事务里。人改过没有（决定 5 的第二个数）和状态同一条
-/// UPDATE 写下：从前是采纳提交之后的另一条语句
+/// UPDATE 写下：从前是采纳提交之后的另一条语句。复用留着没写的形状（`skipped`）不写用例：人定得
+/// 和提案不一样；人后来定得一样的照写
 async fn finish_adoption(
     tx: &mut Transaction<'_, Postgres>,
     kb_id: Uuid,
@@ -1132,6 +1213,7 @@ async fn finish_adoption(
     property_id: Uuid,
     actor: Uuid,
     edited: bool,
+    skipped: &[Value],
 ) -> Result<(), AppError> {
     let proposal = &locked.proposal;
     let mut examples = Vec::new();
@@ -1147,6 +1229,7 @@ async fn finish_adoption(
             .and_then(Value::as_array)
             .into_iter()
             .flatten()
+            .filter(|shape| !skipped.iter().any(|s| same_shape(s, shape)))
         {
             let ids = match shape.get("example_statement_ids") {
                 Some(ids) => serde_json::from_value::<Vec<Uuid>>(ids.clone()).map_err(|_| {
@@ -1194,17 +1277,23 @@ async fn finish_adoption(
 
 /// map_to 的采纳，在采纳的事务里：目标是属性，提案里的每条形状写成人的绑定（属性 + 方向），
 /// 投影跟着排（同审核页的 `decide_alignment_phrase`）；目标是类，每个类别词归到它，短语对齐
-/// 跟着排。返回目标的 id
+/// 跟着排。返回目标的 id。
+///
+/// 代理读过之后人另定了的形状或类别词不写：和提案一样的算已写（形状照样有回归用例），不一样的
+/// 原样留着、记进 `skipped`。一条也写不了的不算采纳
 async fn adopt_map_to(
     tx: &mut Transaction<'_, Postgres>,
     kb_id: Uuid,
     p: &StoredProposal,
+    skipped: &mut Vec<Value>,
 ) -> Result<Uuid, AppError> {
     let kind = p
         .payload
         .get("kind")
         .and_then(Value::as_str)
         .unwrap_or("relation");
+    // 这次写下的；人在代理读过之后定得和提案一样、算作已写的
+    let (mut written, mut agreed) = (0usize, 0usize);
     if kind == "class" {
         let class = lock_classes(tx, kb_id, std::slice::from_ref(&p.key)).await?[0];
         // 实体正被抽取或对齐改着时只等 2 秒，同审核页的类别词判定
@@ -1212,18 +1301,52 @@ async fn adopt_map_to(
             .execute(&mut **tx)
             .await?;
         let votes = json!({ "person": p.key, "via": "ontology_agent" });
+        let seen = p.signatures.get("kind_words_seen_decided_at");
         for w in strings(p.signatures.get("kind_words")) {
-            type_bindings::decide_and_apply_human_tx(tx, kb_id, &w, Some(class), &votes).await?;
+            // 已有的绑定行先锁住再看：看过之后、写下之前，人改不了它。还没有这一行时锁不住，
+            // 人第一次定它可能被这次写盖掉。类的键用子查询读，不连表：等到别人提交了这一行，
+            // Postgres 拿新版本重算这条查询，连表连上的却还是等之前那一行（EvalPlanQual），
+            // 回执里人刚定的类就成了空
+            let now: Option<Decided> = sqlx::query_as(
+                "SELECT b.decided_by, b.decided_at, b.status, b.type_id AS target_id,
+                        (SELECT t.key FROM entity_types t WHERE t.id = b.type_id) AS target
+                   FROM type_bindings b
+                  WHERE b.kb_id = $1 AND b.kind_word = $2 FOR UPDATE OF b",
+            )
+            .bind(kb_id)
+            .bind(type_bindings::normalize(&w))
+            .fetch_optional(&mut **tx)
+            .await?;
+            let read = read_at(seen.and_then(|s| s.get(w.as_str())));
+            if let Some(d) = now.filter(|d| d.by_person_after_read(read)) {
+                if d.agrees(class, None) {
+                    // 不重写：判定还是那个人的
+                    agreed += 1;
+                } else {
+                    skipped.push(json!({ "kind_word": w,
+                                         "person": { "status": d.status, "class": d.target } }));
+                }
+                continue;
+            }
+            if type_bindings::decide_and_apply_human_tx(tx, kb_id, &w, Some(class), &votes).await? {
+                written += 1;
+            }
         }
-        // 换了类，这些实体的短语签名跟着变：短语对齐和判定一起提交，整次采纳排一份。照排，不看
-        // 有没有同样的排着，理由同 `embed_then_align`：排着的那份可能在这次提交之前就被领走
-        utopia_store::jobs::enqueue_with_max_attempts_tx(
-            tx,
-            "align_phrases",
-            json!({ "kb_id": kb_id }),
-            3,
-        )
-        .await?;
+        if written + agreed == 0 {
+            return Err(nothing_left());
+        }
+        // 换了类，这些实体的短语签名跟着变：短语对齐和判定一起提交，整次采纳排一份；一个词都没写
+        // 就不排，人定的那次已经排过。照排，不看有没有同样的排着，理由同 `embed_then_align`：
+        // 排着的那份可能在这次提交之前就被领走
+        if written > 0 {
+            utopia_store::jobs::enqueue_with_max_attempts_tx(
+                tx,
+                "align_phrases",
+                json!({ "kb_id": kb_id }),
+                3,
+            )
+            .await?;
+        }
         return Ok(class);
     }
     // 目标在事务里重读并锁住防删（FOR KEY SHARE，理由同 `lock_classes`）：采纳提交之前它删不掉
@@ -1237,7 +1360,6 @@ async fn adopt_map_to(
     let property = property
         .ok_or_else(|| AppError::invalid("unknown_property", "no property with that key"))?;
     let sigs = phrase_bindings::signatures(&mut **tx, kb_id).await?;
-    let mut written = false;
     for shape in p
         .signatures
         .get("phrases")
@@ -1253,8 +1375,40 @@ async fn adopt_map_to(
             Some("reverse") => "reverse",
             _ => "forward",
         };
+        // 已有的绑定行先锁住再看，属性的键用子查询读，同类别词
+        let now: Option<Decided> = sqlx::query_as(
+            "SELECT b.decided_by, b.decided_at, b.status, b.relation_type_id AS target_id,
+                    (SELECT r.key FROM relation_types r WHERE r.id = b.relation_type_id) AS target,
+                    b.direction
+               FROM phrase_bindings b
+              WHERE b.kb_id = $1 AND b.phrase = $2 AND b.subject_type_id IS NOT DISTINCT FROM $3
+                AND b.object_type_id IS NOT DISTINCT FROM $4 AND b.object_is_value = $5
+                FOR UPDATE OF b",
+        )
+        .bind(kb_id)
+        .bind(phrase_bindings::normalize(&sig.phrase))
+        .bind(sig.subject_type_id)
+        .bind(sig.object_type_id.filter(|_| !sig.object_is_value))
+        .bind(sig.object_is_value)
+        .fetch_optional(&mut **tx)
+        .await?;
+        if let Some(d) =
+            now.filter(|d| d.by_person_after_read(read_at(shape.get("seen_decided_at"))))
+        {
+            if d.agrees(property, Some(direction)) {
+                // 不重写：判定还是那个人的，回归用例照写
+                agreed += 1;
+            } else {
+                // 形状的四格同提案里那条：`finish_adoption` 凭它认出这条，不写回归用例
+                skipped.push(json!({
+                    "phrase": sig.phrase, "subject": sig.subject_type_key,
+                    "object": sig.object_type_key, "value": sig.object_is_value,
+                    "person": { "status": d.status, "property": d.target, "direction": d.direction } }));
+            }
+            continue;
+        }
         let votes = json!({ "person": { "property": p.key, "direction": direction, "via": "ontology_agent" } });
-        written |= phrase_bindings::decide_on(
+        if phrase_bindings::decide_on(
             tx,
             kb_id,
             sig,
@@ -1269,9 +1423,15 @@ async fn adopt_map_to(
                 marks_asked: false,
             },
         )
-        .await?;
+        .await?
+        {
+            written += 1;
+        }
     }
-    if written {
+    if written + agreed == 0 {
+        return Err(nothing_left());
+    }
+    if written > 0 {
         // 判定和它的投影一起提交（0051）。整次提交排一份，不是一条形状一份：这些判定都和这一份
         // 同一次提交，它跑时读当下的绑定，0051 要的「每条判定都有和它一起提交的任务」照样成立
         utopia_store::jobs::enqueue_with_max_attempts_tx(
@@ -1283,6 +1443,16 @@ async fn adopt_map_to(
         .await?;
     }
     Ok(property)
+}
+
+/// 复用的形状或类别词一条也写不了：都是人定得和提案不一样、照人留着的，或都没有陈述了。话里
+/// 不说人是代理读过之后定的：没记下读到哪一刻的旧提案，人在提案之前定的也照留
+fn nothing_left() -> AppError {
+    AppError::CodedConflict {
+        code: "proposal_stale",
+        message: "Nothing in this proposal is left to write: each of its shapes or kind words is decided differently by a person or has no statements any more."
+            .into(),
+    }
 }
 
 /// 任务入口：给库提问题（决定 1 的"没有问题的库不被卡住"）。界面上点、或本体代理发现库里

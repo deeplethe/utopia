@@ -45,7 +45,8 @@ pub struct ChunkPiece {
 pub const BUDGET_TOKENS: usize = 300;
 
 /// 说明句最长多少字节还算说明句：表上面那一段要短、或者以冒号结尾，
-/// 才当成表的一部分带着走；一整段分析不是说明句
+/// 才当成表的一部分带着走；一整段分析不是说明句。全角冒号也算：200 字节只有六十几个汉字，
+/// 长一点的「……如下：」全靠结尾的冒号认；从前只认半角，表落在另一块里就看不见这句话
 const CAPTION_MAX_BYTES: usize = 200;
 /// 表前最多几段短说明一起当说明句
 const CAPTION_RUN_MAX: usize = 5;
@@ -110,7 +111,7 @@ fn units(text: &str, blocks: Vec<Block>) -> Vec<Unit> {
                 let caption_like = |blk: &Block| {
                     matches!(blk.kind, Kind::Paragraph)
                         && (blk.range.len() <= CAPTION_MAX_BYTES
-                            || text[blk.range.clone()].trim_end().ends_with(':'))
+                            || text[blk.range.clone()].trim_end().ends_with([':', '：']))
                 };
                 let mut k = i + 1;
                 while k - i < CAPTION_RUN_MAX && blocks.get(k).is_some_and(caption_like) {
@@ -422,6 +423,8 @@ impl<'a> Packer<'a> {
         for (offset, piece) in splitter.chunk_indices(block) {
             let sub = range.start + offset..range.start + offset + piece.len();
             if first {
+                // 第一小段带着标题当正文，前缀用上面那份：标题还在 `pending` 里时算的，不含它们。
+                // 从前每一小段都重算前缀，那时 `pending` 已经倒空，第一块把标题念两遍，有时还超了预算
                 self.body = headings
                     .iter()
                     .map(|h| match h {
@@ -430,9 +433,11 @@ impl<'a> Packer<'a> {
                     })
                     .collect();
                 first = false;
+            } else {
+                // 续块：标题已经贴上正文，前缀给整条路径
+                self.prefix = self.prefix_now();
             }
             self.body.push(Piece::Text(sub));
-            self.prefix = self.prefix_now();
             self.flush();
         }
     }
@@ -800,6 +805,32 @@ The tenant pays rent monthly.
         }
     }
 
+    /// 小节下的第一段一段就超预算、退回按句切：切开的第一块是「上一级（前缀）· 这一节的标题 ·
+    /// 第一小段」，每条标题一遍；续块照旧以整条路径开头
+    #[test]
+    fn the_first_chunk_of_a_split_paragraph_carries_its_headings_once() {
+        let text = format!(
+            "# Report\n\nIntro.\n\n## Part A\n\n{}",
+            "One sentence here. Another sentence follows it. ".repeat(30)
+        );
+        let pieces = chunk_with_budget(&text, 40);
+        let i = pieces
+            .iter()
+            .position(|p| p.text.contains("One sentence"))
+            .expect("长段落切出的第一块");
+        let source = |p: &ChunkPiece| &text[p.char_start as usize..p.char_end as usize];
+        assert_eq!(
+            pieces[i].text,
+            format!("# Report\n\n{}", source(&pieces[i])),
+            "{} token，预算 40",
+            tokens(&pieces[i].text)
+        );
+        assert_eq!(
+            pieces[i + 1].text,
+            format!("# Report\n\n## Part A\n\n{}", source(&pieces[i + 1]))
+        );
+    }
+
     #[test]
     fn chunks_are_numbered_from_zero_and_never_empty() {
         let text = "# T\n\nA.\n\n* * *\n\nB.\n\n| x | y |\n| --- | --- |\n| 1 | 2 |";
@@ -900,6 +931,27 @@ The tenant pays rent monthly.
             assert!(
                 !p.text.contains("Prose that is long"),
                 "长段落不是说明句: {}",
+                p.text
+            );
+        }
+    }
+
+    /// 中文年报的形状：「……主要会计数据如下：」一句长过 `CAPTION_MAX_BYTES`，只能靠结尾的
+    /// 全角冒号认出是说明句。表切开的每一块都以这句话和表头开头，它不自己成一块
+    #[test]
+    fn a_caption_ending_in_a_full_width_colon_stays_with_its_table_at_any_length() {
+        let lead = "根据公司第三届董事会第十二次会议审议通过的二〇二五年半年度报告，本报告期内公司按照企业会计准则编制合并财务报表，经营情况总体平稳，现金流量充足，主要会计数据如下：";
+        assert!(lead.len() > CAPTION_MAX_BYTES);
+        let rows: String = (0..60)
+            .map(|i| format!("| 科目{i} | {} |\n", 10_000 + i))
+            .collect();
+        let text = format!("{lead}\n\n| 项目 | 本期 |\n| --- | --- |\n{rows}");
+        let pieces = chunk_with_budget(&text, BUDGET_TOKENS);
+        assert!(pieces.len() >= 2, "表该被切成几块: {}", pieces.len());
+        for (i, p) in pieces.iter().enumerate() {
+            assert!(
+                p.text.starts_with(&format!("{lead}\n\n| 项目 | 本期 |")),
+                "第 {i} 块不以说明句和表头开头:\n{}",
                 p.text
             );
         }

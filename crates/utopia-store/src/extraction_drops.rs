@@ -58,6 +58,9 @@ pub mod reason {
     /// 短语就是主语的名字（「实物商品网上零售额 —实物商品网上零售额→ 127878亿元」）：
     /// 同上，另一种写法，同样照落
     pub const PHRASE_IS_SUBJECT: &str = "phrase_is_subject";
+    /// 宾语其实是个值（一个量、一个日期、表格的一格）：挪进值那一格，不建实体
+    /// （`open::values_are_not_things`）。数的是规则 2 和表格规则还有多少次没管住模型
+    pub const OBJECT_IS_VALUE: &str = "object_is_value";
 }
 
 pub async fn record(
