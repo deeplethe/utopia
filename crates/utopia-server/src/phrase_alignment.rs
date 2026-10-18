@@ -237,6 +237,18 @@ pub(crate) async fn bind_declared(
         .into_iter()
         .map(|b| (b.key(), b))
         .collect();
+    // 判过的先剔掉：库级的签名是整库分组，每次推送都数一遍太贵（#1296）
+    let keys: HashSet<SignatureKey> = keys
+        .into_iter()
+        .filter(|k| {
+            !existing
+                .get(k)
+                .is_some_and(|b| settled(b, &keyed(k), &props, &closure))
+        })
+        .collect();
+    if keys.is_empty() {
+        return Ok(0);
+    }
     let mut written = 0;
     for s in phrase_bindings::signatures(pool, kb_id)
         .await?
@@ -246,12 +258,6 @@ pub(crate) async fn bind_declared(
         let Some(p) = declared(s, &props, &closure) else {
             continue;
         };
-        if existing
-            .get(&s.key())
-            .is_some_and(|b| settled(b, s, &props, &closure))
-        {
-            continue;
-        }
         if phrase_bindings::decide(
             pool,
             kb_id,
@@ -277,6 +283,25 @@ pub(crate) async fn bind_declared(
 
 /// 签名的键：短语 + 两端的类 + 宾语是不是字面值（与 `PhraseSignature::key` 同形）
 type SignatureKey = (String, Option<Uuid>, Option<Uuid>, bool);
+
+/// 只有键的签名：`settled` 只看键上的这几格，不必为它把库里的签名数一遍
+fn keyed(
+    (phrase, subject_type_id, object_type_id, object_is_value): &SignatureKey,
+) -> PhraseSignature {
+    PhraseSignature {
+        phrase: phrase.clone(),
+        subject_type_id: *subject_type_id,
+        subject_type_key: None,
+        object_type_id: *object_type_id,
+        object_type_key: None,
+        object_is_value: *object_is_value,
+        count: 0,
+        examples: Vec::new(),
+        quotes: Vec::new(),
+        example_statement_ids: Vec::new(),
+    }
+}
+
 /// 每条签名此刻的候选与指纹
 type Considered<'a> = HashMap<SignatureKey, (Vec<&'a RelationTypeView>, String)>;
 
