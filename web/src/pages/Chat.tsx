@@ -11,7 +11,6 @@ import remend from "remend";
 import {
   ArrowUp,
   BookOpen,
-  Check,
   ChevronDown,
   ChevronRight,
   Database,
@@ -75,6 +74,7 @@ import {
 import { NodCard } from "./PendingFacts";
 import { stepDetail, stepLabel } from "../steps";
 import { NextStep, nextStep, useReadiness } from "./NextStep";
+import { KbMenuList } from "./KbMenuList";
 import { DRAFT_KEY, fetchMe, lastKey } from "../authSession";
 
 /* `Turn` 定义在 liveAnswer 里：进行中的那一次也是一串 Turn，
@@ -220,7 +220,10 @@ export function Chat() {
   useEffect(() => {
     if (!scopeOpen) return;
     const onDoc = (e: MouseEvent) => {
-      if (!scopeRef.current?.contains(e.target as Node)) setScopeOpen(false);
+      const target = e.target as Element;
+      // 组的子菜单挂在 body 上，不在 scopeRef 里——点它不算点外面（KbMenuList）
+      if (!scopeRef.current?.contains(target) && !target.closest?.("[data-kb-submenu]"))
+        setScopeOpen(false);
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") setScopeOpen(false);
@@ -606,26 +609,14 @@ export function Chat() {
                   {S.ask.scopeLabel}
                 </div>
                 <div className="u-scroll max-h-60 overflow-y-auto">
-                  {kbs.map((k) => (
-                    <Row
-                      key={k.id}
-                      density="menu"
-                      active={k.id === kb?.id}
-                      /* 对勾走 `trailing` 槽。**塞进 children 的 svg 会掉到第二行**：
-                         Row 把 children 整个包进一个 `flex-1 truncate` 的 span，
-                         那个 span 不是 flex 容器，preflight 又把 svg 设成块级，
-                         于是勾自己占一行、整行跟着变高（顶栏的库切换器早就这么写的） */
-                      trailing={
-                        k.id === kb?.id ? <Check size={12} className="text-ink-2" /> : undefined
-                      }
-                      onClick={() => {
-                        setScopeOpen(false);
-                        if (k.id !== kb?.id) { claimView(null); setKb(k.id); }
-                      }}
-                    >
-                      <span className="truncate">{k.name}</span>
-                    </Row>
-                  ))}
+                  <KbMenuList
+                    kbs={kbs}
+                    currentId={kb?.id}
+                    onPick={(id) => {
+                      setScopeOpen(false);
+                      if (id !== kb?.id) { claimView(null); setKb(id); }
+                    }}
+                  />
                 </div>
               </div>
             )}

@@ -9,6 +9,7 @@ import { Lock, Plus, Search } from "lucide-react";
 import { api, type MyKb } from "../api";
 import { S } from "../i18n";
 import { useKb } from "../kb";
+import { kbGroups } from "./kbGroups";
 import {
   Button,
   Checkbox,
@@ -75,6 +76,18 @@ export function MyKbs() {
       r.kb.name.toLowerCase().includes(q) ||
       (r.kb.description ?? "").toLowerCase().includes(q),
   );
+  // 不筛选时按 `owner/` 归组：组名占一行，下面是短名（#1249）；筛选时按全名平铺
+  const rowById = new Map(rows.map((r) => [r.kb.id, r]));
+  const lines: ({ heading: string } | { row: (typeof rows)[number]; label: string })[] = q
+    ? rows.map((row) => ({ row, label: row.kb.name }))
+    : kbGroups(rows.map((r) => r.kb)).flatMap((entry) =>
+        entry.kind === "kb"
+          ? [{ row: rowById.get(entry.kb.id)!, label: entry.kb.name }]
+          : [
+              { heading: entry.name },
+              ...entry.items.map((item) => ({ row: rowById.get(item.kb.id)!, label: item.label })),
+            ],
+      );
   const openKb = (id: string) => {
     setKb(id);
     navigate({ to: "/kb/$kbId/graph", params: { kbId: id } });
@@ -128,15 +141,28 @@ export function MyKbs() {
               </Tr>
             </THead>
             <TBody>
-              {rows.map((row) => {
+              {lines.map((line) => {
+                if ("heading" in line)
+                  return (
+                    <Tr key={`group-${line.heading}`}>
+                      <th
+                        scope="rowgroup"
+                        colSpan={6}
+                        className="px-3 pt-4 pb-2 text-left align-top text-small font-medium text-ink-2"
+                      >
+                        {line.heading}
+                      </th>
+                    </Tr>
+                  );
+                const { row, label } = line;
                 const canManage =
                   row.my_role === "admin" || row.my_role === "owner";
                 return (
                   <Tr key={row.kb.id}>
                     <Td>
                       <div className="flex items-center gap-2">
-                        <span className="truncate text-body text-ink">
-                          {row.kb.name}
+                        <span className="truncate text-body text-ink" title={row.kb.name}>
+                          {label}
                         </span>
                         {/* 这两个是**库自己的性质**，不是一列数据：缺省库只有一个，
                             受限的也少，单开一列会空掉大半，所以贴在名字旁边 */}

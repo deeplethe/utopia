@@ -32,6 +32,7 @@ import {
 } from "../ui";
 import { toast } from "../toast";
 import { copyAndSay } from "../clipboard";
+import { kbOptions } from "./kbGroups";
 
 const EXPIRY_CHOICES = [30, 90, 365, 0] as const;
 
@@ -373,7 +374,7 @@ export function Tokens() {
                 <MultiSearchSelect
                   className="w-full"
                   values={Array.from(picked)}
-                  options={kbs.map((k) => ({ value: k.id, label: k.name }))}
+                  options={kbOptions(kbs)}
                   placeholder={S.account.pickBases}
                   emptyHint={S.account.allBases}
                   onToggle={(id) => {
