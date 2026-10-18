@@ -91,9 +91,6 @@ const RDFS: &str = "http://www.w3.org/2000/01/rdf-schema#";
 const OWL: &str = "http://www.w3.org/2002/07/owl#";
 /// 我们自己的注解命名空间，与导出端（`utopia-server::rdf`）同一个
 const UTOPIA_NS: &str = "urn:utopia:ns:";
-/// `utopia:temporal` 写了 `state`/`event`/`eternal` 以外的值时记在 `unprojected` 下的键
-pub const UNPROJECTED_TEMPORAL: &str =
-    "utopia:temporal with a value other than state/event/eternal";
 
 /// schema.org 自己那套 domain/range。**不是标准词汇**，所以写死在这里，
 /// 但值得认：schema.org 及派生词汇表一个 `rdfs:domain` 都没有，
@@ -356,7 +353,6 @@ pub fn project(bytes: &[u8], format: RdfFormat) -> anyhow::Result<OwlProjection>
     let utopia_temporal = format!("{UTOPIA_NS}temporal");
     let known = |p: &str| {
         p == RDF_TYPE
-            || p == utopia_temporal
             || p == format!("{RDFS}label")
             || p == format!("{RDFS}comment")
             || p == format!("{RDFS}subClassOf")
@@ -378,6 +374,12 @@ pub fn project(bytes: &[u8], format: RdfFormat) -> anyhow::Result<OwlProjection>
     };
     for t in &triples {
         let p = t.predicate.as_str();
+        // 导出端写的就是这三个字面值（0031）。别的值不猜：落到下面按谓词报告，落库按 `state`
+        let declared_temporal = t
+            .object_lit
+            .as_ref()
+            .map(|(v, _)| v.as_str())
+            .filter(|v| p == utopia_temporal && matches!(*v, "state" | "event" | "eternal"));
         if p == format!("{RDFS}label") {
             if let Some(l) = &t.object_lit {
                 labels.entry(t.subject.clone()).or_default().push(l.clone());
@@ -457,19 +459,8 @@ pub fn project(bytes: &[u8], format: RdfFormat) -> anyhow::Result<OwlProjection>
                 ranges.entry(t.subject.clone()).or_default().push(o.clone());
                 union_ranged.insert(t.subject.clone());
             }
-        } else if p == utopia_temporal {
-            // 导出端写的就是这三个字面值（0031）。别的值不猜：报告出来，落库按 `state`
-            match t.object_lit.as_ref().map(|(v, _)| v.as_str()) {
-                Some(v @ ("state" | "event" | "eternal")) => {
-                    temporal.entry(t.subject.clone()).or_insert(v.to_string());
-                }
-                _ => {
-                    *proj
-                        .unprojected
-                        .entry(UNPROJECTED_TEMPORAL.to_string())
-                        .or_insert(0) += 1;
-                }
-            }
+        } else if let Some(v) = declared_temporal {
+            temporal.entry(t.subject.clone()).or_insert(v.to_string());
         } else if !known(p) {
             // 报告而不是丢弃：预览页要能说清"这个文件里还有什么我们没消费"
             *proj.unprojected.entry(p.to_string()).or_insert(0) += 1;
@@ -1775,15 +1766,9 @@ ex:met a owl:ObjectProperty ; rdfs:label "met" ; utopia:temporal "sometimes" .
             None,
             "没写就是没写，落库再按 state"
         );
-        // 三个值以外的不猜：留空并报告出来，预览页能说清这一条没进来
+        // 三个值以外的不猜：留空并按谓词报告出来，只有 `met` 那一条，预览页能说清它没进来
         assert_eq!(by("met").temporal, None);
-        assert_eq!(p.unprojected.get(UNPROJECTED_TEMPORAL), Some(&1));
-        assert!(
-            !p.unprojected
-                .keys()
-                .any(|k| k.contains("urn:utopia:ns:temporal")),
-            "认了就不该再按谓词算进「暂未投影」"
-        );
+        assert_eq!(p.unprojected.get("urn:utopia:ns:temporal"), Some(&1));
     }
 }
 

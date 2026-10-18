@@ -1137,6 +1137,8 @@ pub async fn create_relation_with_iri(
 /// **domain/range 整体重写**——它们是上游声明的结构，不是人调过的措辞。
 /// **`temporal` 只在本体说了才写**（`Some`）：没写 `utopia:temporal` 的本体不动它，
 /// 人在页面上改过的就留着；写了的照本体，与 domain/range 同一个道理。
+/// 真改了就推 `updated_at`，与页面上改一样：0053 的短语绑定依据读它，
+/// state 与非 state 决定短语怎么绑，旧值下做的决定要能被重审。
 #[allow(clippy::too_many_arguments)]
 pub async fn update_relation_from_import(
     pool: &PgPool,
@@ -1155,7 +1157,8 @@ pub async fn update_relation_from_import(
         "UPDATE relation_types
             SET label = $3,
                 description = CASE WHEN $4 = '' THEN description ELSE $4 END,
-                temporal = COALESCE($5::text, temporal)
+                temporal = COALESCE($5::text, temporal),
+                updated_at = CASE WHEN $5::text <> temporal THEN now() ELSE updated_at END
           WHERE kb_id = $1 AND iri = $2
           RETURNING id",
     )
