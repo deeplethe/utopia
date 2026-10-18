@@ -1,4 +1,4 @@
-# 0070 · A qualifier says what its newest evidence says
+# 0070 · A role word speaks while its chunk is live
 
 - **Status**: Proposed · 2026-10-16 · [#1267](https://github.com/deeplethe/utopia/issues/1267) · open: all five decisions
 - **Written**: 2026-10-16 (conventions in the [README](README.md))

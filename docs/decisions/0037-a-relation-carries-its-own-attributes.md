@@ -85,7 +85,7 @@ instead of a class.
 
    2026-10-18: role words on open statements (`statement_qualifiers`) no longer keep the first
    value. Each is recorded against its evidence chunk and speaks while that chunk is live; see
-   [0070](0070-a-qualifier-says-what-its-newest-evidence-says.md). The typed `fact_qualifiers`
+   [0070](0070-a-role-word-speaks-while-its-chunk-is-live.md). The typed `fact_qualifiers`
    above keep this rule.
 
 4. **An entity-valued qualifier is reserved, not built.** "A invested in B *through* C" needs a
