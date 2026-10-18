@@ -156,6 +156,11 @@ async fn materialize_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     kb_id: Uuid,
 ) -> AppResult<(Outcome, Vec<Uuid>)> {
+    // The statements that scan the whole base (steps 0 to 3, the implication scans and the
+    // attestation sync) are not cached: a cached statement switches to a generic plan after a few
+    // runs, and a generic plan cannot see how many rows `kb_id = $1` selects. The source cleanup's
+    // generic plan ran for hours on a production base where the plan for its own id takes two
+    // seconds (#1298). The per-row statements in the loops stay cached.
     // 这一轮写下的行（新建的和并入的），提交后对账
     let mut written: Vec<Uuid> = Vec::new();
     // 0. 起止同值的物化状态行（#966 之前照抄一刻写下的）任何时刻都不成立：作废，它的陈述
@@ -181,6 +186,7 @@ async fn materialize_in_tx(
                              OR s.id IN (SELECT i.statement_id FROM implied_fact_sources i
                                           WHERE i.fact_id = t.id)))",
     )
+    .persistent(false)
     .bind(kb_id)
     .execute(&mut **tx)
     .await?
@@ -198,6 +204,7 @@ async fn materialize_in_tx(
              LEFT JOIN entities oe ON oe.id = s.object_id
                   JOIN phrase_bindings b ON {MATCH}
                  WHERE s.id = src.statement_id
+                   AND s.kb_id = $1
                    AND s.invalidated_at IS NULL
                    AND t.invalidated_at IS NULL
                    AND b.status = 'bound'
@@ -208,6 +215,7 @@ async fn materialize_in_tx(
                                     WHERE q.fact_id = s.id AND q.role = 'mood')
                    AND NOT {MOMENT_UNREAD})"
     ))
+    .persistent(false)
     .bind(kb_id)
     .execute(&mut **tx)
     .await?;
@@ -232,6 +240,7 @@ async fn materialize_in_tx(
         RULE_MATCH = crate::implication_rules::RULE_MATCH,
         KIND = kind_word_sql("e.specific_type"),
     ))
+    .persistent(false)
     .bind(kb_id)
     .execute(&mut **tx)
     .await?;
@@ -245,6 +254,7 @@ async fn materialize_in_tx(
             AND NOT EXISTS (SELECT 1 FROM typed_fact_sources src WHERE src.fact_id = t.id)
             AND NOT EXISTS (SELECT 1 FROM implied_fact_sources i WHERE i.fact_id = t.id)",
     )
+    .persistent(false)
     .bind(kb_id)
     .execute(&mut **tx)
     .await?
@@ -280,6 +290,7 @@ async fn materialize_in_tx(
                                AND t.predicate_id = b.relation_type_id)
           ORDER BY s.id"
     ))
+    .persistent(false)
     .bind(kb_id)
     .fetch_all(&mut **tx)
     .await?;
@@ -496,6 +507,7 @@ pub async fn sync_typed_attestation<'e>(
                  OR t.attested_by IS DISTINCT FROM src.by)
           RETURNING t.id",
     )
+    .persistent(false)
     .bind(kb_id)
     .bind(only)
     .fetch_all(ex)
@@ -561,6 +573,7 @@ async fn imply_in_tx(
         TEXT = crate::implication_rules::object_text_sql(),
         RULE_MATCH = crate::implication_rules::RULE_MATCH,
     ))
+    .persistent(false)
     .bind(kb_id)
     .fetch_all(&mut **tx)
     .await?;
@@ -583,6 +596,7 @@ async fn imply_in_tx(
           ORDER BY e.id",
         KIND = kind_word_sql("e.specific_type"),
     ))
+    .persistent(false)
     .bind(kb_id)
     .fetch_all(&mut **tx)
     .await?;
@@ -703,3 +717,7 @@ pub async fn count(pool: &PgPool, kb_id: Uuid) -> AppResult<i64> {
 #[cfg(test)]
 #[path = "materialize_delivery_tests.rs"]
 mod delivery_tests;
+
+#[cfg(test)]
+#[path = "materialize_plan_tests.rs"]
+mod plan_tests;
