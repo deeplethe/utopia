@@ -328,6 +328,7 @@ async fn propose_by_name_vector(
             .and_then(crate::governance::type_family),
         None => None,
     };
+    let disjoint = declared_disjoint_from(pool, kb_id, type_id).await?;
     let mut seen: HashSet<Uuid> = r.reviews.iter().map(|v| v.other_id).collect();
     seen.insert(r.entity_id);
     seen.extend(exclude.iter().copied());
@@ -351,6 +352,10 @@ async fn propose_by_name_vector(
             if a != b {
                 continue;
             }
+        }
+        // 大类认不出的类（Spec、Test……）靠本体声明分开，与 containment、类型漂移同一张表
+        if near.type_id.is_some_and(|t| disjoint.contains(&t)) {
+            continue;
         }
         r.reviews.push(ReviewRequest {
             other_id: near.entity_id,

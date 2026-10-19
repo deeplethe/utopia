@@ -260,21 +260,8 @@ async fn main() -> anyhow::Result<()> {
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tick.tick().await;
-            match utopia_store::reasoning::due_for_inference(&infer_state.pool).await {
-                Ok(due) => {
-                    for kb_id in due {
-                        if let Err(e) = utopia_store::jobs::enqueue(
-                            &infer_state.pool,
-                            "materialize_inferences",
-                            serde_json::json!({ "kb_id": kb_id }),
-                        )
-                        .await
-                        {
-                            tracing::warn!(kb_id = %kb_id, error = %e, "推理任务入队失败");
-                        }
-                    }
-                }
-                Err(e) => tracing::warn!(error = %e, "扫描到期推理失败"),
+            if let Err(e) = utopia_store::reasoning::queue_due_inferences(&infer_state.pool).await {
+                tracing::warn!(error = %e, "扫描到期推理失败");
             }
         }
     });

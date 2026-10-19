@@ -85,6 +85,7 @@ pub struct Near {
     pub entity_id: Uuid,
     pub fact_id: Uuid,
     pub name: String,
+    pub type_id: Option<Uuid>,
     pub type_label: Option<String>,
     pub similarity: f32,
 }
@@ -115,6 +116,7 @@ pub async fn nearest(pool: &PgPool, kb_id: Uuid, query: &[f32], k: usize) -> App
          )
          SELECT n.entity_id, n.id AS fact_id,
                 f.object_value->>'value' AS name,
+                e.type_id,
                 et.label AS type_label,
                 (1 - n.distance)::real AS similarity
            FROM near n
