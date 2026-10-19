@@ -341,6 +341,12 @@ pub async fn status_in_kb(pool: &PgPool, kb_id: Uuid, id: i64) -> AppResult<Opti
 }
 
 /// 认领一个到期任务；没有则返回 None。
+///
+/// **Intake 先于提取。** `sync_source`、`process_document`、`embed_ontology` 不调用 chat
+/// 模型——它们抓新文档、分块、建向量索引，决定新材料多快可搜。`extract_document` 等
+/// LLM 任务在本地模型上每个跑几分钟到几小时；只按 `run_at` 认领时，一小时一次的同步
+/// 和刚入库文档的 `process_document` 会排在几百个旧提取后面，新内容几小时搜不到（#1300）。
+/// 同一优先级内仍按 `run_at` 先到先得，不饿死旧 LLM 任务。
 async fn claim_one(pool: &PgPool) -> AppResult<Option<Job>> {
     let job = sqlx::query_as(
         "UPDATE jobs SET status = 'running', locked_at = now(),
@@ -348,7 +354,10 @@ async fn claim_one(pool: &PgPool) -> AppResult<Option<Job>> {
          WHERE id = (
              SELECT id FROM jobs
              WHERE status = 'queued' AND run_at <= now()
-             ORDER BY run_at
+             ORDER BY
+                 CASE WHEN kind IN ('sync_source', 'process_document', 'embed_ontology')
+                      THEN 0 ELSE 1 END,
+                 run_at
              FOR UPDATE SKIP LOCKED
              LIMIT 1
          )
