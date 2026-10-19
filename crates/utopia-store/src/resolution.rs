@@ -721,6 +721,13 @@ const MAX_CONTAIN_REVIEWS: usize = 4;
 /// 只取 4 行的话可能 4 行全是互斥类型，真正那一对反而被 LIMIT 切掉。
 const CONTAIN_SCAN_LIMIT: i64 = 16;
 
+/// 名字当 LIKE 的字面子串用：不转义的话名字里的 `_` 会匹配任意一个字（#1293）
+fn like_escaped(name: &str) -> String {
+    name.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
 /// 新建实体之后，找出**名字互相包含**的既有实体，作为审阅候选。
 ///
 /// 中文商业文本在一篇之内就会全称转简称（「星云科技上海研究院」→「上海研究院」），
@@ -792,8 +799,8 @@ async fn containment_reviews(
            AND lower(e.canonical_name) <> $3
            AND (
              (char_length(e.canonical_name) >= $4
-              AND (lower(e.canonical_name) LIKE '%' || $3 || '%'
-                   OR $3 LIKE '%' || lower(e.canonical_name) || '%'))
+              AND (lower(e.canonical_name) LIKE '%' || $6 || '%'
+                   OR $3 LIKE '%' || replace(replace(replace(lower(e.canonical_name), '\\', '\\\\'), '%', '\\%'), '_', '\\_') || '%'))
              -- **别的名字也要参与召回，否则每合并一次就少一条桥。**
              --
              -- 合并把名字事实搬到存活者身上：Holmes 并入 Sherlock Holmes 之后，
@@ -810,8 +817,8 @@ async fn containment_reviews(
                   AND nr.builtin AND nr.key = 'known_as'
                   AND nf.invalidated_at IS NULL
                   AND char_length(nf.object_value->>'value') >= $4
-                  AND (lower(nf.object_value->>'value') LIKE '%' || $3 || '%'
-                       OR $3 LIKE '%' || lower(nf.object_value->>'value') || '%'))
+                  AND (lower(nf.object_value->>'value') LIKE '%' || $6 || '%'
+                       OR $3 LIKE '%' || replace(replace(replace(lower(nf.object_value->>'value'), '\\', '\\\\'), '%', '\\%'), '_', '\\_') || '%'))
            )
          ORDER BY char_length(e.canonical_name)
          LIMIT $5",
@@ -821,6 +828,7 @@ async fn containment_reviews(
     .bind(&lower)
     .bind(MIN_CONTAIN_CHARS)
     .bind(CONTAIN_SCAN_LIMIT)
+    .bind(like_escaped(&lower))
     .fetch_all(pool)
     .await?;
 
@@ -2534,6 +2542,11 @@ pub async fn unadopt_types(pool: &PgPool, kb_id: Uuid, batch_id: Uuid) -> AppRes
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn like_escaped_turns_backslash_percent_and_underscore_into_literals() {
+        assert_eq!(like_escaped(r"a\b%c_d"), r"a\\b\%c\_d");
+    }
 
     #[test]
     fn normalize_fullwidth_and_whitespace() {
