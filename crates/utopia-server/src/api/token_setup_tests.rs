@@ -470,3 +470,97 @@ async fn importing_an_ontology_queues_alignment_behind_the_index_refresh() -> an
     f.cleanup().await?;
     result
 }
+
+/// 导入读 `utopia:temporal`（0031）。导出端一直写这一条，导入端从前不读：一份本体
+/// 说「这条关系是一个时刻」，导进来照样 `state`，#1242 的「非 state 的关系不经模型
+/// 就能绑」对导入的本体永远不成立。新建的照本体建；重导入时本体说了的改过来，
+/// 没说的不动——与 domain/range 同一个道理。真改了推 `updated_at`，与页面上改一样
+#[tokio::test]
+async fn an_imported_property_keeps_the_temporal_it_declares() -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    let result = async {
+        let kb = f.seeded_kb("temporal").await?;
+        let token = f.token(f.admin, "write", None).await;
+        const PREFIXES: &str = "@prefix owl: <http://www.w3.org/2002/07/owl#> .\n\
+                                @prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n\
+                                @prefix utopia: <urn:utopia:ns:> .\n\
+                                @prefix ex: <http://example.org/> .\n";
+        let works_at = || {
+            let pool = f.pool.clone();
+            async move {
+                sqlx::query_as::<_, (String, chrono::DateTime<chrono::Utc>)>(
+                    "SELECT temporal, updated_at FROM relation_types
+                      WHERE kb_id = $1 AND iri = 'http://example.org/worksAt'",
+                )
+                .bind(kb)
+                .fetch_one(&pool)
+                .await
+            }
+        };
+
+        // 第一版没有注解：worksAt 建成 state
+        let first =
+            format!("{PREFIXES}ex:worksAt a owl:ObjectProperty ; rdfs:label \"works at\" .\n");
+        let (status, body) = f.import_turtle(kb, &token, &first).await?;
+        anyhow::ensure!(status == StatusCode::OK, "{status} {body}");
+        let (temporal, created) = works_at().await?;
+        anyhow::ensure!(temporal == "state");
+
+        // 第二版：worksAt 加了注解，attended 是带注解新建的
+        let second = format!(
+            "{PREFIXES}ex:worksAt a owl:ObjectProperty ; rdfs:label \"works at\" ; \
+             utopia:temporal \"eternal\" .\n\
+             ex:attended a owl:ObjectProperty ; rdfs:label \"attended\" ; \
+             utopia:temporal \"event\" .\n"
+        );
+        let (status, body) = f.import_turtle(kb, &token, &second).await?;
+        anyhow::ensure!(status == StatusCode::OK, "{status} {body}");
+        let (temporal, changed) = works_at().await?;
+        anyhow::ensure!(
+            temporal == "eternal",
+            "a re-import writes the temporal the file now declares"
+        );
+        anyhow::ensure!(
+            changed > created,
+            "a temporal changed by import moves updated_at"
+        );
+        let attended: String = sqlx::query_scalar(
+            "SELECT temporal FROM relation_types
+              WHERE kb_id = $1 AND iri = 'http://example.org/attended'",
+        )
+        .bind(kb)
+        .fetch_one(&f.pool)
+        .await?;
+        anyhow::ensure!(
+            attended == "event",
+            "a fresh import creates the relation with the temporal it declares"
+        );
+
+        // 第三版把注解去掉：没说就不动，人在页面上改过的也不会被重导入抹掉
+        let (status, body) = f.import_turtle(kb, &token, &first).await?;
+        anyhow::ensure!(status == StatusCode::OK, "{status} {body}");
+        anyhow::ensure!(
+            works_at().await? == ("eternal".to_string(), changed),
+            "an unannotated re-import leaves temporal and updated_at alone"
+        );
+
+        // 第四版说回 state：导出端写 state，所以一份导出重导入能把关系带回 state
+        let back = format!(
+            "{PREFIXES}ex:worksAt a owl:ObjectProperty ; rdfs:label \"works at\" ; \
+             utopia:temporal \"state\" .\n"
+        );
+        let (status, body) = f.import_turtle(kb, &token, &back).await?;
+        anyhow::ensure!(status == StatusCode::OK, "{status} {body}");
+        let (temporal, returned) = works_at().await?;
+        anyhow::ensure!(
+            temporal == "state" && returned > changed,
+            "a re-import declaring state returns the relation to state"
+        );
+        anyhow::Ok(())
+    }
+    .await;
+    f.cleanup().await?;
+    result
+}
