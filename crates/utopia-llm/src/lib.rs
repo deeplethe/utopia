@@ -446,6 +446,12 @@ pub struct LlmClient {
     /// 端点报过的上下文窗口（token），起初是 `u32::MAX`。同一个客户端（含它的克隆）此后
     /// 都按它算历史预算，只降不升；对话客户端按工作区留着，所以下一轮也记得（#964）
     context_window: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    /// The endpoint wants `max_completion_tokens` instead of `max_tokens`.
+    /// Learned from a single 400 and remembered for clones, like `completion_ceiling`
+    use_max_completion_tokens: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// The endpoint does not accept `temperature` (o1/o3 reasoning models only allow the
+    /// default).  Learned from a single 400 and remembered for clones, like the fields above
+    suppress_temperature: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// 建连多久算失败。
@@ -558,6 +564,10 @@ impl LlmClient {
             completion_ceiling: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(
                 MAX_COMPLETION_TOKENS,
             )),
+            use_max_completion_tokens: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+                false,
+            )),
+            suppress_temperature: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -603,7 +613,12 @@ impl LlmClient {
         let mut body =
             self.with_effort(json!({ "model": self.model, "messages": messages, "stream": false }));
         if let Some(t) = temperature {
-            body["temperature"] = json!(t);
+            if !self
+                .suppress_temperature
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
+                body["temperature"] = json!(t);
+            }
         }
         let resp = self
             .request("/chat/completions")
@@ -653,7 +668,12 @@ impl LlmClient {
         });
         let mut body = self.with_effort(body);
         if let Some(t) = temperature {
-            body["temperature"] = json!(t);
+            if !self
+                .suppress_temperature
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
+                body["temperature"] = json!(t);
+            }
         }
         // One retry per call, and only downwards: an endpoint that refuses our ceiling has
         // told us its own, and sending nothing instead would hand the cut-off point back
@@ -664,7 +684,14 @@ impl LlmClient {
         let mut ceiling = self.completion_ceiling.load(Ordering::Relaxed);
         let mut lowered = false;
         let resp = loop {
-            body["max_tokens"] = json!(ceiling);
+            if self.use_max_completion_tokens.load(Ordering::Relaxed) {
+                if let Some(obj) = body.as_object_mut() {
+                    obj.remove("max_tokens");
+                }
+                body["max_completion_tokens"] = json!(ceiling);
+            } else {
+                body["max_tokens"] = json!(ceiling);
+            }
             let resp = self
                 .request("/chat/completions")
                 .json(&body)
@@ -677,18 +704,33 @@ impl LlmClient {
                 break resp;
             }
             let raw = resp.text().await.map_err(Unreachable)?;
-            let parsed = serde_json::from_str(&raw).unwrap_or_default();
-            if status == reqwest::StatusCode::BAD_REQUEST
-                && !lowered
-                && !says_context_too_long(&parsed, &err_detail(&parsed, &raw))
-            {
-                if let Some(lower) = stated_completion_ceiling(&err_detail(&parsed, &raw), ceiling)
+            let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap_or_default();
+            if status == reqwest::StatusCode::BAD_REQUEST {
+                if parsed["error"]["param"].as_str() == Some("max_tokens")
+                    && parsed["error"]["code"].as_str() == Some("unsupported_parameter")
                 {
-                    tracing::info!(model = %self.model, sent = ceiling, stated = lower, "端点说了自己的补全上限，按它重试并记住");
-                    self.completion_ceiling.fetch_min(lower, Ordering::Relaxed);
-                    ceiling = lower;
-                    lowered = true;
+                    self.use_max_completion_tokens
+                        .store(true, Ordering::Relaxed);
+                    tracing::info!(model = %self.model, "max_tokens → max_completion_tokens");
                     continue;
+                }
+                let detail = err_detail(&parsed, &raw);
+                if detail.contains("'temperature'") && detail.contains("not support") {
+                    self.suppress_temperature.store(true, Ordering::Relaxed);
+                    if let Some(obj) = body.as_object_mut() {
+                        obj.remove("temperature");
+                    }
+                    tracing::info!(model = %self.model, "temperature not supported, suppressing");
+                    continue;
+                }
+                if !lowered && !says_context_too_long(&parsed, &detail) {
+                    if let Some(lower) = stated_completion_ceiling(&detail, ceiling) {
+                        tracing::info!(model = %self.model, sent = ceiling, stated = lower, "端点说了自己的补全上限，按它重试并记住");
+                        self.completion_ceiling.fetch_min(lower, Ordering::Relaxed);
+                        ceiling = lower;
+                        lowered = true;
+                        continue;
+                    }
                 }
             }
             return Err(failure("LLM", status, retry_after, &parsed, &raw));
@@ -1713,10 +1755,17 @@ mod tests {
     }
 
     fn sent_max_tokens(request: &str) -> serde_json::Value {
-        let body: serde_json::Value =
-            serde_json::from_str(request.split_once("\r\n\r\n").expect("请求该有 body").1)
-                .expect("请求体是 JSON");
-        body["max_tokens"].clone()
+        sent_body(request)["max_tokens"].clone()
+    }
+
+    fn sent_body(request: &str) -> serde_json::Value {
+        serde_json::from_str(
+            request
+                .split_once("\r\n\r\n")
+                .expect("request should have a body")
+                .1,
+        )
+        .expect("request body is JSON")
     }
 
     // HTTP 分块可以断在 UTF-8 字符中间，与 SSE 帧边界无关。
@@ -2427,6 +2476,170 @@ data: {\"choices\":[{\"delta\":{\"content\":\"tail\"},\"finish_reason\":\"stop\"
 
         let err = failed.expect_err("an unrelated 400 must reach the caller");
         assert!(err.to_string().contains("temperature"), "{err}");
+    }
+
+    /// An endpoint that rejects `max_tokens` as unsupported gets the same
+    /// value back under `max_completion_tokens`, and the rename is remembered
+    /// for the next call and for clones.
+    #[tokio::test]
+    async fn an_unsupported_max_tokens_is_retried_as_max_completion_tokens() {
+        let refusal = r#"{"error":{"message":"Unsupported parameter: 'max_tokens' is not supported with this model. Use 'max_completion_tokens' instead.","type":"invalid_request_error","code":"unsupported_parameter","param":"max_tokens"}}"#;
+        let answer = [
+            r#"data: {"choices":[{"delta":{"content":"ok"}}]}"#,
+            r#"data: {"choices":[{"delta":{},"finish_reason":"stop"}]}"#,
+            "data: [DONE]",
+            "",
+        ]
+        .join("\n\n");
+        let (addr, server, requests) = http_responses(&[
+            ("400 Bad Request", "application/json", refusal),
+            ("200 OK", "text/event-stream", &answer),
+            ("200 OK", "text/event-stream", &answer),
+            ("200 OK", "text/event-stream", &answer),
+        ])
+        .await;
+        let client = client_at(addr);
+        let msgs = [ChatMessage {
+            role: "user".into(),
+            content: "hi".into(),
+        }];
+
+        client.chat_at_streaming(&msgs, Some(0.0)).await.unwrap();
+        client.chat_at_streaming(&msgs, Some(0.0)).await.unwrap();
+        client
+            .clone()
+            .with_reasoning_effort(Some("low".into()))
+            .chat_at_streaming(&msgs, Some(0.0))
+            .await
+            .unwrap();
+        server.await.unwrap();
+
+        let sent = requests.await.unwrap();
+        assert_eq!(sent.len(), 4);
+
+        let first = sent_body(&sent[0]);
+        assert!(
+            first.get("max_tokens").is_some(),
+            "first try uses max_tokens"
+        );
+        assert!(first.get("max_completion_tokens").is_none());
+
+        let retry = sent_body(&sent[1]);
+        assert!(
+            retry.get("max_tokens").is_none(),
+            "retry must not carry max_tokens"
+        );
+        assert_eq!(retry["max_completion_tokens"], json!(MAX_COMPLETION_TOKENS));
+
+        let second = sent_body(&sent[2]);
+        assert!(second.get("max_tokens").is_none(), "learned: no max_tokens");
+        assert_eq!(
+            second["max_completion_tokens"],
+            json!(MAX_COMPLETION_TOKENS)
+        );
+
+        let cloned = sent_body(&sent[3]);
+        assert!(cloned.get("max_tokens").is_none(), "clone also learned");
+        assert_eq!(
+            cloned["max_completion_tokens"],
+            json!(MAX_COMPLETION_TOKENS)
+        );
+    }
+
+    /// An endpoint that rejects `temperature` (o1/o3 reasoning models) gets a
+    /// retry without the field, and the suppression is remembered for the next
+    /// call and for clones.
+    #[tokio::test]
+    async fn an_unsupported_temperature_is_suppressed_and_remembered() {
+        let refusal = r#"{"error":{"message":"Unsupported value: 'temperature' does not support 0.0 with this model. Only the default (1) value is supported.","type":"invalid_request_error","code":null,"param":"temperature"}}"#;
+        let answer = [
+            r#"data: {"choices":[{"delta":{"content":"ok"}}]}"#,
+            r#"data: {"choices":[{"delta":{},"finish_reason":"stop"}]}"#,
+            "data: [DONE]",
+            "",
+        ]
+        .join("\n\n");
+        let (addr, server, requests) = http_responses(&[
+            ("400 Bad Request", "application/json", refusal),
+            ("200 OK", "text/event-stream", &answer),
+            ("200 OK", "text/event-stream", &answer),
+            ("200 OK", "text/event-stream", &answer),
+        ])
+        .await;
+        let client = client_at(addr);
+        let msgs = [ChatMessage {
+            role: "user".into(),
+            content: "hi".into(),
+        }];
+
+        client.chat_at_streaming(&msgs, Some(0.0)).await.unwrap();
+        client.chat_at_streaming(&msgs, Some(0.0)).await.unwrap();
+        client
+            .clone()
+            .chat_at_streaming(&msgs, Some(0.0))
+            .await
+            .unwrap();
+        server.await.unwrap();
+
+        let sent = requests.await.unwrap();
+        assert_eq!(sent.len(), 4);
+
+        let first = sent_body(&sent[0]);
+        assert_eq!(
+            first["temperature"],
+            json!(0.0),
+            "first try sends temperature"
+        );
+
+        let retry = sent_body(&sent[1]);
+        assert!(
+            retry.get("temperature").is_none(),
+            "retry must not carry temperature"
+        );
+
+        let second = sent_body(&sent[2]);
+        assert!(
+            second.get("temperature").is_none(),
+            "learned: no temperature"
+        );
+
+        let cloned = sent_body(&sent[3]);
+        assert!(cloned.get("temperature").is_none(), "clone also learned");
+    }
+
+    /// The message-based fallback catches endpoints that report the temperature
+    /// rejection without setting `error.param` (Azure OpenAI).
+    #[tokio::test]
+    async fn temperature_suppression_works_without_param_field() {
+        let refusal = r#"{"error":{"message":"Unsupported value: 'temperature' does not support 0.0 with this model. Only the default (1) value is supported.","type":"invalid_request_error"}}"#;
+        let answer = [
+            r#"data: {"choices":[{"delta":{"content":"ok"}}]}"#,
+            r#"data: {"choices":[{"delta":{},"finish_reason":"stop"}]}"#,
+            "data: [DONE]",
+            "",
+        ]
+        .join("\n\n");
+        let (addr, server, requests) = http_responses(&[
+            ("400 Bad Request", "application/json", refusal),
+            ("200 OK", "text/event-stream", &answer),
+        ])
+        .await;
+        let client = client_at(addr);
+        let msgs = [ChatMessage {
+            role: "user".into(),
+            content: "hi".into(),
+        }];
+
+        client.chat_at_streaming(&msgs, Some(0.0)).await.unwrap();
+        server.await.unwrap();
+
+        let sent = requests.await.unwrap();
+        assert_eq!(sent.len(), 2);
+
+        assert!(
+            sent_body(&sent[1]).get("temperature").is_none(),
+            "retry without temperature after message-based detection"
+        );
     }
 
     /// 上限归我们，被截断这件事说得出来（#760）。
