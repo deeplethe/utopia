@@ -11,6 +11,10 @@ use crate::auth::{AuthUser, SessionOrToken};
 use crate::error::ApiResult;
 use crate::state::AppState;
 
+#[cfg(test)]
+#[path = "graph_routes_time_tests.rs"]
+mod time_tests;
+
 pub(super) async fn require_kb(
     state: &AppState,
     user: &utopia_core::models::User,
@@ -274,7 +278,8 @@ pub async fn update_entity(
 
 /// 一条事实的新有效区间。**整体替换，不是部分更新**：区间的两端互相定义，
 /// 「把结束端清空」与「这次不动结束端」必须能分辨，而缺字段与 null 在 JSON 里
-/// 分不开。界面提交的是表单里的四个值，不是差异。
+/// 分不开。界面提交的是表单里的四个值，不是差异。`end_after_period` 是例外：缺省即
+/// 保留，见那一格。
 #[derive(Deserialize)]
 pub struct FactTimePatch {
     #[serde(default)]
@@ -290,6 +295,13 @@ pub struct FactTimePatch {
     /// 这里升格成字段
     #[serde(default)]
     pub note: Option<String>,
+    /// 终点是不是原文所说时段之后的那一刻（`facts.end_after_period`，#994）。**唯一一个
+    /// 缺省即保留的字段**：读出来什么就发回什么的客户端（不认识这个字段的也一样）不该
+    /// 改掉它。不给时，终点（截到精度之后的值与精度）没变、起点还在，就留着存的标记；清掉
+    /// 起点的保留时刻、丢掉标记（没有起点的行第一刀不标）；别的终点照给的收下。路由从不
+    /// 换算：存的、收的都是边界本身，按时段显示与换算是界面的事
+    #[serde(default)]
+    pub end_after_period: Option<bool>,
 }
 
 // 梯子只有一张（0024）：与数据库的 CHECK、抽取端、显示端同一列
@@ -302,9 +314,21 @@ struct FactInterval {
     valid_from_precision: Option<String>,
     valid_to: Option<chrono::DateTime<chrono::Utc>>,
     valid_to_precision: Option<String>,
+    end_after_period: bool,
+    /// 谓词声明成状态：标记只能落在这样的行上
+    declared_state: bool,
 }
 
-/// 复刻 `facts` 表的两条 CHECK，外加一条数据库没有的：起点不能晚于终点。
+/// 显式要标记，却不是一个能带它的终点
+fn bad_end_after_period() -> AppError {
+    AppError::invalid(
+        "bad_end_after_period",
+        "An end that names a period needs a state property, a start and an end date.",
+    )
+}
+
+/// 复刻 `facts` 表的 CHECK：两端的精度，标记要两端带得了它（`period_mark_fits`，属性是不是
+/// 状态读到行之后再查）；外加一条数据库没有的：截到各自精度之后，起点不能晚于终点。
 ///
 /// 在这里挡住是为了让错误说人话。交给数据库挡会得到一句约束名，而这三态
 /// （仍在持续 / 结束了不知哪天 / 某日结束）本来就是账本里最容易记混的地方。
@@ -331,8 +355,19 @@ fn check_interval(p: &FactTimePatch) -> Result<(), AppError> {
             ))
         }
     }
+    // 显式要标记：两端得带得了它。属性是不是状态要读到行才知道，这里先当它是，只看两端
+    if p.end_after_period == Some(true)
+        && !utopia_store::graph::period_mark_fits(true, p.valid_from, p.valid_to, false)
+    {
+        return Err(bad_end_after_period());
+    }
+    // 比截到各自精度之后的两端：存下的就是截过的。比原值时，小时精度的 08:30 终点与分钟精度
+    // 的 08:10 起点放得过去，截完成了 08:10 → 08:00，存下一段倒着的区间
+    let truncate = utopia_store::graph::truncate_to;
     if let (Some(from), Some(to)) = (p.valid_from, p.valid_to) {
-        if from > to {
+        if truncate(from, p.valid_from_precision.as_deref())
+            > truncate(to, p.valid_to_precision.as_deref())
+        {
             return Err(AppError::invalid(
                 "interval_inverted",
                 "The start of the interval is after its end.",
@@ -361,9 +396,12 @@ pub async fn update_fact_time(
     // 归属与状态校验：本 KB 的、未作废的事实才可改。派生事实不在此列——
     // 它的区间来自前提，改它等于改一个算出来的值，下一轮推理就会覆盖
     let before: Option<FactInterval> = sqlx::query_as(
-        "SELECT valid_from, valid_from_precision, valid_to, valid_to_precision
-         FROM facts
-         WHERE id = $1 AND kb_id = $2 AND invalidated_at IS NULL AND derived_by_rule IS NULL",
+        "SELECT f.valid_from, f.valid_from_precision, f.valid_to, f.valid_to_precision,
+                f.end_after_period, COALESCE(r.temporal = 'state', false) AS declared_state
+         FROM facts f
+         LEFT JOIN relation_types r ON r.id = f.predicate_id
+         WHERE f.id = $1 AND f.kb_id = $2 AND f.invalidated_at IS NULL
+           AND f.derived_by_rule IS NULL",
     )
     .bind(fact_id)
     .bind(kb_id)
@@ -373,12 +411,39 @@ pub async fn update_fact_time(
     let Some(before) = before else {
         return Err(AppError::NotFound.into());
     };
+    // 存下的是截到精度之后的值：比较、判标记都按它
+    let truncate = utopia_store::graph::truncate_to;
+    let from = req
+        .valid_from
+        .map(|t| truncate(t, req.valid_from_precision.as_deref()));
+    let to = req
+        .valid_to
+        .map(|t| truncate(t, req.valid_to_precision.as_deref()));
+    // 读到了行，属性是不是状态也知道了：显式要的标记按整条规矩再判一遍
+    if req.end_after_period == Some(true)
+        && !utopia_store::graph::period_mark_fits(before.declared_state, from, to, false)
+    {
+        return Err(bad_end_after_period().into());
+    }
+    // 不给标记：发回存的终点（时刻与精度）、这次的两端还带得了它，就是没动它，留着；清掉起点
+    // 的带不了，丢掉（时刻照旧）。属性这里不再判：存的标记是按当时的属性写下的，原样发回的
+    // 请求不改写这一行
+    let end_after_period = match req.end_after_period {
+        Some(mark) => mark,
+        None => {
+            before.end_after_period
+                && to == before.valid_to
+                && req.valid_to_precision == before.valid_to_precision
+                && utopia_store::graph::period_mark_fits(true, from, to, false)
+        }
+    };
     // 一字未改就不写一条修正进账本：History 上多一行「改过」而区间没动，
     // 读者会去找那个不存在的差异
-    if before.valid_from == req.valid_from
+    if before.valid_from == from
         && before.valid_from_precision == req.valid_from_precision
-        && before.valid_to == req.valid_to
+        && before.valid_to == to
         && before.valid_to_precision == req.valid_to_precision
+        && before.end_after_period == end_after_period
     {
         return Ok(Json(json!({ "ok": true, "unchanged": true })));
     }
@@ -394,6 +459,7 @@ pub async fn update_fact_time(
         // 修正行从被替代的行继承锚点（correct_interval 的 SQL 里）：改区间是重述
         // 同一份证据，不是更新的证据
         attested_at: None,
+        end_after_period,
     };
     let Some(corrected) =
         utopia_store::temporal::correct_interval(&state.pool, fact_id, validity).await?
@@ -418,12 +484,14 @@ pub async fn update_fact_time(
             "valid_from_precision": before.valid_from_precision,
             "valid_to": before.valid_to.map(|t| t.to_rfc3339()),
             "valid_to_precision": before.valid_to_precision,
+            "end_after_period": before.end_after_period,
         });
         d["to"] = json!({
             "valid_from": req.valid_from.map(|t| t.to_rfc3339()),
             "valid_from_precision": req.valid_from_precision,
             "valid_to": req.valid_to.map(|t| t.to_rfc3339()),
             "valid_to_precision": req.valid_to_precision,
+            "end_after_period": end_after_period,
         });
         if let Some(note) = req.note.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
             d["note"] = json!(note);

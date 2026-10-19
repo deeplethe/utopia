@@ -27,6 +27,10 @@ The rule sits in `insert_fact_inner` and `correct_interval`, not in the writers.
 
 2026-09-27: under a property declared as a state, the same rule now refuses a row whose two ends are equal, and a single date bound to a state is read by what its binding says it marks. See [0053](0053-a-phrase-decision-records-the-inputs-it-considered.md)'s revision of that date (#966).
 
+2026-10-17: an end the closing and refinement paths move to the end of the period it names is now marked on the row, `end_after_period`: the stored instant is the one after that period. See [0053](0053-a-phrase-decision-records-the-inputs-it-considered.md)'s revision of that date (#994).
+
+2026-10-18: the export writes `utopia:temporal` on every property, `state` included, and the import reads it on an object property: a new relation takes the value the file declares, a re-import changes an existing one to it and moves its `updated_at` as an edit on the page does, and a file that says nothing leaves a relation alone, so a value a person set survives an unannotated re-import while re-importing an export is exact. A value other than the three is reported under the predicate in the import preview, and the relation stays as it was (#1291).
+
 Both ends carry the value because that is the one shape the row can explain on its own. A reader that does not consult the predicate — an old client, an export consumer, a hand-written query — sees a fact that held on one day. It cannot see *holds from that day on*, which is what an open end would have told it. The representation fails safe.
 
 An undated observation of an event merges into an existing dated one, the mirror of the refinement path that already lets a dated observation supersede a bare row: "acquired in March" followed by "acquired" is one acquisition, not two.

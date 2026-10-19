@@ -14,6 +14,10 @@
 //! 照旧；已有的空段不并进后来的观察，也不被它关上；勘误改不了一段不成立的时间，也不能把
 //! 一刻的事件改成状态；规则没有 marks，只说了一刻的陈述不蕴含状态，只有起点的照旧。
 //!
+//! 终点因此挪到时段尽头的行记着原文说的是那个时段（`end_after_period`，#994）：收尾、精化
+//! 两条路都记；关在「until 2025」的行再读到「left in 2024」也记（人只改过起点的也记），时间线画
+//! 的终点被它说出来也记；搬主宾、勘误改出来的行带着它，改成事件的不带。
+//!
 //! 没有 `UTOPIA_DATABASE_URL` 时跳过而不是失败。自建自拆，绝不碰已有的库。
 
 use chrono::{DateTime, Utc};
@@ -45,6 +49,7 @@ fn moment() -> Validity<'static> {
         to_precision: Some("day"),
         attested_at: None,
         from_grade: None,
+        ..Default::default()
     }
 }
 
@@ -57,6 +62,7 @@ fn ending(at: DateTime<Utc>) -> Validity<'static> {
         to_precision: Some("day"),
         attested_at: None,
         from_grade: None,
+        ..Default::default()
     }
 }
 
@@ -272,6 +278,21 @@ impl Base {
                 .fetch_one(&self.pool)
                 .await?,
         )
+    }
+
+    /// Lin Zhao —works_for→ object，走写入口（抽取、点头、人写的事实同一个门）
+    async fn write_to(&self, object: Uuid, v: Validity<'_>) -> anyhow::Result<Uuid> {
+        let (fact, _) = graph::insert_fact(
+            &self.pool,
+            self.kb,
+            self.lin,
+            Some(self.works_for),
+            object,
+            v,
+            0.9,
+        )
+        .await?;
+        Ok(fact)
     }
 
     async fn remove(self) -> anyhow::Result<()> {
@@ -997,7 +1018,8 @@ async fn a_row_a_person_set_to_a_single_date_is_not_retired() -> anyhow::Result<
 
 /// 终点说的是一个时段，比的却是时刻（#975 评审）：「left … in 2024」存成 2024-01-01，年精度。
 /// 「works for … from 2024-03-01」从这个时段里开始，关在时段的尽头 2025-01-01，而不是另立一行
-/// `- → 2024`、让它一直开着到 2025 年以后。先读到哪一句都一样
+/// `- → 2024`、让它一直开着到 2025 年以后。先读到哪一句都一样；行上记着终点说的是 2024
+/// （#994：收尾那条路和精化那条路都记）
 #[tokio::test]
 async fn a_coarse_end_closes_a_row_that_starts_inside_its_period() -> anyhow::Result<()> {
     let Some(pool) = pool().await? else {
@@ -1008,6 +1030,7 @@ async fn a_coarse_end_closes_a_row_that_starts_inside_its_period() -> anyhow::Re
         t("2024-01-01T00:00:00Z"),
         t("2025-01-01T00:00:00Z"),
     );
+    let mut marks: Vec<Vec<bool>> = Vec::new();
     for order in [["works for", "left"], ["left", "works for"]] {
         let base = Base::new(&pool).await?;
         let run = async {
@@ -1037,12 +1060,22 @@ async fn a_coarse_end_closes_a_row_that_starts_inside_its_period() -> anyhow::Re
                 "{order:?}: not still working there in 2025"
             );
             assert_eq!(materialize(&pool, base.kb).await?, Outcome::default());
+            marks.push(
+                sqlx::query_scalar(
+                    "SELECT end_after_period FROM facts
+                      WHERE kb_id = $1 AND layer = 'typed' AND invalidated_at IS NULL",
+                )
+                .bind(base.kb)
+                .fetch_all(&pool)
+                .await?,
+            );
             anyhow::Ok(())
         }
         .await;
         base.remove().await?;
         run?;
     }
+    assert_eq!(marks, [[true], [true]], "the end names 2024, not 2025");
     Ok(())
 }
 
@@ -1106,6 +1139,245 @@ async fn a_coarse_end_leaves_rows_outside_its_period_as_before() -> anyhow::Resu
         }
     }
     Ok(())
+}
+
+/// 一个终点，两种说法（#994）：人写的 2024-03-01 起的一行关在「until 2025」，文档又说「left in
+/// 2024」，同一个终点：标上，并进那一行，它仍是人的（反过来的顺序是收尾那条路）；另一份文档再说
+/// 一次，标过的原样留着。人只把起点挪到 4 月的一行（Dune）也标。日精度写明的 2025-01-01（Aster）
+/// 是那一天，人改过的终点（Cobalt）是人的，都不改写
+#[tokio::test]
+async fn one_end_named_two_ways_is_marked() -> anyhow::Result<()> {
+    let Some(pool) = pool().await? else {
+        return Ok(());
+    };
+    let base = Base::new(&pool).await?;
+    let run = async {
+        let (year, next_year) = (t("2024-01-01T00:00:00Z"), t("2025-01-01T00:00:00Z"));
+        let since = Validity::starting(Some(t("2024-03-01T00:00:00Z")), Some("day"));
+        let until_2025 = Validity {
+            to_precision: Some("year"),
+            ..ending(next_year)
+        };
+        let (cobalt, dune) = (Uuid::now_v7(), Uuid::now_v7());
+        sqlx::query(
+            "INSERT INTO entities (id, kb_id, type_id, canonical_name)
+                  VALUES ($1, $2, $3, 'Cobalt'), ($4, $2, $3, 'Dune')",
+        )
+        .bind(cobalt)
+        .bind(base.kb)
+        .bind(base.company)
+        .bind(dune)
+        .execute(&pool)
+        .await?;
+        for (object, end) in [(base.meridian, until_2025), (base.aster, ending(next_year))] {
+            base.write_to(object, since).await?;
+            base.write_to(object, end).await?;
+        }
+        let by_hand = Validity {
+            to: Some(next_year),
+            to_precision: Some("year"),
+            ..since
+        };
+        let open = base.write_to(cobalt, since).await?;
+        utopia_store::temporal::correct_interval(&pool, open, by_hand).await?;
+        let stated = base.write_to(dune, by_hand).await?;
+        let april = Validity {
+            from: Some(t("2024-04-01T00:00:00Z")),
+            ..by_hand
+        };
+        utopia_store::temporal::correct_interval(&pool, stated, april).await?;
+        for object in [base.meridian, base.meridian, base.aster, cobalt, dune] {
+            base.statement_to("left", object, Some(year), Some(year), "year")
+                .await?;
+        }
+        base.bind("left", Some("end")).await?;
+        materialize(&pool, base.kb).await?;
+        // 每个宾语活着的那一行：标记，仍是人的（不是这句算出来的），那边被取代过几行
+        let rows: Vec<(String, bool, bool, i64)> = sqlx::query_as(
+            "SELECT o.canonical_name, f.end_after_period, f.from_statement_id IS NULL,
+                    (SELECT count(*) FROM facts g WHERE g.layer = 'typed'
+                        AND g.object_id = f.object_id AND g.invalidated_at IS NOT NULL)
+               FROM facts f JOIN entities o ON o.id = f.object_id
+              WHERE f.kb_id = $1 AND f.layer = 'typed' AND f.invalidated_at IS NULL
+              ORDER BY 1",
+        )
+        .bind(base.kb)
+        .fetch_all(&pool)
+        .await?;
+        // Meridian 开着的那行先被「until 2025」关上、再被标上，各取代一次；Dune 改过一次起点
+        let expected = [
+            ("Aster Labs", false, 1),
+            ("Cobalt", false, 1),
+            ("Dune", true, 2),
+            ("Meridian Systems", true, 2),
+        ]
+        .map(|(o, mark, gone)| (o.to_string(), mark, true, gone));
+        assert_eq!(rows, expected);
+        anyhow::Ok(())
+    }
+    .await;
+    base.remove().await?;
+    run
+}
+
+/// 时间线画的终点被原文说出来（#994）：works_for 声明成函数性、继任者 2025-01-01 起，时间线在那天
+/// 画上 Meridian 的终点（日精度）；「left in 2024」说的是同一刻，改成写明的年精度终点，记着说的是
+/// 2024
+#[tokio::test]
+async fn a_drawn_end_the_text_names_as_a_period_is_marked() -> anyhow::Result<()> {
+    let Some(pool) = pool().await? else {
+        return Ok(());
+    };
+    let base = Base::new(&pool).await?;
+    let run = async {
+        let next_year = t("2025-01-01T00:00:00Z");
+        sqlx::query("UPDATE relation_types SET functional = true WHERE id = $1")
+            .bind(base.works_for)
+            .execute(&pool)
+            .await?;
+        let since = Validity::starting(Some(t("2024-03-01T00:00:00Z")), Some("day"));
+        base.write_to(base.meridian, since).await?;
+        let next = Validity::starting(Some(next_year), Some("day"));
+        let next = base.write_to(base.aster, next).await?;
+        utopia_store::temporal::reconcile_moved_facts(&pool, base.kb, &[next]).await?;
+        // Meridian 那一行的终点：精度、是不是时间线画的、标记
+        let end = || {
+            sqlx::query_as::<_, (String, bool, bool)>(
+                "SELECT valid_to_precision, end_derived, end_after_period FROM facts
+                  WHERE object_id = $1 AND invalidated_at IS NULL",
+            )
+            .bind(base.meridian)
+            .fetch_one(&pool)
+        };
+        let drawn = end().await?;
+        let left_in_2024 = Validity {
+            to_precision: Some("year"),
+            ..ending(t("2024-01-01T00:00:00Z"))
+        };
+        base.write_to(base.meridian, left_in_2024).await?;
+        assert_eq!(
+            (drawn, end().await?),
+            (("day".into(), true, false), ("year".into(), false, true)),
+            "drawn, then stated as the end of 2024"
+        );
+        anyhow::Ok(())
+    }
+    .await;
+    base.remove().await?;
+    run
+}
+
+/// 标记随行走（#994）：撤回合并搬主宾用的 `rehome_tx` 带着它；勘误改出来的行接旧行的标记——改到
+/// 同起点、还开着的一行的宾语上，那一行经同起点那条路关上；改到同起点、终点是时间线画的一行的
+/// 宾语上，那个终点改成写明的——都带着它；属性改成事件的，写入口丢掉它
+#[tokio::test]
+async fn a_marked_end_rides_through_a_rehome_and_a_revision() -> anyhow::Result<()> {
+    let Some(pool) = pool().await? else {
+        return Ok(());
+    };
+    let base = Base::new(&pool).await?;
+    let run = async {
+        let kb = base.kb;
+        let since = Validity::starting(Some(t("2024-03-01T00:00:00Z")), Some("day"));
+        let closed = Validity {
+            to: Some(t("2025-01-01T00:00:00Z")),
+            to_precision: Some("year"),
+            ..since
+        };
+        let row = base.write_to(base.meridian, closed).await?;
+        let (cobalt, drawn, doc) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
+        let (company, lin, works_for) = (base.company, base.lin, base.works_for);
+        // Only locally generated UUIDs are interpolated into fixture SQL.
+        sqlx::raw_sql(&format!(
+            "UPDATE facts SET end_after_period = TRUE WHERE id = '{row}';
+             INSERT INTO entities (id, kb_id, type_id, canonical_name)
+                  VALUES ('{cobalt}', '{kb}', '{company}', 'Cobalt');
+             INSERT INTO facts (id, kb_id, subject_id, predicate_id, object_id, layer, confidence,
+                                valid_from, valid_from_precision, valid_to, valid_to_precision,
+                                end_derived)
+                  VALUES ('{drawn}', '{kb}', '{lin}', '{works_for}', '{cobalt}', 'typed', 0.9,
+                          '2024-03-01T00:00:00Z', 'day', '2025-01-01T00:00:00Z', 'day', TRUE);
+             INSERT INTO documents (id, kb_id, filename, sha256)
+                  VALUES ('{doc}', '{kb}', 'cv.txt', 'x');"
+        ))
+        .execute(&pool)
+        .await?;
+        let mut tx = pool.begin().await?;
+        let moved = utopia_store::temporal::rehome_tx(&mut tx, row, None, Some(base.aster))
+            .await?
+            .expect("the row was live");
+        tx.commit().await?;
+
+        // 勘误改三次：宾语改回 Meridian，那边已有一行 2024-03-01 起开着；改到 Cobalt，那边同起点的
+        // 一行终点是时间线画的（日精度，上面写下的）；属性改成 acquired（事件）
+        let open = base.write_to(base.meridian, since).await?;
+        let mut candidate = Candidate {
+            fact_id: moved,
+            statement_id: None,
+            predicate_id: base.works_for,
+            subject_id: base.lin,
+            subject: "Lin Zhao".into(),
+            subject_class: Some("person".into()),
+            property: "works_for".into(),
+            property_label: "works for".into(),
+            object_id: Some(base.aster),
+            object: "Aster Labs".into(),
+            object_class: Some("organization".into()),
+            flag: Some("name_absent".into()),
+            quote: None,
+        };
+        // 一行的标记，和它取代的是哪一行
+        let read = |id: Uuid| {
+            sqlx::query_as::<_, (bool, Option<Uuid>)>(
+                "SELECT end_after_period, supersedes FROM facts WHERE id = $1",
+            )
+            .bind(id)
+            .fetch_one(&pool)
+        };
+        let mut rows = vec![read(moved).await?];
+        let run_id = errata::start_run(&pool, kb, doc, 3, 0).await?;
+        for (property, object) in [
+            (None, Some("Meridian Systems")),
+            (None, Some("Cobalt")),
+            (Some("acquired"), None),
+        ] {
+            let recorded = errata::record(
+                &pool,
+                kb,
+                ActionInput {
+                    run_id,
+                    document_id: doc,
+                    candidate: Some(&candidate),
+                    proposed: Proposed::Revise {
+                        property: property.map(Into::into),
+                        object: object.map(Into::into),
+                    },
+                    reason: "the document says otherwise",
+                    quote: Some("Lin Zhao left Aster Labs for Meridian Systems"),
+                    document_text: "Lin Zhao left Aster Labs for Meridian Systems in 2024.",
+                },
+            )
+            .await?;
+            candidate.fact_id = recorded
+                .new_fact_id
+                .unwrap_or_else(|| panic!("{recorded:?}"));
+            rows.push(read(candidate.fact_id).await?);
+        }
+        assert_eq!(
+            rows,
+            [
+                (true, Some(row)),
+                (true, Some(open)),
+                (true, Some(drawn)),
+                (false, None)
+            ],
+            "rehomed; revised onto an open row and a drawn end; onto an event"
+        );
+        anyhow::Ok(())
+    }
+    .await;
+    base.remove().await?;
+    run
 }
 
 /// 两个值同一刻开始的冲突（works_for 声明成函数性）：人选「关上旧的」却不给日期，旧的就关在

@@ -152,6 +152,7 @@ async fn observe(pool: &PgPool, f: &Fixture, x: Seen<'_>) -> anyhow::Result<Uuid
             x.to.map(|_| "day")
         },
         attested_at: None,
+        ..Default::default()
     };
     let mut chunk = None;
     if let Some(day) = x.doc {
