@@ -35,6 +35,7 @@ mod rdf;
 mod readers;
 mod retrieval;
 mod rss_full_content;
+mod search_recovery;
 mod state;
 mod time_resolution;
 mod time_text;
@@ -139,7 +140,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let index_dir = std::path::Path::new(&cfg.data_dir).join("index");
-    let search = Arc::new(SearchIndex::open(&index_dir)?);
+    let search = Arc::new(search_recovery::open(&index_dir)?);
     tracing::info!("全文索引就绪: {}", index_dir.display());
 
     // **索引落空就自己重建，不给按钮。**
@@ -150,7 +151,7 @@ async fn main() -> anyhow::Result<()> {
     //
     // 判据是「库里有分块而索引空着」，不是「数目对不对得上」：后者在正常运行中
     // 也会短暂不等（一篇文档正在索引），拿它当判据会让每次启动都重建一遍。
-    reindex_if_empty(&pool, &search).await;
+    reindex_if_empty(&pool, &search, &index_dir).await;
 
     // JWT 密钥：环境变量优先（轮换、多实例显式对齐走这条），否则用库里那条；
     // 库里也没有就现生成一条存进去。生成放在这里而不是 store 里，是因为
@@ -340,21 +341,10 @@ async fn main() -> anyhow::Result<()> {
 ///
 /// 失败只告警不阻断启动：检索退化成「暂时搜不到」，而整个服务起不来是更坏的
 /// 结果。日志里那一行说清了发生什么，下次重启还会再试。
-async fn reindex_if_empty(pool: &sqlx::PgPool, search: &SearchIndex) {
+async fn reindex_if_empty(pool: &sqlx::PgPool, search: &SearchIndex, index_dir: &std::path::Path) {
     if !search.is_empty() {
         return;
     }
-    let total = match utopia_store::documents::live_chunk_count(pool).await {
-        Ok(n) => n,
-        Err(e) => {
-            tracing::warn!(error = %e, "数不出分块数，跳过索引重建");
-            return;
-        }
-    };
-    if total == 0 {
-        return;
-    }
-    tracing::info!(chunks = total, "全文索引是空的，从库里重建");
     let rows = match utopia_store::documents::all_chunks_for_index(pool).await {
         Ok(r) => r,
         Err(e) => {
@@ -362,30 +352,17 @@ async fn reindex_if_empty(pool: &sqlx::PgPool, search: &SearchIndex) {
             return;
         }
     };
-    // 按文档攒批再写：`reindex_document` 一次替换一篇文档的全部分块，
-    // 逐条调会把前一条刚写的删掉
-    let mut current: Option<(uuid::Uuid, uuid::Uuid)> = None;
-    let mut batch: Vec<(String, String)> = Vec::new();
-    let mut done = 0usize;
-    let flush = |key: Option<(uuid::Uuid, uuid::Uuid)>, batch: &mut Vec<(String, String)>| {
-        if let Some((kb, doc)) = key {
-            if let Err(e) = search.reindex_document(&kb.to_string(), &doc.to_string(), batch) {
-                tracing::warn!(error = %e, document = %doc, "重建索引时有一篇没写进去");
-            }
-        }
-        batch.clear();
-    };
-    for (kb_id, doc_id, chunk_id, text) in rows {
-        if current != Some((kb_id, doc_id)) {
-            flush(current, &mut batch);
-            current = Some((kb_id, doc_id));
-        }
-        batch.push((chunk_id.to_string(), text));
-        done += 1;
+    let total = rows.len();
+    if total > 0 {
+        tracing::info!(chunks = total, "全文索引是空的，从库里重建");
     }
-    // `reindex_document` 自己 commit，所以这里不必再提交一次
-    flush(current, &mut batch);
-    tracing::info!(chunks = done, "全文索引重建完成");
+    // Even an empty database completes an interrupted rebuild: otherwise the
+    // marker would make every subsequent startup discard an empty generation.
+    match search_recovery::rebuild(index_dir, search, rows) {
+        Ok(()) if total > 0 => tracing::info!(chunks = total, "全文索引重建完成"),
+        Ok(()) => {}
+        Err(e) => tracing::warn!(error = %e, "全文索引未重建完，下次启动重试"),
+    }
 }
 ///
 /// 任务分发：新任务类型在这里注册。

@@ -84,11 +84,12 @@ pub struct CreateBody {
     pub sync_cron: Option<String>,
 }
 
-/// 写令牌也能建（0014 决定 6）：给一个镜像仓库配 `statements` 来源，不该要人
+/// 写令牌也能建（0014 决定 6）：给一个镜像仓库配 `statements` 或 `api` 来源，不该要人
 /// 一个个手点。
 ///
-/// 令牌只建 `statements`：`url`/`rss`/`custom` 一建好服务器就按时去拉（`custom`
-/// 还带着存下的凭据），漏出去的 CI 令牌不该能让服务器定时去敲任意地址。会话照旧建什么都行
+/// 令牌只建推送型（`statements`/`api`，服务器不替它们拉任何东西）：`url`/`rss`/`custom`
+/// 一建好服务器就按时去拉（`custom` 还带着存下的凭据），漏出去的 CI 令牌不该能让服务器定时去敲
+/// 任意地址。会话照旧建什么都行
 pub async fn create(
     State(state): State<AppState>,
     caller: SessionOrToken,
@@ -96,10 +97,11 @@ pub async fn create(
     Json(body): Json<CreateBody>,
 ) -> ApiResult<Json<serde_json::Value>> {
     caller.require_write(Some(kb_id))?;
-    if caller.pat.is_some() && body.kind != "statements" {
+    if caller.pat.is_some() && !is_push_kind(&body.kind) {
         return Err(utopia_core::AppError::CodedForbidden {
             code: "token_source_kind",
-            message: "A token creates only statements sources; other kinds take a session".into(),
+            message: "A token creates only statements or api sources; other kinds take a session"
+                .into(),
         }
         .into());
     }
@@ -130,7 +132,7 @@ pub async fn create(
     }
     // api 来源：生成专属推送密钥（此后可随时经 get_token 查看）
     let mut ingest_token: Option<String> = None;
-    if has_push_token(&source) {
+    if is_push_kind(&source.kind) {
         let token = new_ingest_token();
         utopia_store::sources::set_ingest_token(&state.pool, source.id, &token).await?;
         ingest_token = Some(token);
@@ -156,8 +158,8 @@ pub async fn create(
 
 /// 有推送密钥的来源：`api` 推文档，`statements` 推陈述（0054）。两种的密钥同一套
 /// 生成、查看、轮换
-fn has_push_token(source: &utopia_core::models::Source) -> bool {
-    matches!(source.kind.as_str(), "api" | "statements")
+fn is_push_kind(kind: &str) -> bool {
+    matches!(kind, "api" | "statements")
 }
 
 /// 查看推送密钥（Editor；列表响应从不携带，查看走这里）。
@@ -171,7 +173,7 @@ pub async fn get_token(
     caller.require_write(Some(kb_id))?;
     require_kb(&state, &caller.user, kb_id, Role::Editor).await?;
     let source = source_in_kb(&state, kb_id, source_id).await?;
-    if !has_push_token(&source) {
+    if !is_push_kind(&source.kind) {
         return Err(utopia_core::AppError::NotFound.into());
     }
     Ok(Json(json!({ "ingest_token": source.ingest_token })))
@@ -185,7 +187,7 @@ pub async fn rotate_token(
 ) -> ApiResult<Json<serde_json::Value>> {
     require_kb(&state, &user, kb_id, Role::Editor).await?;
     let source = source_in_kb(&state, kb_id, source_id).await?;
-    if !has_push_token(&source) {
+    if !is_push_kind(&source.kind) {
         return Err(utopia_core::AppError::NotFound.into());
     }
     let token = new_ingest_token();

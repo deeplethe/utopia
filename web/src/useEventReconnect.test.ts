@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryObserver, type QueryKey } from "@tanstack/react-query";
 import { DEFAULT_STALE_MS, STREAM_KEYS, STREAM_STALE_MS, applyQueryDefaults } from "./queryDefaults";
-import { SETTLE_MS, useKbEvents } from "./useKbEvents";
+import { OVERVIEW_SETTLE_MS, SETTLE_MS, useKbEvents } from "./useKbEvents";
 import { useAlertEvents } from "./useAlertEvents";
 import { HIDDEN_RELEASE_MS } from "./eventStream";
 
@@ -178,6 +178,7 @@ describe("KB stream reconnect", () => {
   it("flushes a pending burst together with reconnect instead of scheduling another refetch", async () => {
     const client = createClient();
     const graph = await watch(client, ["graph", "kb-a"]);
+    const overview = await watch(client, ["graph", "kb-a", "overview", 200]);
     const documents = await watch(client, ["documents", "kb-a"]);
     const badge = await watch(client, ["alerts", "unread"]);
     const list = await watch(client, ["alerts", "list", "", 0]);
@@ -190,11 +191,13 @@ describe("KB stream reconnect", () => {
     source.emit("error");
     source.emit("open");
     expect(graph.fetch).toHaveBeenCalledTimes(2);
+    expect(overview.fetch).toHaveBeenCalledTimes(2);
     expect(documents.fetch).toHaveBeenCalledTimes(2);
     expect(badge.fetch).toHaveBeenCalledTimes(2);
     expect(list.fetch).toHaveBeenCalledTimes(2);
-    await vi.advanceTimersByTimeAsync(SETTLE_MS);
+    await vi.advanceTimersByTimeAsync(OVERVIEW_SETTLE_MS);
     expect(graph.fetch).toHaveBeenCalledTimes(2);
+    expect(overview.fetch).toHaveBeenCalledTimes(2);
     expect(documents.fetch).toHaveBeenCalledTimes(2);
     expect(badge.fetch).toHaveBeenCalledTimes(2);
     expect(list.fetch).toHaveBeenCalledTimes(2);
@@ -203,7 +206,7 @@ describe("KB stream reconnect", () => {
 
   it("keeps normal business events coalesced", async () => {
     const client = createClient();
-    const graph = await watch(client, ["graph", "kb-a"]);
+    const graph = await watch(client, ["graph", "kb-a", "neighborhood", "e1"]);
     const documents = await watch(client, ["documents", "kb-a"]);
     const { source } = mount(() => useKbEvents("kb-a"));
     source.emit("open");
@@ -217,6 +220,26 @@ describe("KB stream reconnect", () => {
     await vi.advanceTimersByTimeAsync(1);
     expect(graph.fetch).toHaveBeenCalledTimes(2);
     expect(documents.fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("a burst of graph events refetches the overview once after OVERVIEW_SETTLE_MS and the neighbourhood after SETTLE_MS", async () => {
+    const client = createClient();
+    const overview = await watch(client, ["graph", "kb-a", "overview", 200]);
+    const neighborhood = await watch(client, ["graph", "kb-a", "neighborhood", "e1"]);
+    const { source } = mount(() => useKbEvents("kb-a"));
+    source.emit("open");
+    source.emit("graph");
+    await vi.advanceTimersByTimeAsync(SETTLE_MS);
+    expect(neighborhood.fetch).toHaveBeenCalledTimes(2);
+    expect(overview.fetch).toHaveBeenCalledTimes(1);
+    for (let elapsed = SETTLE_MS; elapsed < 1_000; elapsed += 100) {
+      source.emit("graph");
+      await vi.advanceTimersByTimeAsync(100);
+    }
+    await vi.advanceTimersByTimeAsync(OVERVIEW_SETTLE_MS - 1_000 - 1);
+    expect(overview.fetch).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(overview.fetch).toHaveBeenCalledTimes(2);
   });
 
   it("ignores late callbacks from the old connection after switching KB", async () => {

@@ -397,7 +397,9 @@ export function Graph() {
     canUpload: kb?.my_role !== "viewer",
   });
   const data = useQuery({
-    queryKey: ["graph", kb?.id, focusEntity, nodeBudget],
+    queryKey: focusEntity
+      ? ["graph", kb?.id, "neighborhood", focusEntity]
+      : ["graph", kb?.id, "overview", nodeBudget],
     queryFn: () =>
       focusEntity
         ? api.graphNeighborhood(kb!.id, focusEntity)

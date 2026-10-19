@@ -830,6 +830,9 @@ pub struct EntityFact {
     /// 终点是时间线推出来的（`facts.end_derived`）：后一条事实开始时引擎把它关上，原文没说
     /// 这一天（#970）
     pub end_derived: bool,
+    /// `valid_to` 仍是存的边界；true 说原文讲的是在它之前结束的那个时段（`facts.end_after_period`，
+    /// #994）：「2024 年离开」存 2025-01-01，原文说的是 2024
+    pub end_after_period: bool,
     /// 区间是人改过的（#970）：`corrected_ends` 有值。与 `corrected` 不同，那一位是任何一次
     /// 改写：自动接续、审阅裁决、人手改
     pub time_corrected: bool,

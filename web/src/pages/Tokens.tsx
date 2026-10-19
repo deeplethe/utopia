@@ -27,11 +27,13 @@ import {
   Th,
   THead,
   Tr,
-  buttonLike,} from "../ui";
+  buttonLike,
+  localDate,
+} from "../ui";
 import { toast } from "../toast";
 import { copyAndSay } from "../clipboard";
+import { kbOptions } from "./kbGroups";
 
-const ymd = (iso: string) => iso.slice(0, 10);
 const EXPIRY_CHOICES = [30, 90, 365, 0] as const;
 
 /** Claude Code / Claude Desktop 一族的 Streamable HTTP 写法。每个库一个端点（0014：
@@ -164,15 +166,15 @@ function TokenRow({
         {t.kb_ids?.length ? S.account.nBases(t.kb_ids.length) : S.account.allBases}
       </Td>
       <Td className="u-num text-small text-ink-2">
-        {t.last_used_at ? ymd(t.last_used_at) : S.account.neverUsed}
+        {t.last_used_at ? localDate(t.last_used_at) : S.account.neverUsed}
       </Td>
       <Td className="u-num text-small text-ink-2">
-        {t.expires_at ? ymd(t.expires_at) : S.account.noExpiry}
+        {t.expires_at ? localDate(t.expires_at) : S.account.noExpiry}
       </Td>
-      <Td className="u-num text-small text-ink-2">{ymd(t.created_at)}</Td>
+      <Td className="u-num text-small text-ink-2">{localDate(t.created_at)}</Td>
       <Td className="text-right">
         {revoked ? (
-          <Chip tone="danger">{S.account.revokedOn(ymd(t.revoked_at!))}</Chip>
+          <Chip tone="danger">{S.account.revokedOn(localDate(t.revoked_at!))}</Chip>
         ) : arm ? (
           <Button variant="danger" size="sm"
             disabled={busy}
@@ -372,7 +374,7 @@ export function Tokens() {
                 <MultiSearchSelect
                   className="w-full"
                   values={Array.from(picked)}
-                  options={kbs.map((k) => ({ value: k.id, label: k.name }))}
+                  options={kbOptions(kbs)}
                   placeholder={S.account.pickBases}
                   emptyHint={S.account.allBases}
                   onToggle={(id) => {

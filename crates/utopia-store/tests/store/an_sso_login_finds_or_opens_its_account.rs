@@ -5,6 +5,55 @@ use uuid::Uuid;
 
 const ISSUER: &str = "https://id.sso.test";
 
+#[tokio::test]
+async fn ambiguous_active_emails_leave_accounts_and_identities_unchanged() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let org = Uuid::now_v7();
+    sqlx::query("INSERT INTO organizations (id, name) VALUES ($1, 'sso-ambiguity-test')")
+        .bind(org)
+        .execute(&pool)
+        .await?;
+    let run = async {
+        let email = format!("{}-ann@sso.test", Uuid::now_v7().simple());
+        let first = Uuid::now_v7();
+        for (id, address) in [(first, email.to_uppercase()), (Uuid::now_v7(), email.clone())] {
+            sqlx::query("INSERT INTO users (id, org_id, email, display_name, password_hash) VALUES ($1, $2, $3, 'Ann', 'x')")
+                .bind(id).bind(org).bind(address).execute(&pool).await?;
+        }
+        let snapshot = || async {
+            sqlx::query_scalar::<_, serde_json::Value>(
+                "SELECT jsonb_build_object(
+                    'users', (SELECT jsonb_agg(to_jsonb(u) ORDER BY id) FROM users u WHERE org_id = $1),
+                    'identities', (SELECT jsonb_agg(to_jsonb(i) ORDER BY subject) FROM oidc_identities i JOIN users u ON u.id = i.user_id WHERE u.org_id = $1))",
+            ).bind(org).fetch_one(&pool).await
+        };
+        for already_linked in [false, true] {
+            if already_linked {
+                sqlx::query("INSERT INTO oidc_identities (issuer, subject, user_id) VALUES ($1, $2, $3)")
+                    .bind(ISSUER).bind(format!("existing-{first}")).bind(first).execute(&pool).await?;
+            }
+            let before = snapshot().await?;
+            // 两种精确拼写都必须拒绝；已有绑定也不能让另一个候选变得可选。
+            for address in [&email, &email.to_uppercase()] {
+                let result = utopia_store::accounts::account_for_sso(
+                    &pool, ISSUER, &format!("new-{first}"), address, "Changed",
+                ).await;
+                assert!(matches!(result, Err(utopia_core::AppError::CodedConflict { code: "unlinked", ref message }) if message == "Multiple active accounts match the SSO email"));
+                assert_eq!(snapshot().await?, before);
+            }
+        }
+        anyhow::Ok(())
+    }.await;
+    sqlx::query("DELETE FROM organizations WHERE id = $1")
+        .bind(org)
+        .execute(&pool)
+        .await?;
+    run
+}
+
 /// 一个比库里其它组织都早的组织，开户会落进它的默认工作区
 /// 用「最早的组织」的测试一个一个跑，组织的时间也比库里现有的都早一天：
 /// 并行时谁更早说不准，中断的旧测试留下的组织也会抢走「最早」

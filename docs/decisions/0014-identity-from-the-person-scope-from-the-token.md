@@ -1,6 +1,6 @@
 # 0014 · Identity from the person, scope from the token
 
-- **Status**: Implemented · 2026-10-15 · #180, #318, #1243 · open: tokens across workspaces
+- **Status**: Implemented · 2026-10-16 · #180, #318, #1243 · open: tokens across workspaces
 - **Written**: 2026-09-01 · condensed into English 2026-09-03
 - **Related**: migration `0014_data_source_grants` gave data sources a grant layer; this is the same question where a machine knocks. [0004](0004-language-and-localization.md) has the server speak English only, MCP error codes included. [0015](0015-recording-a-sentence-is-not-asserting-a-fact.md) removes the main objection to opening `remember` over MCP.
 
@@ -70,9 +70,11 @@ push documents in.
    it cannot create one, since a base that does not exist yet is in no list
    (`token_kb_out_of_scope`); revocation and expiry are judged in SQL on every request. Nothing
    here is a base-level machine token or a service account. A token creates only `statements`
-   sources: a `url`, `rss` or `custom` source starts the server fetching on a schedule, with
-   stored credentials for `custom`, which would turn a leaked CI token into a way to make the
-   server call any address; other kinds from a token are refused with `token_source_kind`, and a
+   and `api` sources, both push-only: the server fetches nothing for them and the client pushes
+   with the source key, so a backend mirroring code and docs as plain documents sets up its `api`
+   source the same way. A `url`, `rss` or `custom` source starts the server fetching on a
+   schedule, with stored credentials for `custom`, which would turn a leaked CI token into a way
+   to make the server call any address; other kinds from a token are refused with `token_source_kind`, and a
    session still creates every kind. The audit rows these routes write (`source.created`,
    `alignment.kind_word_decided`, `ontology.imported`) carry the acting token's id as
    `detail.token_id`, so before revoking a leaked token an admin can see what it did (decision
@@ -82,6 +84,17 @@ push documents in.
 
    Not done: rotating or deleting a source, changing a base's settings or members, and every
    other write still take a session. A token does not create workspaces or tokens.
+
+7. **A token reads the graph** (added 2026-10-16, #1262). A service that mirrors into a base reads the
+   base back to check what landed, and a session JWT is the wrong credential for a backend
+   (decision 6). Four reads now also take any live token, acting as its owner: searching a base's
+   entities (`GET /kbs/{id}/entities`), an entity's detail (`GET /kbs/{id}/entities/{eid}`), its
+   record-axis history (`…/history`), and a fact's evidence (`GET /kbs/{id}/facts/{fid}/evidence`).
+   Search finds the entity by name; the detail gives its facts, names and derivations; the
+   history says when we changed our mind; the evidence ties a fact to its sentence. Read is the
+   lowest scope, so any token qualifies; the owner's role is still the ceiling and Viewer
+   suffices; a token whose `kb_ids` exclude the base gets 404, as for document content (0052).
+   Changing an entity on the same path (`PATCH`) still takes a session.
 
 ## Dead ends
 
@@ -104,6 +117,11 @@ push documents in.
 - 2026-10-15: the status line still said `can_write` was hard-coded false. #318 had already
   computed it from the token's scope and the person's role, and `remember` has been reachable
   over MCP with a write token since then. The line now names what is open.
+- 2026-10-16: decision 6 let a token create only `statements` sources, though an `api` source is
+  push-only as well; a backend mirroring several kinds of documents pushes them through one. A
+  token now creates `api` sources too.
+- 2026-10-16: decision 7 opens four graph reads to any token; decision 6's "only these routes
+  and document content" now also counts them.
 
 ## Open questions
 

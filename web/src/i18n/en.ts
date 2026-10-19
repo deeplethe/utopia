@@ -140,11 +140,17 @@ export const en = {
     inference_off:
       "Materialized inference is off for this knowledge base. Turn it on in Settings.",
     bad_resolution: "That is not a valid decision.",
+    interval_inverted:
+      "The end is before the start. Give an end after the start.",
     empty_state_span:
       "A state that ends where it starts holds at no moment. Give an end after the start, or leave it open.",
     unknown_marks: "A single date marks the start, the end, or neither.",
     marks_needs_state:
       "Only a state property says what a single date marks. Events and timeless properties don't.",
+    // 采纳提案（0061 决定 3）：撞上别的写、整次回滚了；复用要写的都已由人另定
+    alignment_busy: "Something else is updating the same items. Nothing was saved; try again shortly.",
+    proposal_stale:
+      "Nothing in this proposal is left to adopt: each of its phrases or kind words is decided differently by a person or no longer appears in any statement. Reject it to clear it.",
   },
   /** 机器给的补充（cron 解析器的原话之类）缀在措辞后面 */
   errDetail: (msg: string, detail: string) => `${msg} (${detail})`,
@@ -586,6 +592,7 @@ export const en = {
       chunk_unextracted: "A passage the endpoint could not answer for",
       phrase_is_value: "Kept, but the phrase is the value itself",
       phrase_is_subject: "Kept, but the phrase is the subject's own name",
+      object_is_value: "Kept, with the object read as a value",
     } as Record<string, string>,
     // 来源级重抽：不危险，只是费时费钱——轻确认，文案直说成本与保留项
     reExtractSource: "Re-extract",
@@ -1800,6 +1807,12 @@ export const en = {
     rejectReasonPrompt:
       "Why not? (optional — the agent reads it before proposing again)",
     rejectedProposal: "Rejected",
+    /* 复用时人另定了的，照人的留着没写（0061 决定 3）：只说留了几条。不说是代理读过之后定的：
+       没记下读到哪一刻的旧提案，人在提案之前定的也照留 */
+    adoptKept: (n: number) =>
+      n === 1
+        ? "Saved. One of these was decided differently by a person and stays as they decided."
+        : `Saved. ${n} of these were decided differently by a person and stay as they decided.`,
     questions: "Competency questions",
     questionsHint:
       "What this knowledge base should be able to answer. The agent proposes classes and properties that serve these; they are the ontology's acceptance test.",

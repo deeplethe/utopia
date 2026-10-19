@@ -1,8 +1,8 @@
 # 0053 · A phrase decision records the inputs it considered
 
-- **Status**: Implemented 2026-09-23 (#878, migration 0072) · revised 2026-09-26 (migration 0092) · revised 2026-09-27 (#975, migration 0098)
+- **Status**: Implemented 2026-09-23 (#878, migration 0072) · revised 2026-09-26 (migration 0092) · revised 2026-09-27 (#975, migration 0098) · revised 2026-10-17 (#1295, migration 0114) · open: the backfill and printing the named period (#994 cut 1), time resolution's ends (cut 2)
 - **Written**: 2026-09-23
-- **Related**: [0044](0044-the-ontology-is-a-view-over-what-documents-say.md) decision 3; [0051](0051-a-human-phrase-decision-carries-its-materialization-work.md); #807, #795, #801 (withdrawn), #773, #754, #966
+- **Related**: [0044](0044-the-ontology-is-a-view-over-what-documents-say.md) decision 3; [0051](0051-a-human-phrase-decision-carries-its-materialization-work.md); #807, #795, #801 (withdrawn), #773, #754, #966, #994
 
 ## Problem
 
@@ -264,6 +264,123 @@ With a scripted model:
 - a model that never gives the value is asked once, and the binding waits in the queue with its
   typed row live;
 - a person's binding is not asked, and the queue lists it until a person's decision writes the value.
+
+## Revision 2026-10-17 (an end that names a period)
+
+Since the revision above, "works for Meridian from 2024-03-01" with "left in 2024" is stored as
+2024-03-01 → 2025-01-01 at year precision. On the world axis that is right: the state holds through
+2024 and not in 2025. But "until 2025" closing the same row stores the same value, so the values
+cannot tell the two apart, and every reader prints the stored instant: chat and MCP print `→ 2025`,
+the graph page `~ 2025`, the history, document and pending rows `2025-01`, the export
+`validThrough "2025"^^xsd:gYear`, and the correction dialog pre-fills 2025 (#994).
+
+**The row says so.** The stored instant stays. `facts.end_after_period` (migration 0114) records
+that the end is the instant after the period the text named, and every reader is to print that
+period. A CHECK, `facts_end_after_period_needs_a_stated_end`, keeps it on a dated end the timeline
+did not draw, on a row with a start. On the Rust side that rule, with the state property the CHECK
+cannot see, is one function, `graph::period_mark_fits`, which both write entries, `rewrite_end_tx`,
+`mark_end_after_period` and the correction route consult. A start-less row never gets it in this
+cut: an end is moved only when the row's start lies in the period. Cut 2, when time resolution
+writes such ends itself, replaces the constraint by name without the start clause and drops that
+clause from the function.
+
+**Who sets it.** The two places the revision above moves an end:
+
+- `insert_fact_on`'s end-only closing path, when it closes an open row at the period's end. An end
+  the timeline drew at that instant is restated there as a written end, marked.
+- `refine_target`, when it takes an inherited end to the period's end.
+
+An open row closed by both "until 2025" and "left in 2024" is marked in either order. When the until
+comes first, or a date given in Review closed the row, "left in 2024" finds the row already closed at
+that instant and rewrites it with the mark, under a row lock (`temporal::mark_end_after_period`), so
+that order leaves one more superseded row. The rewrite reports a merge, not a new row: a row a person
+wrote or closed stays the person's and outlives the statement that marked it, and a marked row read
+again is left alone. Two exceptions: an end a person corrected (`corrected_ends` is `end` or `both`)
+stays as the person set it, and an end stated at another precision is not rewritten (a day-precision
+2025-01-01 is that day, not the end of 2024).
+
+**Who carries or drops it.** `rewrite_end_tx` writes it in the insert #1054 extended and forces it
+off wherever `period_mark_fits` says the row cannot carry it (a drawn or unknown end, a start-less
+row, a property not declared as a state), so the engine's redraws and `close_with_unknown_end` never
+carry it. `rehome_tx` copies it, an errata revision takes it with the old row's time, and the
+same-start branch passes it on when it closes the open row it finds or restates the end the timeline
+drew there. Both write entries drop it where the row cannot carry it: an event, an eternal property,
+no property, no start or no dated end, so a revision onto an event drops it. Merges move rows in
+place; an unmerge moves them in place, or through `rehome_tx` for rows rewritten after the merge;
+the mark stays either way. `close_superseded` writes none, so a close by date in Review, a
+conflict's `close_at` and a violation's `fact_closed` stay stated ends without it; those three
+routes stay outside both cuts.
+
+**Corrections.** `PATCH /api/v1/kbs/{id}/facts/{fact_id}` keeps reading and accepting the stored
+boundary, and the route never translates. The request takes an optional `end_after_period`, the one
+field whose absence means "keep":
+
+- Absent, an end equal to the stored one (the value after truncation, and the precision) keeps the
+  mark while the request keeps a start, so a client that sends back what it read changes nothing. A
+  request that clears the start keeps the instant and drops the mark, since a start-less row is not
+  marked. Any other end is taken as given.
+- An explicit `true` needs a property declared as a state, a start and a dated end; otherwise the
+  route answers 422 `bad_end_after_period`.
+- A change of the mark is a change of the end in `corrected_ends`: changing the shown 2024 to 2025
+  is a correction although the stored instant stays.
+- `interval_inverted` compares both ends after truncation to their precisions. An hour end of 08:30
+  is 08:00 and is refused against a start of 08:10 at minute precision; it used to be stored
+  inverted.
+
+Entity detail returns the mark beside `valid_to`, which stays the stored boundary. The dialog, still
+to be built, shows the named period and always sends the mark. An untouched end goes back as
+stored, and without the mark when the start is cleared. A start moved to or past an untouched end
+is refused as today, now with English and Chinese text. An edited end is translated with the write
+path's rule.
+
+**One printing rule, still to be built.** A marked end prints one unit before the stored instant,
+at its own precision, whatever the precision: 2025-01-01 at year precision prints 2024, 2024-04-01
+at month precision 2024-03. An unmarked end prints as today. The readers: `time_text::span` for
+chat and MCP, an `end_after_period` field beside `valid_to` in MCP's structured results,
+`fmtInterval` and the names list, the history, document, pending and review rows, and the export.
+
+**Export.** This is a deliberate change at the compatibility boundary `web/src/docs/mcp.md`
+describes: for a marked row, the old `validThrough` named the next period. `validThrough` itself
+changes, rather than a separate term carrying the named period, as published on #994 on 2026-10-15:
+`validThrough "2024"^^xsd:gYear` with `utopia:endAfterPeriod true`. The stored instant can be
+recovered: when `endAfterPeriod` is true, it is the end of `validThrough`'s period (`bucket_end`),
+with `validThroughPrecision` for an end below a day.
+
+**Rows written before 0114** stay unmarked until the backfill that follows.
+
+**Limits.**
+
+- Endings that arrive before the start ("until 2025", then "left in 2024", then "works for … from
+  2024-03-01") leave the row unmarked on write: the start-less row in between cannot carry the mark,
+  and the refinement copies its end without it. Cut 2's start-less marked rows revisit it.
+- "Left in 2024" and "left in 2025" on a row from 2024-03-01 both close it at 2025-01-01, and in
+  either order the row ends up marked: the mark settles the disagreement as 2024.
+
+Not doing:
+
+- **Cut 2**: time resolution storing a named period's end as the instant after its last unit, a
+  marked end read backwards by `insert_fact_on`, start-less marked rows, `combine`.
+- **The three closes by date** above: they write the date given, and an end before the start among
+  them is #1294.
+- **The merge's duplicate removal**, which compares neither ends nor marks; it predates this.
+- **History rows**: an invalidated row keeps the stored instant.
+- **MCP `names[]`**, which carries no precisions, so a mark alone would mean nothing there.
+
+Regression coverage, with a real PostgreSQL:
+
+- "Left in 2024" marks the row it closes from 2024-03-01 in both statement orders, the closing path
+  and the refinement.
+- A person's row closed by "until 2025" is marked when a document says "left in 2024", stays the
+  person's, and is left alone when a second document says it again; one whose start a person moved
+  within 2024 is marked too. A day-precision end and an end a person corrected are not rewritten. An
+  end the timeline drew becomes a written, marked end.
+- A rehome carries the mark, and so does an errata revision onto a row with the same start, open
+  (which it closes) or with a drawn end (which it restates); a revision onto an event drops it.
+- Entity detail returns the mark. The route keeps it for a start-only change; drops it for a new
+  end, or a new precision, sent without it and for a cleared start, keeping the instant; writes an
+  explicit `false` or `true`, a change of the mark alone counting as a change of the end; refuses an
+  explicit `true` without a start, a dated end or a state property; and refuses an interval
+  inverted only after truncation.
 
 ## Status history
 

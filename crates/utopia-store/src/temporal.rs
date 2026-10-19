@@ -590,7 +590,7 @@ async fn tidy(
     for (id, end) in diff(&rows, ends) {
         // 重新打开的行只是开着，终点不是谁推出来的
         let derived = end != End::Open;
-        if let Some(corrected) = rewrite_end_tx(tx, id, &end, derived, false).await? {
+        if let Some(corrected) = rewrite_end_tx(tx, id, &end, derived, false, false).await? {
             rewritten.insert(id, corrected);
             report.corrected.push(corrected);
         }
@@ -873,13 +873,51 @@ pub async fn retract(pool: &PgPool, kb_id: Uuid, fact_id: Uuid) -> AppResult<boo
 }
 
 /// 作废 + 改写成**写明的**终点：旧行记 invalidated_at（认知轴），插入闭合区间的修正行
-/// （世界轴），证据引用随行复制。原文说它在哪天结束、人裁决把它关上，都走这里——
-/// 这个终点此后不再由引擎重算。返回修正行 id；`None` = 这条已被作废，没动。
+/// （世界轴），证据引用随行复制。人裁决把它关上走这里，拒绝早于起点的终点；原文写入
+/// 走 `close_stated`。这个终点此后不再由引擎重算。返回修正行 id；`None` = 已作废，没动。
 pub async fn close_superseded<'a>(
     pool: impl sqlx::Acquire<'a, Database = Postgres>,
     fact_id: Uuid,
     valid_to: DateTime<Utc>,
     valid_to_precision: &str,
+) -> AppResult<Option<Uuid>> {
+    let valid_to = crate::graph::truncate_to(valid_to, Some(valid_to_precision));
+    let mut tx = pool.begin().await?;
+    let row: Option<(Option<DateTime<Utc>>, Option<String>)> = sqlx::query_as(
+        "SELECT valid_from, valid_from_precision FROM facts
+         WHERE id = $1 AND invalidated_at IS NULL FOR UPDATE",
+    )
+    .bind(fact_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let Some((from, from_precision)) = row else {
+        return Ok(None);
+    };
+    // 锁住起点后再比，避免并发修正穿过检查；两端都按各自精度截断（#1294）。
+    // 放在审核的 store 入口，也管住冲突默认取新事实起点的闭合，不改原文写入的规则。
+    if from
+        .is_some_and(|from| valid_to < crate::graph::truncate_to(from, from_precision.as_deref()))
+    {
+        return Err(utopia_core::AppError::invalid(
+            "interval_inverted",
+            "The start of the interval is after its end.",
+        ));
+    }
+    // 按日期关上的（审核里关、冲突的 close_at、违规的 fact_closed）给的就是终点那一刻，不标
+    let end = End::At(valid_to, valid_to_precision.to_string());
+    let corrected = rewrite_end_tx(&mut tx, fact_id, &end, false, false, false).await?;
+    tx.commit().await?;
+    Ok(corrected)
+}
+
+/// [`close_superseded`]，外加这个终点是不是原文所说时段之后的那一刻（`end_after_period`，
+/// #994）：写入路径把「2024 年离开」关在 2025-01-01 时标上，读者才印得出 2024
+pub(crate) async fn close_stated<'a>(
+    pool: impl sqlx::Acquire<'a, Database = Postgres>,
+    fact_id: Uuid,
+    valid_to: DateTime<Utc>,
+    valid_to_precision: &str,
+    after_period: bool,
 ) -> AppResult<Option<Uuid>> {
     // 闭合点截到它的精度（0024）：月精度的闭合就是那个月的 1 日 0 点
     let end = End::At(
@@ -887,7 +925,7 @@ pub async fn close_superseded<'a>(
         valid_to_precision.to_string(),
     );
     let mut tx = pool.begin().await?;
-    let corrected = rewrite_end_tx(&mut tx, fact_id, &end, false, false).await?;
+    let corrected = rewrite_end_tx(&mut tx, fact_id, &end, false, false, after_period).await?;
     tx.commit().await?;
     Ok(corrected)
 }
@@ -903,19 +941,28 @@ pub async fn close_with_unknown_end<'a>(
     attested_at: Option<DateTime<Utc>>,
 ) -> AppResult<Option<Uuid>> {
     let mut tx = pool.begin().await?;
-    let corrected =
-        rewrite_end_tx(&mut tx, fact_id, &End::Unknown(attested_at), false, true).await?;
+    let corrected = rewrite_end_tx(
+        &mut tx,
+        fact_id,
+        &End::Unknown(attested_at),
+        false,
+        true,
+        false,
+    )
+    .await?;
     tx.commit().await?;
     Ok(corrected)
 }
 
 /// 原文说出了一条**引擎关上**的行的终点：改写成原文说的，此后不再重算（#679 第三轮评审）。
-/// `valid_to` 为 `None` 是「结束了，不知哪天」，锚在 `attested_at`。返回修正行 id；
-/// 行已作废，或它的终点本来就是写明的，返回 `None`
+/// `valid_to` 为 `None` 是「结束了，不知哪天」，锚在 `attested_at`；`after_period`：原文说的
+/// 是那一刻之前的那个时段（#994）。返回修正行 id；行已作废，或它的终点本来就是写明的，
+/// 返回 `None`
 pub async fn state_derived_end<'a>(
     pool: impl sqlx::Acquire<'a, Database = Postgres>,
     fact_id: Uuid,
     valid_to: Option<(DateTime<Utc>, &str)>,
+    after_period: bool,
     attested_at: Option<DateTime<Utc>>,
 ) -> AppResult<Option<Uuid>> {
     let end = match valid_to {
@@ -933,15 +980,60 @@ pub async fn state_derived_end<'a>(
     .fetch_optional(&mut *tx)
     .await?;
     let corrected = match derived {
-        Some(true) => rewrite_end_tx(&mut tx, fact_id, &end, false, false).await?,
+        Some(true) => rewrite_end_tx(&mut tx, fact_id, &end, false, false, after_period).await?,
         _ => None,
     };
     tx.commit().await?;
     Ok(corrected)
 }
 
+/// 一条写明的终点又被另一种说法说了一遍：「until 2025」关上的行又读到「left in 2024」。
+/// 时刻不变，改写成带标记的一行（#994）；反过来的顺序在收尾那条路上已经标了，两种顺序
+/// 写下同一行。
+///
+/// 调用方（`insert_fact_on`）只比了时刻，这里锁住那一行再查两件事：精度与这次说的相同——
+/// 日精度写明的 2025-01-01 是那一天，不是 2024 年的尽头；终点不是人改过的
+/// （`corrected_ends` 为空或只有起点）——人把显示的 2024 改成 2025，就是要到 2025 年。
+/// 已经标过的不再标。那一行带不带得了标记（引擎画的终点、没有起点的行带不了），读出来交给
+/// `graph::period_mark_fits` 判。返回修正行 id；不必标的返回 `None`
+pub(crate) async fn mark_end_after_period<'a>(
+    pool: impl sqlx::Acquire<'a, Database = Postgres>,
+    fact_id: Uuid,
+    precision: &str,
+) -> AppResult<Option<Uuid>> {
+    let mut tx = pool.begin().await?;
+    #[allow(clippy::type_complexity)]
+    let locked_row: Option<(Option<DateTime<Utc>>, Option<DateTime<Utc>>, bool, bool)> =
+        sqlx::query_as(
+            "SELECT f.valid_from, f.valid_to, f.end_derived,
+                    COALESCE(r.temporal = 'state', false) AS declared_state
+               FROM facts f LEFT JOIN relation_types r ON r.id = f.predicate_id
+              WHERE f.id = $1 AND f.invalidated_at IS NULL
+                AND f.valid_to_precision = $2 AND NOT f.end_after_period
+                AND (f.corrected_ends IS NULL OR f.corrected_ends = 'start')
+              FOR UPDATE OF f",
+        )
+        .bind(fact_id)
+        .bind(precision)
+        .fetch_optional(&mut *tx)
+        .await?;
+    let marked = match locked_row {
+        // 起点那一半人改过的照旧是人的：改写的 CASE 把 'start' 原样带过去
+        Some((from, Some(at), end_derived, declared_state))
+            if crate::graph::period_mark_fits(declared_state, from, Some(at), end_derived) =>
+        {
+            let end = End::At(at, precision.to_string());
+            rewrite_end_tx(&mut tx, fact_id, &end, false, false, true).await?
+        }
+        _ => None,
+    };
+    tx.commit().await?;
+    Ok(marked)
+}
+
 /// 作废 + 改写一行的终点。`derived`：这个终点是引擎按时间线推出来的（0057），之后随
-/// 时间线重算；`require_open`：只改还开着的行。
+/// 时间线重算；`require_open`：只改还开着的行；`after_period`：终点是原文所说时段之后的
+/// 那一刻（#994）。
 ///
 /// 先 `FOR UPDATE` 锁住旧行：并行的两次改写只有一次看得见它还活着，另一次拿到 `None`，
 /// 不会各插一条修正行；往这一行上添证据的也要等它（`graph::add_evidence`），证据不会落在
@@ -952,6 +1044,7 @@ async fn rewrite_end_tx(
     end: &End,
     derived: bool,
     require_open: bool,
+    after_period: bool,
 ) -> AppResult<Option<Uuid>> {
     let alive: Option<(Option<DateTime<Utc>>, Option<Uuid>)> = sqlx::query_as(
         "SELECT valid_from, predicate_id FROM facts
@@ -983,13 +1076,22 @@ async fn rewrite_end_tx(
         End::At(at, precision) => (Some(*at), Some(precision.as_str()), None),
         End::Unknown(anchor) => (None, Some(crate::graph::ENDED_UNKNOWN), *anchor),
     };
+    // 标记只落在带得了它的终点上（`graph::period_mark_fits`）：时间线画的、不知哪天的、重新
+    // 打开的终点，没有起点或属性不是状态的行，一律不带——起点和谓词是上面锁住时读的。要标时
+    // 才去查属性：不标的改写（时间线重画、关成不知哪天）不多一次查询
+    let after_period = after_period && {
+        let declared_state = predicate.is_some()
+            && crate::graph::predicate_temporal(&mut **tx, predicate).await?
+                == crate::graph::Temporal::State;
+        crate::graph::period_mark_fits(declared_state, from, valid_to, derived)
+    };
     let corrected = Uuid::now_v7();
     sqlx::query(
         "INSERT INTO facts (id, kb_id, subject_id, predicate_id, object_id, object_value,
                             valid_from, valid_from_precision, valid_from_grade,
                             valid_to, valid_to_precision, confidence, supersedes,
                             attested_from, attested_by, attested_to, end_derived,
-                            from_statement_id, implied, corrected_ends)
+                            from_statement_id, implied, corrected_ends, end_after_period)
          SELECT $1, kb_id, subject_id, predicate_id, object_id, object_value,
                 valid_from, valid_from_precision, valid_from_grade, $3, $4, confidence, id,
                 attested_from, attested_by,
@@ -998,7 +1100,8 @@ async fn rewrite_end_tx(
                 -- 终点在这里被重新写下（文档说了终点，或时间线推了一个），人改过的终点就不在了；
                 -- 起点那一半照旧
                 CASE corrected_ends WHEN 'both' THEN 'start' WHEN 'end' THEN NULL
-                     ELSE corrected_ends END
+                     ELSE corrected_ends END,
+                $7
          FROM facts WHERE id = $2",
     )
     .bind(corrected)
@@ -1007,6 +1110,7 @@ async fn rewrite_end_tx(
     .bind(precision)
     .bind(anchor)
     .bind(derived)
+    .bind(after_period)
     .execute(&mut **tx)
     .await?;
     carry_open_conflicts(tx, fact_id, corrected).await?;
@@ -1073,11 +1177,11 @@ pub async fn rehome_tx(
                             valid_from, valid_from_precision, valid_to, valid_to_precision,
                             confidence, derived_by_rule, supersedes,
                             attested_from, attested_to, end_derived,
-                            from_statement_id, implied, corrected_ends)
+                            from_statement_id, implied, corrected_ends, end_after_period)
          SELECT $1, kb_id, COALESCE($3, subject_id), predicate_id, COALESCE($4, object_id),
                 object_value, valid_from, valid_from_precision, valid_to, valid_to_precision,
                 confidence, derived_by_rule, id, attested_from, attested_to, end_derived,
-                from_statement_id, implied, corrected_ends
+                from_statement_id, implied, corrected_ends, end_after_period
          FROM facts WHERE id = $2",
     )
     .bind(moved)
@@ -1184,11 +1288,14 @@ async fn copy_evidence(
 /// 改写同一条规矩（[`copy_materialization_links`]）。不带过去的话，陈述不再被活着的
 /// 类型化行代表，画面上它按原话、原来的区间回来，下一轮物化还照它再算一行。
 ///
-/// 改了哪一端记在修正行上（`corrected_ends`，#970）：值或精度变了的那一端，与旧行已有的
-/// 取并集，与修正同一个事务——事实行据此说「这个日期是人改的」，不再靠事后那条审计。
+/// 改了哪一端记在修正行上（`corrected_ends`，#970）：值或精度（终点还有标记）变了的那一端，
+/// 与旧行已有的取并集，与修正同一个事务——事实行据此说「这个日期是人改的」，不再靠事后那条审计。
 /// 人交来的是整段区间，改完两端都是人的（`end_derived` 清掉，时间线不再重画它）：原来
 /// 是时间线推出来的终点，人没改它的值也是把它钉住了，一样算人的；原来就是原文说的那一端
 /// 没改，仍是原文的
+///
+/// 终点是不是原文所说时段之后的那一刻（`end_after_period`，#994）由调用方给，这里只归一：
+/// 修正路由按请求定它，从不替人换算
 ///
 /// 返回修正行 id；`None` 表示这条已被并发改写或作废，本次没有动手。
 pub async fn correct_interval(
@@ -1209,15 +1316,17 @@ pub async fn correct_interval(
     let validity = match predicate {
         Some(_) => validity.truncated().under(temporal)?,
         None => validity.truncated(),
-    };
+    }
+    .drop_period_mark_unless(predicate.is_some() && temporal == crate::graph::Temporal::State);
     let mut tx = pool.begin().await?;
     let corrected = Uuid::now_v7();
+    // 标记变了也算终点变了（#994）：人把显示的 2024 改成 2025，存的时刻没动，说的却是另一年
     let inserted: Option<(Uuid,)> = sqlx::query_as(
         "INSERT INTO facts (id, kb_id, subject_id, predicate_id, object_id, object_value,
                             valid_from, valid_from_precision,
                             valid_to, valid_to_precision, confidence, supersedes,
                             attested_from, attested_to,
-                            from_statement_id, implied, corrected_ends)
+                            from_statement_id, implied, corrected_ends, end_after_period)
          SELECT $1, kb_id, subject_id, predicate_id, object_id, object_value,
                 $3, $4, $5, $6, confidence, id,
                 attested_from,
@@ -1225,7 +1334,8 @@ pub async fn correct_interval(
                 from_statement_id, implied,
                 CASE WHEN start_marked AND end_marked THEN 'both'
                      WHEN start_marked THEN 'start'
-                     WHEN end_marked THEN 'end' END
+                     WHEN end_marked THEN 'end' END,
+                $7
          FROM (SELECT f.*,
                       c.start_changed OR COALESCE(f.corrected_ends IN ('start', 'both'), false)
                           AS start_marked,
@@ -1238,6 +1348,7 @@ pub async fn correct_interval(
                                           AS start_changed,
                                       f.valid_to IS DISTINCT FROM $5::timestamptz
                                           OR f.valid_to_precision IS DISTINCT FROM $6::text
+                                          OR f.end_after_period IS DISTINCT FROM $7::boolean
                                           AS end_changed) c
                 WHERE f.id = $2 AND f.invalidated_at IS NULL) old
          RETURNING id",
@@ -1248,6 +1359,7 @@ pub async fn correct_interval(
     .bind(validity.from_precision)
     .bind(validity.to)
     .bind(validity.to_precision)
+    .bind(validity.end_after_period)
     .fetch_optional(&mut *tx)
     .await?;
     // 已被并发修正过：不重复动手（与 close_superseded 同一防线）
