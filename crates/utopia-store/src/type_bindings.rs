@@ -17,7 +17,7 @@
 //! 不收（[`decide_and_apply_if_current`]）。
 
 use chrono::{DateTime, Utc};
-use sqlx::{Executor, PgPool, Postgres};
+use sqlx::{Executor, PgPool, Postgres, Transaction};
 use std::collections::HashMap;
 use utopia_core::{AppError, AppResult};
 use uuid::Uuid;
@@ -438,18 +438,7 @@ pub async fn decide_and_apply_human(
         sqlx::query("SET LOCAL lock_timeout = '2s'")
             .execute(&mut *tx)
             .await?;
-        let written = write_decision_and_projection(
-            &mut tx,
-            kb_id,
-            kind_word,
-            &[],
-            type_id,
-            if type_id.is_some() { "bound" } else { "none" },
-            votes,
-            "person",
-            None,
-        )
-        .await?;
+        let written = decide_and_apply_human_tx(&mut tx, kb_id, kind_word, type_id, votes).await?;
         if written {
             crate::jobs::enqueue_unless_queued_tx(
                 &mut tx,
@@ -474,18 +463,51 @@ pub async fn decide_and_apply_human(
                     "rolling back human kind-word decision: {rollback}"
                 ))));
             }
-            if matches!(&error, AppError::Db(sqlx::Error::Database(e))
-                if e.code().as_deref() == Some("55P03"))
-            {
-                return Err(AppError::CodedConflict {
-                    code: "alignment_busy",
-                    message: "This kind word is being updated by another operation. Please try again shortly."
-                        .into(),
-                });
-            }
-            Err(error)
+            Err(busy_on_lock_timeout(error))
         }
     }
+}
+
+/// A person's decision and its entity projection, written as [`decide_and_apply_human`]
+/// writes them but on the caller's transaction, so they commit or roll back with the
+/// caller's other writes. The caller queues the phrase alignment the changed classes
+/// need in the same transaction, and sets its own lock timeout and maps it with
+/// [`busy_on_lock_timeout`].
+pub async fn decide_and_apply_human_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    kb_id: Uuid,
+    kind_word: &str,
+    type_id: Option<Uuid>,
+    votes: &serde_json::Value,
+) -> AppResult<bool> {
+    write_decision_and_projection(
+        tx,
+        kb_id,
+        kind_word,
+        &[],
+        type_id,
+        if type_id.is_some() { "bound" } else { "none" },
+        votes,
+        "person",
+        None,
+    )
+    .await
+}
+
+/// A lock wait that ran out (55P03 under `lock_timeout`) means another operation
+/// is updating the kind word: answer the retryable 409 the review page knows.
+pub fn busy_on_lock_timeout(error: AppError) -> AppError {
+    if matches!(&error, AppError::Db(sqlx::Error::Database(e))
+        if e.code().as_deref() == Some("55P03"))
+    {
+        return AppError::CodedConflict {
+            code: "alignment_busy",
+            message:
+                "This kind word is being updated by another operation. Please try again shortly."
+                    .into(),
+        };
+    }
+    error
 }
 
 #[allow(clippy::too_many_arguments)]

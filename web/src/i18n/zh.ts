@@ -127,9 +127,14 @@ export const zh: Strings = {
     concurrency_range: "填一个 1 到 256 之间的数。",
     inference_off: "这个库没有打开物化推理。到设置里开。",
     bad_resolution: "这不是一个有效的裁决。",
+    interval_inverted: "终点早于起点。请给一个晚于起点的终点。",
     empty_state_span: "起止相同的状态任何时刻都不成立。给一个晚于起点的终点，或者让它开着。",
     unknown_marks: "单个日期标的是开始、结束，或者都不是。",
     marks_needs_state: "只有状态属性才说单个日期标的是什么，事件与恒常属性不说。",
+    // 采纳提案（0061 决定 3）：撞上别的写、整次回滚了；复用要写的都已由人另定
+    alignment_busy: "另一项操作正在改同样的内容，这次什么都没保存，请稍后再试。",
+    proposal_stale:
+      "这条提案已经没有可采纳的了：它的每个短语或类别词要么已由人另行判定，要么已不在任何陈述里。拒绝它就能清掉。",
   },
   errDetail: (msg: string, detail: string) => `${msg}（${detail}）`,
   toast: {
@@ -528,6 +533,7 @@ export const zh: Strings = {
       chunk_unextracted: "这一段端点没能答上，没有进图",
       phrase_is_value: "已保留，但短语就是那个值",
       phrase_is_subject: "已保留，但短语就是主语的名字",
+      object_is_value: "已保留，宾语按值记下",
     },
     reExtractSource: "重新抽取",
     reExtractTitle: "重新抽取这个来源？",
@@ -1573,6 +1579,7 @@ export const zh: Strings = {
     rejectProposal: "拒绝",
     rejectReasonPrompt: "为什么不要？（可不填——代理下次提案前会读）",
     rejectedProposal: "已拒绝",
+    adoptKept: (n: number) => `已保存。其中 ${n} 条已由人另行判定，按人的判定保留。`,
     questions: "能力问题",
     questionsHint:
       "这个知识库应该答得上来的问题。代理提的类与属性要服务它们；它们就是本体的验收标准。",

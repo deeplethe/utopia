@@ -2342,12 +2342,13 @@ export const api = {
   /** 上次算出来、还没人表态的提案（0049）。刷新页面靠它，不必重跑模型 */
   storedProposals: (kbId: string) =>
     request<OntologyProposals>(`/api/v1/kbs/${kbId}/ontology/proposals`),
-  /** 一条提案有人表态了。改状态不删行——拒绝留痕，下一轮 Suggest 不再刷回待看 */
+  /** 一条提案有人拒绝了。改状态不删行——拒绝留痕，下一轮 Suggest 不再刷回待看。
+   *  只收拒绝：采纳走 adoptProposal，元素和采纳的状态一起提交（0061 决定 3） */
   decideProposal: (
     kbId: string,
     section: string,
     key: string,
-    status: "adopted" | "rejected",
+    status: "rejected",
     /** 拒绝的理由（0061）：下一轮代理读得到 */
     reason?: string,
   ) =>
@@ -2361,7 +2362,7 @@ export const api = {
       method: "POST",
       body: "{}",
     }),
-  /** 采纳代理的一条提案（0061 决定 3）：服务端建元素、标记、排对齐 */
+  /** 采纳代理的一条提案（0061 决定 3）：元素、回归用例、采纳的状态和后续任务一次提交 */
   adoptProposal: (
     kbId: string,
     section: string,
@@ -2375,7 +2376,11 @@ export const api = {
       parents?: string[];
     },
   ) =>
-    request<{ id: string }>(`/api/v1/kbs/${kbId}/ontology/proposals/adopt`, {
+    request<{
+      id: string;
+      /** 复用时留着没写的形状或类别词，各带人定成了什么：代理读过之后人另定了、和提案不一样的 */
+      skipped: ({ phrase: string } | { kind_word: string })[];
+    }>(`/api/v1/kbs/${kbId}/ontology/proposals/adopt`, {
       method: "POST",
       body: JSON.stringify({ section, key, ...(edits ?? {}) }),
     }),

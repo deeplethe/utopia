@@ -86,8 +86,8 @@ impl Rig {
         }))
     }
 
-    /// 推一篇文档并抽取：一条陈述，写成 [主语, 它的类别词, 短语, 宾语, 它的类别词]
-    async fn push(&self, external_id: &str, said: [&str; 5]) -> anyhow::Result<()> {
+    /// 推一篇文档并抽取：一条陈述，写成 [主语, 它的类别词, 短语, 宾语, 它的类别词]。返回文档
+    async fn push(&self, external_id: &str, said: [&str; 5]) -> anyhow::Result<Uuid> {
         let [subject, subject_kind, phrase, object, object_kind] = said;
         let payload: Value = json!({
             "external_id": external_id,
@@ -118,7 +118,8 @@ impl Rig {
             doc,
             utopia_core::models::Proposer::default(),
         )
-        .await
+        .await?;
+        Ok(doc)
     }
 
     async fn bindings(&self) -> anyhow::Result<Vec<phrase_bindings::Binding>> {
@@ -271,6 +272,34 @@ async fn only_a_phrase_naming_one_relation_that_fits_both_ends_binds() -> anyhow
         bound,
         vec![("validated_by".to_string(), Some(rig.statement))]
     );
+    rig.cleanup().await
+}
+
+/// 签名都已判过的推送不数库里的签名（#1296）。一条连接的池上 sqlx 缓存它跑过的每条语句，
+/// 没跑的不在 `pg_prepared_statements` 里
+#[tokio::test]
+async fn a_push_whose_signatures_are_settled_skips_the_base_signatures() -> anyhow::Result<()> {
+    let Some(rig) = Rig::new().await? else {
+        return Ok(());
+    };
+    rig.push("obs-1", ["S-1", "statement", "validated_by", "T-1", "test"])
+        .await?;
+    let second = rig
+        .push("obs-2", ["S-2", "statement", "validated_by", "T-2", "test"])
+        .await?;
+    let one = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with((*rig.pool.connect_options()).clone())
+        .await?;
+    assert_eq!(bind_declared(&one, rig.kb, second).await?, 0);
+    let grouped: Vec<String> = sqlx::query_scalar(
+        "SELECT statement FROM pg_prepared_statements
+         WHERE statement LIKE '%WITH live AS%' AND statement NOT LIKE '%pg_prepared_statements%'",
+    )
+    .fetch_all(&one)
+    .await?;
+    assert_eq!(grouped, Vec::<String>::new());
+    one.close().await;
     rig.cleanup().await
 }
 

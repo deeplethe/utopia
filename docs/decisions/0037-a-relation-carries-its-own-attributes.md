@@ -83,6 +83,11 @@ instead of a class.
    answer to two observations that disagree is two rows and a `fact_conflicts` entry; wiring
    that requires a write path that can bypass dedup on purpose, and is the next cut.
 
+   2026-10-18: role words on open statements (`statement_qualifiers`) no longer keep the first
+   value. Each is recorded against its evidence chunk and speaks while that chunk is live; see
+   [0070](0070-a-role-word-speaks-while-its-chunk-is-live.md). The typed `fact_qualifiers`
+   above keep this rule.
+
 4. **An entity-valued qualifier is reserved, not built.** "A invested in B *through* C" needs a
    qualifier that points at a node. The table has the column and the `CHECK` that says one of
    value or entity, so the second migration is never needed; nothing writes it yet, and the

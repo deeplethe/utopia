@@ -610,6 +610,7 @@ pub async fn apply(
                 &p.description,
                 &domains,
                 &ranges,
+                p.temporal.as_deref(),
             )
             .await?
             {
@@ -631,6 +632,8 @@ pub async fn apply(
             symmetric: p.symmetric,
             asymmetric: p.asymmetric,
             irreflexive: p.irreflexive,
+            // 本体用 `utopia:temporal` 说了的照它说的（0031）；没说的是 state
+            temporal: p.temporal.as_deref().unwrap_or("state").to_string(),
         });
         pending_links.push((p.key.clone(), domains, ranges));
     }
@@ -719,6 +722,8 @@ pub async fn apply(
             symmetric: false,
             asymmetric: false,
             irreflexive: false,
+            // 属性建成 state，页面也不给别的选（0031 的「未决」里那一条）
+            temporal: "state".to_string(),
         });
         pending_attr_domains.push((p.key.clone(), domain_ids));
     }

@@ -59,6 +59,7 @@ async fn every_axiom_survives_the_bulk_insert() -> anyhow::Result<()> {
                 symmetric: s,
                 asymmetric: a,
                 irreflexive: r,
+                temporal: "state".into(),
             }
         };
         // 一条全真、一条全假：全假那条守的是"没声明的不该被写成真"

@@ -66,7 +66,7 @@ text-splitter = { version = "0.32", features = ["tiktoken-rs"] }
 tiktoken-rs = "0.12"
 # 句子边界按 Unicode 标准（UAX #29）切，不自己写标点规则
 pdf-extract = "0.12"
-calamine = "0.36"
+calamine = "0.37"
 pgvector = { version = "0.4", features = ["sqlx"] }
 # `gzip` 不是可选项：一次嵌入回 64×1024 个浮点数，写成 JSON 文本每个数字占
 # 21 字节而信息量只有 4 字节，一次响应 1.33 MB。实测同一条链路上不压缩 62 秒、

@@ -23,6 +23,7 @@ use utopia_core::AppResult;
 use uuid::Uuid;
 
 use crate::graph::{insert_fact_on, FactObject, Validity};
+use serde_json::Value;
 
 /// 陈述与绑定对得上的条件：短语归一后相等，两端的类相同（空也相同），宾语是不是字面值相同。
 /// `s` 是开放陈述（facts），`se`/`oe` 是它两端的实体，`b` 是 phrase_bindings
@@ -43,6 +44,10 @@ const MOMENT_UNREAD: &str =
        AND EXISTS (SELECT 1 FROM relation_types rt
                     WHERE rt.id = b.relation_type_id AND rt.temporal = 'state')
        AND b.marks IS DISTINCT FROM 'start' AND b.marks IS DISTINCT FROM 'end')";
+
+/// 属性的 datatype 与单位，值按它们读（[`attribute_value`]）；`rt` 是绑到或蕴含的那条属性，
+/// 是关系时 datatype 为 NULL，值原样写
+const SHAPE: &str = "CASE WHEN rt.kind = 'attribute' THEN rt.datatype END AS datatype, rt.unit";
 
 /// 一轮重算写了什么。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -81,6 +86,9 @@ struct Due {
     marks: Option<String>,
     /// 绑到的属性的时间语义
     temporal: Option<String>,
+    /// 绑到的是属性时它的 datatype 与单位，值按它们读（[`attribute_value`]）
+    datatype: Option<String>,
+    unit: Option<String>,
 }
 
 /// 对一个库重算一遍。
@@ -148,6 +156,11 @@ async fn materialize_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     kb_id: Uuid,
 ) -> AppResult<(Outcome, Vec<Uuid>)> {
+    // The statements that scan the whole base (steps 0 to 3, the implication scans and the
+    // attestation sync) are not cached: a cached statement switches to a generic plan after a few
+    // runs, and a generic plan cannot see how many rows `kb_id = $1` selects. The source cleanup's
+    // generic plan ran for hours on a production base where the plan for its own id takes two
+    // seconds (#1298). The per-row statements in the loops stay cached.
     // 这一轮写下的行（新建的和并入的），提交后对账
     let mut written: Vec<Uuid> = Vec::new();
     // 0. 起止同值的物化状态行（#966 之前照抄一刻写下的）任何时刻都不成立：作废，它的陈述
@@ -173,6 +186,7 @@ async fn materialize_in_tx(
                              OR s.id IN (SELECT i.statement_id FROM implied_fact_sources i
                                           WHERE i.fact_id = t.id)))",
     )
+    .persistent(false)
     .bind(kb_id)
     .execute(&mut **tx)
     .await?
@@ -190,6 +204,7 @@ async fn materialize_in_tx(
              LEFT JOIN entities oe ON oe.id = s.object_id
                   JOIN phrase_bindings b ON {MATCH}
                  WHERE s.id = src.statement_id
+                   AND s.kb_id = $1
                    AND s.invalidated_at IS NULL
                    AND t.invalidated_at IS NULL
                    AND b.status = 'bound'
@@ -200,6 +215,7 @@ async fn materialize_in_tx(
                                     WHERE q.fact_id = s.id AND q.role = 'mood')
                    AND NOT {MOMENT_UNREAD})"
     ))
+    .persistent(false)
     .bind(kb_id)
     .execute(&mut **tx)
     .await?;
@@ -224,6 +240,7 @@ async fn materialize_in_tx(
         RULE_MATCH = crate::implication_rules::RULE_MATCH,
         KIND = kind_word_sql("e.specific_type"),
     ))
+    .persistent(false)
     .bind(kb_id)
     .execute(&mut **tx)
     .await?;
@@ -237,6 +254,7 @@ async fn materialize_in_tx(
             AND NOT EXISTS (SELECT 1 FROM typed_fact_sources src WHERE src.fact_id = t.id)
             AND NOT EXISTS (SELECT 1 FROM implied_fact_sources i WHERE i.fact_id = t.id)",
     )
+    .persistent(false)
     .bind(kb_id)
     .execute(&mut **tx)
     .await?
@@ -251,12 +269,12 @@ async fn materialize_in_tx(
                 s.valid_from, s.valid_from_precision, s.valid_from_grade,
                 s.valid_to, s.valid_to_precision,
                 s.attested_from, s.confidence, b.marks,
-                (SELECT rt.temporal FROM relation_types rt WHERE rt.id = b.relation_type_id)
-                    AS temporal
+                rt.temporal, {SHAPE}
            FROM facts s
            JOIN entities se ON se.id = s.subject_id
       LEFT JOIN entities oe ON oe.id = s.object_id
            JOIN phrase_bindings b ON {MATCH}
+           JOIN relation_types rt ON rt.id = b.relation_type_id
           WHERE s.kb_id = $1 AND s.layer = 'open' AND s.invalidated_at IS NULL
             AND b.status = 'bound'
             AND (b.direction = 'forward' OR s.object_id IS NOT NULL)
@@ -272,6 +290,7 @@ async fn materialize_in_tx(
                                AND t.predicate_id = b.relation_type_id)
           ORDER BY s.id"
     ))
+    .persistent(false)
     .bind(kb_id)
     .fetch_all(&mut **tx)
     .await?;
@@ -281,7 +300,8 @@ async fn materialize_in_tx(
         let reverse = d.direction == "reverse";
         // 一刻的陈述在状态属性下按绑定说的读（#966）：开始写成从那一刻起，结束写成到那一刻
         // 为止（走 `insert_fact_on`「某天结束了」那条路，关上开放的那段）。什么都不算的
-        // 在查询里已经排掉了（[`MOMENT_UNREAD`]）
+        // 在查询里已经排掉了（[`MOMENT_UNREAD`]）。陈述不带 `end_after_period`：终点挪没挪到
+        // 时段的尽头由写入路径定（#994 第一刀）
         let moment = d.temporal.as_deref() == Some("state")
             && d.valid_from.is_some()
             && d.valid_from == d.valid_to;
@@ -293,6 +313,7 @@ async fn materialize_in_tx(
                 to: d.valid_to,
                 to_precision: d.valid_to_precision.as_deref(),
                 attested_at: d.attested_from,
+                end_after_period: false,
             },
             (true, Some("start")) => Validity {
                 from: d.valid_from,
@@ -301,6 +322,7 @@ async fn materialize_in_tx(
                 to: None,
                 to_precision: None,
                 attested_at: d.attested_from,
+                end_after_period: false,
             },
             (true, Some("end")) => Validity {
                 from: None,
@@ -309,6 +331,7 @@ async fn materialize_in_tx(
                 to: d.valid_from,
                 to_precision: d.valid_from_precision.as_deref(),
                 attested_at: d.attested_from,
+                end_after_period: false,
             },
             (true, _) => continue,
         };
@@ -338,12 +361,17 @@ async fn materialize_in_tx(
                 .await?
             }
             (false, None, Some(value)) => {
+                // 读不成属性的 datatype：陈述留在开放图谱里，这一对不写
+                let Some(value) = attribute_value(value, d.datatype.as_deref(), d.unit.as_deref())
+                else {
+                    continue;
+                };
                 insert_fact_on(
                     tx,
                     kb_id,
                     d.subject_id,
                     Some(d.property),
-                    FactObject::Value(value),
+                    FactObject::Value(&value),
                     validity,
                     d.confidence,
                 )
@@ -479,6 +507,7 @@ pub async fn sync_typed_attestation<'e>(
                  OR t.attested_by IS DISTINCT FROM src.by)
           RETURNING t.id",
     )
+    .persistent(false)
     .bind(kb_id)
     .bind(only)
     .fetch_all(ex)
@@ -502,6 +531,8 @@ struct Implied {
     valid_to_precision: Option<String>,
     attested_from: Option<chrono::DateTime<chrono::Utc>>,
     confidence: f32,
+    datatype: Option<String>,
+    unit: Option<String>,
 }
 
 async fn imply_in_tx(
@@ -517,8 +548,9 @@ async fn imply_in_tx(
                 CASE WHEN r.reading IS NULL THEN s.object_id ELSE pr.entity_id END AS object_id,
                 CASE WHEN r.reading IS NULL THEN s.object_value ELSE pr.value END AS object_value,
                 s.valid_from, s.valid_from_precision, s.valid_from_grade, s.valid_to, s.valid_to_precision,
-                s.attested_from, s.confidence
+                s.attested_from, s.confidence, {SHAPE}
            FROM implication_rules r
+           JOIN relation_types rt ON rt.id = r.conclude_property_id
            JOIN facts s ON s.kb_id = r.kb_id AND s.layer = 'open' AND s.invalidated_at IS NULL
            JOIN entities se ON se.id = s.subject_id
       LEFT JOIN entities oe ON oe.id = s.object_id
@@ -531,8 +563,7 @@ async fn imply_in_tx(
             -- 规则没有 marks（#966）：一刻的陈述蕴含一条状态属性时，读法未知，不算隐含行。
             -- 用 IS NOT DISTINCT FROM：只有起点的陈述上 `=` 是 NULL，NOT 之后照样把它排掉
             AND NOT (s.valid_from IS NOT NULL AND s.valid_to IS NOT DISTINCT FROM s.valid_from
-                     AND EXISTS (SELECT 1 FROM relation_types rt
-                                  WHERE rt.id = r.conclude_property_id AND rt.temporal = 'state'))
+                     AND rt.temporal = 'state')
             AND NOT EXISTS (SELECT 1 FROM errata_actions ea
                              WHERE ea.statement_id = s.id AND ea.predicate_id = r.conclude_property_id
                                AND ea.status = 'applied' AND ea.action IN ('retract', 'revise'))
@@ -542,6 +573,7 @@ async fn imply_in_tx(
         TEXT = crate::implication_rules::object_text_sql(),
         RULE_MATCH = crate::implication_rules::RULE_MATCH,
     ))
+    .persistent(false)
     .bind(kb_id)
     .fetch_all(&mut **tx)
     .await?;
@@ -552,8 +584,9 @@ async fn imply_in_tx(
                 pr.entity_id AS object_id, pr.value AS object_value,
                 NULL::timestamptz AS valid_from, NULL::text AS valid_from_precision, NULL::text AS valid_from_grade,
                 NULL::timestamptz AS valid_to, NULL::text AS valid_to_precision,
-                NULL::timestamptz AS attested_from, 0.9::real AS confidence
+                NULL::timestamptz AS attested_from, 0.9::real AS confidence, {SHAPE}
            FROM implication_rules r
+           JOIN relation_types rt ON rt.id = r.conclude_property_id
            JOIN entities e ON e.kb_id = r.kb_id AND e.merged_into IS NULL AND {KIND} = r.phrase
            JOIN phrase_readings pr ON pr.kb_id = r.kb_id AND pr.reading = r.reading AND pr.phrase = r.phrase
           WHERE r.kb_id = $1 AND r.status = 'approved' AND r.trigger = 'kind_word' AND r.reading IS NOT NULL
@@ -563,6 +596,7 @@ async fn imply_in_tx(
           ORDER BY e.id",
         KIND = kind_word_sql("e.specific_type"),
     ))
+    .persistent(false)
     .bind(kb_id)
     .fetch_all(&mut **tx)
     .await?;
@@ -576,10 +610,18 @@ async fn imply_in_tx(
             to: d.valid_to,
             to_precision: d.valid_to_precision.as_deref(),
             attested_at: d.attested_from,
+            end_after_period: false,
         };
+        let value;
         let object = match (d.object_id, &d.object_value) {
             (Some(o), _) => FactObject::Entity(o),
-            (None, Some(v)) => FactObject::Value(v),
+            (None, Some(v)) => {
+                let Some(v) = attribute_value(v, d.datatype.as_deref(), d.unit.as_deref()) else {
+                    continue;
+                };
+                value = v;
+                FactObject::Value(&value)
+            }
             _ => continue,
         };
         // 一个东西不蕴含自己：读数把「Virginia」读成「United States」是对的，把「France」
@@ -634,6 +676,27 @@ async fn imply_in_tx(
     Ok(implied)
 }
 
+/// 开放陈述的值（`{"value": "2.3亿元"}`）落到属性上的样子：`value` 那一格按 datatype 与单位读成
+/// 数、日期、真假（[`utopia_extract::attribute_value`]），其余键照抄；绑到关系上的值原样留着。
+///
+/// **读不出来就不写**（None）。从前照抄原文的字：声明了 number、单位万元的「注册资本」上躺着
+/// `"2.3亿元"`，导出成 `"2.3亿元"^^xsd:decimal`，比较、对账、规则全都对不上。读不出来的陈述
+/// 还在开放图谱里，原文的字一个没丢。只在这里读、不在 `insert_fact_on` 的门上读：人和勘误
+/// 会在日期属性上写相对的日期（`relative`），那是另一种值
+fn attribute_value(raw: &Value, datatype: Option<&str>, unit: Option<&str>) -> Option<Value> {
+    let Some(datatype) = datatype else {
+        return Some(raw.clone());
+    };
+    let read = utopia_extract::attribute_value(datatype, unit, raw.get("value").unwrap_or(raw))?;
+    let mut out = if raw.is_object() {
+        raw.clone()
+    } else {
+        serde_json::json!({})
+    };
+    out["value"] = read;
+    Some(out)
+}
+
 /// 类别词的归一（同 type_bindings）：这里要在 SQL 里对上实体的 specific_type
 fn kind_word_sql(col: &str) -> String {
     format!("lower(btrim(regexp_replace({col}, '\\s+', ' ', 'g')))")
@@ -654,3 +717,7 @@ pub async fn count(pool: &PgPool, kb_id: Uuid) -> AppResult<i64> {
 #[cfg(test)]
 #[path = "materialize_delivery_tests.rs"]
 mod delivery_tests;
+
+#[cfg(test)]
+#[path = "materialize_plan_tests.rs"]
+mod plan_tests;

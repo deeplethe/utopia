@@ -315,6 +315,7 @@ pub async fn confirm(pool: &PgPool, kb_id: Uuid, id: Uuid) -> AppResult<Confirme
         attested_at,
         // 待定的事实是人或代理提的，日期是直接给的，没经过时间解析
         from_grade: None,
+        end_after_period: false,
     };
     let (fact_id, created) = match (v.object_id, v.object_value.as_ref()) {
         (Some(object_id), _) => {

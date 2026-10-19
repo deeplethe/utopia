@@ -416,7 +416,7 @@ pub(crate) fn escape_control_in_strings(text: &str) -> String {
 /// **单位照抄符号，不猜币种。** `$` 可能是美元、加元、澳元，`¥` 可能是日元或
 /// 人民币。猜出来的 "USD" 是一条没人负责的断言，而原文写的 `$` 是事实。
 pub fn parse_quantity(s: &str) -> Option<(f64, Option<String>)> {
-    scan_quantity(s, true)
+    scan_quantity(s, true).map(|q| (q.n, q.unit))
 }
 
 /// 开头是一个量、后面还挂着词的 → 那个量。`"1,250 people"` → (1250, "people")。
@@ -427,7 +427,7 @@ pub fn parse_quantity(s: &str) -> Option<(f64, Option<String>)> {
 /// `datatype = number` 的属性——问的不再是「是不是数」，是「那个数是多少」，
 /// 判错的代价只是一个值不对，量级差着好几档。
 pub fn parse_leading_quantity(s: &str) -> Option<(f64, Option<String>)> {
-    scan_quantity(s, false)
+    scan_quantity(s, false).map(|q| (q.n, q.unit))
 }
 
 /// 货币：符号、ISO 码、中英文单词，统一成符号。**只认这张表**，认不出的不猜。
@@ -466,7 +466,7 @@ fn magnitude(tok: &str) -> Option<u8> {
 /// 把 `2亿美元`、`15亿元人民币`、`€30 million`、`30 million euros`、`USD 30m`（不认 m）
 /// 这类写法拆成 [前缀货币] 数字 [量级] [后缀货币/单位] [其余]。
 /// `strict` = 整体必须就是一个量：其余部分非空就不认。
-fn scan_quantity(s: &str, strict: bool) -> Option<(f64, Option<String>)> {
+fn scan_quantity(s: &str, strict: bool) -> Option<Quantity> {
     let s = s.trim();
     if s.is_empty() {
         return None;
@@ -542,15 +542,99 @@ fn scan_quantity(s: &str, strict: bool) -> Option<(f64, Option<String>)> {
     } else {
         currency.map(str::to_string).or(unit)
     };
-    if strict {
-        return tail.is_empty().then_some((n, unit));
+    if strict && !tail.is_empty() {
+        return None;
     }
     // 宽松：其余部分的第一个词当单位（`1,250 people` → people），没有货币时才用
-    if unit.is_none() && !tail.is_empty() {
-        let (tok, _) = next_token(tail);
-        return Some((n, Some(tok.to_string())));
+    let unit = unit.or_else(|| (!tail.is_empty()).then(|| next_token(tail).0.to_string()));
+    Some(Quantity {
+        n,
+        unit,
+        scaled: ate_magnitude,
+    })
+}
+
+/// 读出来的一个量。`n` 已经乘上了量级词；`scaled` 记下原文写没写量级词——换算到属性
+/// 声明的单位时要知道 `5000` 是原文就这么写的数，还是 `5000万` 展开出来的
+struct Quantity {
+    n: f64,
+    unit: Option<String>,
+    scaled: bool,
+}
+
+/// 「约」「左右」这类只说数是个约数的词。去掉它们数还是那个数；「超过」「余」不在这里：
+/// 它们说的是一个界，把界当成值就是一条原文没说的断言
+fn strip_approx(s: &str) -> &str {
+    let mut s = s.trim();
+    for p in [
+        "大约",
+        "约合",
+        "将近",
+        "接近",
+        "约",
+        "近",
+        "about ",
+        "approximately ",
+        "around ",
+        "roughly ",
+        "nearly ",
+        "~",
+        "≈",
+    ] {
+        if let Some(rest) = s.strip_prefix(p) {
+            s = rest.trim_start();
+            break;
+        }
     }
-    Some((n, unit))
+    s.strip_suffix("左右").map_or(s, str::trim_end)
+}
+
+/// 计数的量词：`1200人`、`350名`、`32家`。数后面只跟这一个词的，整体还是一个数
+const COUNTERS: &[&str] = &[
+    "人",
+    "名",
+    "位",
+    "个",
+    "家",
+    "台",
+    "件",
+    "项",
+    "岁",
+    "次",
+    "座",
+    "所",
+    "户",
+    "辆",
+    "种",
+    " people",
+    " employees",
+    " staff",
+];
+
+/// 一个宾语的名字是不是其实是个值：一个量（带量级词、货币、百分号或计数量词）或一个
+/// 写法说得清的日期。开放抽取里模型有时把「成立于 2015年3月12日」「注册资本为
+/// 5000万元」的值列成东西写进宾语，签名于是成了两样东西之间的关系，永远对不上属性。
+///
+/// **光秃秃的一个数只在它不是点了名的东西时才算值**：`1200` 是个数，而被点了名的
+/// `1984`、`360` 多半是一本书、一家公司——吃掉一个真实体是不可逆的，留一条数
+/// 在宾语上只是少绑一个属性
+pub fn literal_object(name: &str, named: bool) -> bool {
+    let t = strip_approx(name);
+    if t.is_empty() {
+        return false;
+    }
+    if written_date(t).is_some() || t.contains(['-', '/', '.']) && parse_time(t).is_some() {
+        return true;
+    }
+    match scan_quantity(t, true) {
+        Some(q) if q.unit.is_some() || q.scaled => true,
+        Some(_) => !named,
+        None => COUNTERS.iter().any(|c| {
+            t.strip_suffix(c)
+                .and_then(|r| scan_quantity(r.trim_end(), true))
+                .is_some_and(|q| q.unit.is_none())
+        }),
+    }
 }
 
 /// 下一个记号：ASCII 按空白切；CJK 试最长三字、两字、一字里能认出的量级/货币词，
@@ -592,6 +676,8 @@ pub fn normalize_attr_value(datatype: &str, raw: &serde_json::Value) -> Option<s
                 .and_then(serde_json::Number::from_f64)
                 .map(serde_json::Value::Number),
             serde_json::Value::String(s) => {
+                // 「约350名」：约数的那个字挡在数前面，宽的那套也解不动
+                let s = strip_approx(s);
                 let cleaned: String = s
                     .chars()
                     .filter(|c| !matches!(c, ',' | ' ' | '_'))
@@ -619,6 +705,7 @@ pub fn normalize_attr_value(datatype: &str, raw: &serde_json::Value) -> Option<s
             let s = raw.as_str()?.trim();
             match written_date(s) {
                 Some((date, precision)) => Some(serde_json::Value::String(match precision {
+                    "year" => date.format("%Y").to_string(),
                     "month" => date.format("%Y-%m").to_string(),
                     _ => date.format("%Y-%m-%d").to_string(),
                 })),
@@ -643,6 +730,49 @@ pub fn normalize_attr_value(datatype: &str, raw: &serde_json::Value) -> Option<s
             (!s.is_empty()).then(|| serde_json::Value::String(s.chars().take(500).collect()))
         }
     }
+}
+
+/// 一条开放陈述的值落到一个属性上：按属性的 datatype 归一，数再换算到属性声明的单位。
+///
+/// 单位只换量级：属性写「万元」、原文写「2.3亿元」，存 23000；原文写「5000」这样光
+/// 秃秃的数，就当它已经是声明的单位。原文的货币和声明的货币对不上（「5000万美元」落到
+/// 「万元」上）返回 None——换汇是一条没人负责的断言。读不出来的也是 None：宁缺勿脏，
+/// 陈述留在开放图谱里，不把「约350名」这样的字当成一个数写进类型化图谱
+pub fn attribute_value(
+    datatype: &str,
+    unit: Option<&str>,
+    raw: &serde_json::Value,
+) -> Option<serde_json::Value> {
+    let declared = unit.map(str::trim).filter(|u| !u.is_empty());
+    let read = match (raw, datatype, declared) {
+        (serde_json::Value::String(s), "number", Some(d)) => {
+            scan_quantity(strip_approx(s), false).map(|q| (q, d))
+        }
+        _ => None,
+    };
+    let Some((q, declared)) = read else {
+        return normalize_attr_value(datatype, raw);
+    };
+    // 声明的单位拆成量级和其余：「万元」→ (4, 元)，「million dollars」→ (6, dollars)
+    let (tok, rest) = next_token(declared);
+    let (exponent, base) = match magnitude(&tok.to_ascii_lowercase()) {
+        Some(m) => (m, rest.trim()),
+        None => (0, declared),
+    };
+    let written = q.unit.as_deref().and_then(currency_unit);
+    let wanted = currency_unit(base);
+    if written.is_some() && wanted.is_some() && written != wanted {
+        return None;
+    }
+    // 原文写了量级词，或写了和声明一样的单位（「50000000元」对「万元」），n 才是绝对量，
+    // 要除下来；光秃秃的数就是声明单位下的数。除法走一次十进制解析，同 `scan_quantity`
+    // 乘量级词的道理：先算成 f64 再除会留下 23000.000000000004
+    let n = if q.scaled || (written.is_some() && written == wanted) {
+        format!("{}e-{exponent}", q.n).parse().ok()?
+    } else {
+        q.n
+    };
+    serde_json::Number::from_f64(n).map(serde_json::Value::Number)
 }
 
 /// 解析时间字符串 → (UTC 时间, 精度)。
@@ -773,6 +903,10 @@ fn year_first_date(s: &str) -> Option<Option<(NaiveDate, &'static str)>> {
         // 只到月：写了「年」「月」才算（`2020/03` 太像别的东西）
         [m] if marked && s.ends_with('月') && m.len() <= 2 => {
             NaiveDate::from_ymd_opt(year, number(m)?, 1).map(|date| (date, "month"))
+        }
+        // 只到年：「1982年」。写了「年」才算，光秃秃的 `1982` 归 parse_time
+        [] if marked && s.ends_with('年') => {
+            NaiveDate::from_ymd_opt(year, 1, 1).map(|date| (date, "year"))
         }
         _ => None,
     })
@@ -1287,5 +1421,71 @@ mod a_number_is_one_number {
         assert_eq!(a, b);
         assert_eq!(a, c);
         assert_eq!(a.as_f64(), Some(65.0));
+    }
+}
+
+#[cfg(test)]
+mod an_attribute_value_is_read_in_its_declared_unit {
+    use super::{attribute_value, literal_object};
+    use serde_json::json;
+
+    fn value(datatype: &str, unit: Option<&str>, raw: &str) -> Option<serde_json::Value> {
+        attribute_value(datatype, unit, &json!(raw))
+    }
+
+    /// 公司简介里最平常的几句：值照原文写，落到属性上要是那个数、那一天
+    #[test]
+    fn plain_company_figures_are_read() {
+        assert_eq!(
+            value("number", Some("万元"), "5000万元"),
+            Some(json!(5000.0))
+        );
+        assert_eq!(
+            value("number", Some("万元"), "2.3亿元"),
+            Some(json!(23000.0))
+        );
+        assert_eq!(value("number", Some("亿元"), "8.6亿元"), Some(json!(8.6)));
+        assert_eq!(
+            value("number", Some("万元"), "50000000元"),
+            Some(json!(5000.0))
+        );
+        // 光秃秃的数就是声明单位下的数
+        assert_eq!(value("number", Some("万元"), "5000"), Some(json!(5000.0)));
+        assert_eq!(value("number", Some("人"), "约350名"), Some(json!(350.0)));
+        // 只写到年的日期按年
+        assert_eq!(value("date", None, "1982年"), Some(json!("1982")));
+    }
+
+    /// 换不了的不换：货币对不上、读不出数的，宁缺勿脏
+    #[test]
+    fn what_cannot_be_read_is_not_written() {
+        assert_eq!(value("number", Some("万元"), "5000万美元"), None);
+        assert_eq!(value("number", Some("人"), "超过一千人"), None);
+        assert_eq!(value("date", None, "2023年底"), None);
+        assert_eq!(value("bool", None, "尚未上市"), None);
+    }
+
+    #[test]
+    fn a_figure_or_a_date_is_not_a_thing() {
+        for v in [
+            "5000万元",
+            "8.6亿元",
+            "1200人",
+            "约350名",
+            "2015年3月12日",
+            "1978年5月",
+            "2020年",
+            "2015-03-12",
+            "$5 billion",
+            "52%",
+        ] {
+            assert!(literal_object(v, true), "{v}");
+        }
+        // 光秃秃的数：没点名的是值，点了名的多半是个东西（《1984》、360）
+        assert!(literal_object("1200", false));
+        assert!(!literal_object("1984", true));
+        for name in ["3M", "7天", "2023年底", "星河科技", "董事长兼总经理", "K2"] {
+            assert!(!literal_object(name, false), "{name}");
+        }
     }
 }

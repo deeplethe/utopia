@@ -212,14 +212,17 @@ $2 million on March 4, 2011.\" gives:\n\
 /// 用不上它，而它占系统消息的一成不到
 const OPEN_TABLE_RULES: &str = "\
  In a \
-table, a cell is a statement about its row's thing whose phrase is the column heading. When \
+table, a cell is a statement about its row's thing whose phrase is the column heading and \
+whose value is the cell as written; a cell is the object only when it names a thing of its own \
+(a person, an organization, a place). When \
 the column heading names one time (a date, a quarter, a period), it is when instead, the \
 statement is about the thing the table's caption names (the company of a financial statement) \
 and the phrase is the row label as written, path included (\"Operating expenses › Research and \
 development\"); a heading that names a comparison between periods (a change from the quarter \
 before, a change from a year ago) is not a time, it stays the phrase; a unit the caption or a \
-heading gives (\"In millions\") is a qualifier on each such statement. Leave out cells whose \
-column heading is not in the passage.";
+heading gives (\"In millions\") is a qualifier on each such statement. Otherwise a row is about \
+the thing its first column (or its name, title or ID column) names, not the table or the \
+sheet. Leave out cells whose column heading is not in the passage.";
 
 /// 这一段里有没有表格：Markdown 的竖线、HTML 的单元格、制表符，或者一行里用成串空格
 /// 隔开的三栏以上。宁可多认：认错了只是多带一段规则，和从前一样
@@ -635,6 +638,56 @@ pub fn parse_open_response(raw: &str) -> anyhow::Result<OpenExtraction> {
     Ok(out)
 }
 
+/// 宾语写成了一个值的，改回值；返回挪了的那些宾语，调用方各记一笔（`object_is_value`）。
+///
+/// 规则 2 和表格规则说值写进 value，模型照样会把「成立于 2015年3月12日」「注册资本为
+/// 5000万元」、表格里的「待审核」写进宾语。签名于是成了两样东西之间的关系，对不上任何
+/// 属性。这里只挪格子，原文的字一个不改；挪完以后没有陈述再指着、也不是别名的那个
+/// 「东西」从 `e` 里拿掉，免得建出一个叫「2015年3月12日」的实体。
+///
+/// 只给模型的回复用：推送来的陈述是客户端的契约，它写成宾语的就是宾语
+pub fn values_are_not_things(x: &mut OpenExtraction) -> Vec<String> {
+    let listed: std::collections::HashMap<String, (bool, String)> = x
+        .entities
+        .iter()
+        .map(|e| (name_key(&e.name), (e.named, name_key(&e.kind))))
+        .collect();
+    let mut moved = Vec::new();
+    for s in &mut x.statements {
+        let (Some(object), None) = (s.object.as_deref(), s.value.as_deref()) else {
+            continue;
+        };
+        let (named, kind) = listed
+            .get(&name_key(object))
+            .map_or((false, ""), |(n, k)| (*n, k.as_str()));
+        // 表格里的一格：种类词就是列名、又写成以列名为短语的宾语，模型自己说了这是那一列
+        // 的值。点了名的只在名字里带数字时才算（编号、型号）；只看表格行，散文里点了名的
+        // 「Model 3」照旧是东西
+        let a_cell = kind == name_key(&s.phrase)
+            && !kind.is_empty()
+            && s.quote.as_deref().is_some_and(has_table)
+            && (!named || object.chars().any(|c| c.is_ascii_digit()));
+        if a_cell || crate::literal_object(object, named) {
+            moved.extend(s.object.take());
+            s.value = moved.last().cloned();
+        }
+    }
+    let used: HashSet<String> = x
+        .statements
+        .iter()
+        .flat_map(|s| [Some(&s.subject), s.object.as_ref()])
+        .flatten()
+        .chain(x.names.iter().flat_map(|n| [&n.entity, &n.name]))
+        .map(|n| name_key(n))
+        .collect();
+    let moved_keys: HashSet<String> = moved.iter().map(|n| name_key(n)).collect();
+    x.entities.retain(|e| {
+        let key = name_key(&e.name);
+        used.contains(&key) || !moved_keys.contains(&key)
+    });
+    moved
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1045,6 +1098,62 @@ mod tests {
         assert_eq!(x.statements[0].object.as_deref(), Some("B"));
         assert_eq!(x.statements[0].value.as_deref(), Some("b"));
         assert_eq!(x.skipped, 0);
+    }
+
+    /// 值被列成东西写进了宾语：挪回值，那样「东西」不再列着。真东西（杭州）、散文里点了名
+    /// 的（Model 3，种类词恰好是短语）、被当成主语用着的（2020年）都不动
+    #[test]
+    fn a_value_written_as_an_object_becomes_the_value() {
+        let raw = r#"{"e": [["星河科技", "公司", 1], ["2015年3月12日", "日期", 1],
+                            ["杭州", "城市", 1], ["Model 3", "竞品", 1], ["2020年", "年份", 1]],
+            "s": [["星河科技成立于2015年3月12日。", "星河科技", "成立于", "2015年3月12日", null, null, null, null],
+                  ["总部位于杭州。", "星河科技", "总部位于", "杭州", null, null, null, null],
+                  ["竞品是Model 3。", "星河科技", "竞品", "Model 3", null, null, null, null],
+                  ["2020年是上市之年。", "2020年", "是", null, "上市之年", null, null, null]]}"#;
+        let mut x = parse_open_response(raw).unwrap();
+        assert_eq!(values_are_not_things(&mut x), vec!["2015年3月12日"]);
+        let objects: Vec<Option<&str>> = x.statements.iter().map(|s| s.object.as_deref()).collect();
+        assert_eq!(objects, vec![None, Some("杭州"), Some("Model 3"), None]);
+        assert_eq!(x.statements[0].value.as_deref(), Some("2015年3月12日"));
+        let names: Vec<&str> = x.entities.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["星河科技", "杭州", "Model 3", "2020年"]);
+    }
+
+    /// 实测的需求表（#987）：一格被列成没点名的东西、种类词就是列名，再写成以列名为
+    /// 短语的宾语。那是这一格的值；点了名的、种类词和短语不同的照旧是宾语
+    #[test]
+    fn a_table_cell_listed_as_a_thing_becomes_the_value() {
+        let row = "| 修改体重时App出现bug | 待审核 | P1 | 个人资料 | 张伟 |";
+        let raw = format!(
+            r#"{{"e": [["修改体重时App出现bug", "需求", 0], ["待审核", "处理状态", 0],
+                      ["P1", "优先级", 0], ["个人资料", "模块", 0], ["张伟", "负责人", 1],
+                      ["REQ-0019", "需求编号", 1]],
+                "s": [["{row}", "修改体重时App出现bug", "处理状态", "待审核", null, null, null, null],
+                      ["{row}", "修改体重时App出现bug", "优先级", "P1", null, null, null, null],
+                      ["{row}", "修改体重时App出现bug", "需求编号", "REQ-0019", null, null, null, null],
+                      ["{row}", "修改体重时App出现bug", "功能模块", "个人资料", null, null, null, null],
+                      ["{row}", "修改体重时App出现bug", "负责人", "张伟", null, null, null, null]]}}"#
+        );
+        let mut x = parse_open_response(&raw).unwrap();
+        values_are_not_things(&mut x);
+        let shape: Vec<(Option<&str>, Option<&str>)> = x
+            .statements
+            .iter()
+            .map(|s| (s.object.as_deref(), s.value.as_deref()))
+            .collect();
+        assert_eq!(
+            shape,
+            vec![
+                (None, Some("待审核")),
+                (None, Some("P1")),
+                (None, Some("REQ-0019")),
+                (Some("个人资料"), None),
+                (Some("张伟"), None),
+            ]
+        );
+        // 挪成值的格子不再列着，免得建出一个叫 REQ-0019 的孤立实体
+        let names: Vec<&str> = x.entities.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["修改体重时App出现bug", "个人资料", "张伟"]);
     }
 
     /// named 认 1/0 与 true/false，缺了当点了名；kind 缺了是空串
