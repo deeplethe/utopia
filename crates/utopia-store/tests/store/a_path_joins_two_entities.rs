@@ -109,6 +109,7 @@ async fn seed(pool: &PgPool) -> anyhow::Result<Fixture> {
         to_precision: to.map(|_| "month"),
         attested_at: None,
         from_grade: None,
+        ..Default::default()
     };
     let mut direct = Uuid::nil();
     for (s, p, o, v) in [

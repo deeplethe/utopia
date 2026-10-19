@@ -617,7 +617,7 @@ async fn apply(
         let fact = fact_id.ok_or_else(|| AppError::Validation("no fact to retract".into()))?;
         validity_row = sqlx::query_as(
             "SELECT valid_from, valid_from_precision, valid_from_grade, valid_to, valid_to_precision,
-                    attested_from FROM facts WHERE id = $1",
+                    end_after_period, attested_from FROM facts WHERE id = $1",
         )
         .bind(fact)
         .fetch_optional(pool)
@@ -647,6 +647,8 @@ async fn apply(
         to: v.valid_to,
         to_precision: v.valid_to_precision.as_deref(),
         attested_at: v.attested_from.or(doc_time),
+        // 新行接旧行的终点，也接它说的是哪个时段（#994）；改到事件、恒常属性上的，写入口丢掉
+        end_after_period: v.end_after_period,
     };
     let object = match (target.object_id, &target.object_value) {
         (Some(o), _) => FactObject::Entity(o),
@@ -719,6 +721,7 @@ struct ValidityRow {
     valid_from_grade: Option<String>,
     valid_to: Option<DateTime<Utc>>,
     valid_to_precision: Option<String>,
+    end_after_period: bool,
     attested_from: Option<DateTime<Utc>>,
 }
 

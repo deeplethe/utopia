@@ -73,6 +73,7 @@ By domain; the domains are the files of [../design/](../design/README.md). **Sta
 | 0010 | [An unnamed relation stays empty](0010-no-relation-is-no-relation.md) | Implemented | partly (by 0044) |
 | 0037 | [A relation carries its own attributes](0037-a-relation-carries-its-own-attributes.md) | In progress | partly (by 0044) |
 | 0048 | [Provenance references stay inside the knowledge base](0048-provenance-references-stay-inside-the-knowledge-base.md) | Implemented |  |
+| 0070 | [A role word speaks while its chunk is live](0070-a-role-word-speaks-while-its-chunk-is-live.md) | Proposed |  |
 
 ### [governance](../design/governance.md)
 
