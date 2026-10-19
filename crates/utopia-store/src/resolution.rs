@@ -193,7 +193,28 @@ struct Candidate {
     canonical_name: String,
     profile_embedding: Option<Vector>,
     profile_n: i32,
-    degree: i64,
+}
+
+/// 这些实体各自的度数（不数名字事实），与 `ids` 同序；没有事实的是 0。
+async fn degrees(pool: &PgPool, kb_id: Uuid, ids: &[Uuid]) -> AppResult<Vec<i64>> {
+    let rows: HashMap<Uuid, i64> = sqlx::query_as(&format!(
+        "SELECT n.id, count(*)
+           FROM unnest($2::uuid[]) AS n(id)
+           JOIN facts f ON f.kb_id = $1 AND (f.subject_id = n.id OR f.object_id = n.id)
+                       AND f.invalidated_at IS NULL AND {not_name}
+          GROUP BY n.id",
+        not_name = crate::names::not_a_name("f"),
+    ))
+    .bind(kb_id)
+    .bind(ids)
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .collect();
+    Ok(ids
+        .iter()
+        .map(|id| rows.get(id).copied().unwrap_or(0))
+        .collect())
 }
 
 /// 消解结果：mention 落到了哪个实体；附带需要入队的疑似重复审核对
@@ -378,11 +399,9 @@ async fn resolve_by_name(
     let keys = recall_keys(&name);
     // 名字召回读名字事实（0041 决定 1）：本名、简称、曾用名都是 `known_as` 上的一条。
     // 度数不数名字事实——名字不是一条「关于它的事」，数进去每个实体都凭空多一
+    // 度数要等真有几个候选得比时才数：每个候选一条计数子查询，大库上很贵（#1296）
     let candidates: Vec<Candidate> = sqlx::query_as(&format!(
-        "SELECT e.id, e.canonical_name, e.profile_embedding, e.profile_n,
-                (SELECT count(*) FROM facts f
-                 WHERE f.kb_id = e.kb_id AND (f.subject_id = e.id OR f.object_id = e.id)
-                   AND f.invalidated_at IS NULL AND {not_name}) AS degree
+        "SELECT e.id, e.canonical_name, e.profile_embedding, e.profile_n
          FROM entities e
          -- IS NOT DISTINCT FROM 而不是 =（0009 的那个陷阱）：开放图谱里的实体都没有类
          -- （类由对齐来定），`type_id = NULL` 永远不成立，同名的它就永远撞不上——
@@ -392,7 +411,6 @@ async fn resolve_by_name(
            -- 不是召回的桥——两篇文档里描述得一样的两个东西不能因此接到一起
            AND e.description IS NULL
            AND (lower(e.canonical_name) = ANY($3) OR {named})",
-        not_name = crate::names::not_a_name("f"),
         named = crate::names::has_name_in("e", 1, 3),
     ))
     .bind(kb_id)
@@ -412,10 +430,19 @@ async fn resolve_by_name(
 
     let Some(ctx) = context else {
         // 无向量可比：v1 兼容 —— 归并到事实最多的同名候选
-        let best = candidates
-            .iter()
-            .max_by_key(|c| c.degree)
-            .expect("non-empty");
+        let best = match candidates.as_slice() {
+            [only] => only,
+            _ => {
+                let ids: Vec<Uuid> = candidates.iter().map(|c| c.id).collect();
+                let degree = degrees(pool, kb_id, &ids).await?;
+                candidates
+                    .iter()
+                    .zip(degree)
+                    .max_by_key(|(_, d)| *d)
+                    .map(|(c, _)| c)
+                    .expect("non-empty")
+            }
+        };
         touch_entity(pool, best.id).await?;
         return Ok(Resolution {
             entity_id: best.id,
@@ -435,7 +462,7 @@ async fn resolve_by_name(
 
     // 有画像的候选算相似度；无画像（历史数据/无 embedding 期创建）单独归类
     let mut scored: Vec<(&Candidate, f32)> = Vec::new();
-    let mut unprofiled: Option<&Candidate> = None;
+    let mut unprofiled: Vec<&Candidate> = Vec::new();
     for c in &candidates {
         match c
             .profile_embedding
@@ -443,11 +470,7 @@ async fn resolve_by_name(
             .and_then(|p| cosine(p.as_slice(), ctx))
         {
             Some(sim) => scored.push((c, sim)),
-            None => {
-                if unprofiled.map(|u| c.degree > u.degree).unwrap_or(true) {
-                    unprofiled = Some(c);
-                }
-            }
+            None => unprofiled.push(c),
         }
     }
     // 最高分候选：并列时保留先遇到的那个（与旧的 `sim > s` 严格大于一致）
@@ -522,6 +545,19 @@ async fn resolve_by_name(
             });
         }
     }
+    let unprofiled = match unprofiled.as_slice() {
+        [] => None,
+        [only] => Some(*only),
+        many => {
+            let ids: Vec<Uuid> = many.iter().map(|c| c.id).collect();
+            let degree = degrees(pool, kb_id, &ids).await?;
+            many.iter()
+                .copied()
+                .zip(degree)
+                .reduce(|acc, cur| if cur.1 > acc.1 { cur } else { acc })
+                .map(|(c, _)| c)
+        }
+    };
     if let Some(c) = unprofiled {
         // 无画像候选无从判别：v1 兼容归并，并用本次上下文初始化画像
         update_profile(pool, c.id, c.profile_n, ctx).await?;
