@@ -254,6 +254,13 @@ the prompt, a description is read by people and by the aligner.
   they would bind and the questions they serve; approval writes the element with its structure and
   re-decides those signatures; every approved element carries regression cases rerun when its
   definition changes; duplicate properties merged as governance.
+  A property regression case can also expect no binding (`expected_binding: "none"`, with
+  both target fields absent or null); omitting the mode keeps the existing bound request.
+  Only an explicit `none` decision passes a negative case. Bound or undecided decisions fail,
+  including a conflicting human binding, which remains authoritative in the formal graph.
+  With no decision the case stays unchecked. Reconfirming a case retains its first creator;
+  an opposite bound/none expectation for the same statement is refused, including on adoption.
+
 - **Exploration proposes an alignment per table** through `ontology_proposals`, adopted as one
   thing; `Metric` / `Dimension` retire (#554, #556) [0036].
 - Filtering reified-shell relations (`Action`, `Offer`) out of pack import [0012]; Chinese

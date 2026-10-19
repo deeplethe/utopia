@@ -49,6 +49,9 @@ export const zh: Strings = {
     docsUrl: "https://utopia.bi/docs",
   },
   err: {
+    bad_case_expectation: "请选择属性及方向，或选择预期无绑定。",
+    conflicting_case_expectation: "这条陈述已有相反的预期，未添加新案例。",
+
     bad_email: "这看起来不像一个邮箱地址。",
     password_too_short: "密码至少 8 位。",
     bad_display_name: "显示名需要 1–64 个字符。",
@@ -1227,7 +1230,11 @@ export const zh: Strings = {
     caseHideEvidence: "收起原文证据",
     caseMake: "添加回归案例",
     caseAddTitle: "添加属性回归案例",
-    caseAddHint: "保存这条开放陈述应绑定的属性及方向，再将已有的对齐决定与此预期比较。",
+    caseExpectBound: "绑定到属性",
+    caseNoneHint: "只有明确判为无绑定才通过。未定或已绑定均失败；尚无判定时保持未检查。",
+    caseHumanConflict: "失败：与人工绑定冲突",
+    caseHumanConflictHint: "此案例预期无绑定，但人已将陈述绑定到属性。案例失败，正式人工绑定保留。",
+    caseAddHint: "保存这条开放陈述应绑定到属性，还是保持无绑定，再将对齐决定与此预期比较。",
     caseExpectedProperty: "预期属性",
     caseDirection: "方向",
     caseForward: "主语 → 宾语",
