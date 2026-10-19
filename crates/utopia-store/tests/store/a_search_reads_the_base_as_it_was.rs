@@ -182,7 +182,7 @@ async fn a_superseded_chunk_keeps_its_vector_and_answers_as_of_then() -> anyhow:
         None,
     )
     .await?;
-    let ids: Vec<Uuid> = live_now.iter().map(|c| c.id).collect();
+    let ids: Vec<Uuid> = live_now.iter().map(|c| c.chunk.id).collect();
     assert!(
         !ids.contains(&f.deleted_doc_chunk),
         "删掉的文档不出现在现在"
@@ -196,7 +196,7 @@ async fn a_superseded_chunk_keeps_its_vector_and_answers_as_of_then() -> anyhow:
         Some(t("2026-05-15T00:00:00Z")),
     )
     .await?;
-    let ids: Vec<Uuid> = live_then.iter().map(|c| c.id).collect();
+    let ids: Vec<Uuid> = live_then.iter().map(|c| c.chunk.id).collect();
     assert!(
         ids.contains(&f.deleted_doc_chunk),
         "五月中那篇文档还没被删，它的块该拿得回来"
