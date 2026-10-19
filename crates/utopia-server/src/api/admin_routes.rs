@@ -79,16 +79,24 @@ pub async fn put_deployment(
             .worker_concurrency
             .store(n as usize, std::sync::atomic::Ordering::Relaxed);
     }
-    // 按模型的限额即时生效：闸门每次调用前读库，发现限额变了就换一把新信号量
     if let Some(l) = &req.default_ontology_lang {
         utopia_store::access::set_default_ontology_lang(&state.pool, l).await?;
     }
+    let limits_changed = req.default_model_concurrency.is_some() || req.model_limit.is_some();
     if let Some(n) = req.default_model_concurrency {
         utopia_store::model_limits::set_default(&state.pool, n).await?;
     }
     if let Some(m) = req.model_limit {
         utopia_store::model_limits::set(&state.pool, &m.base_url, &m.model, m.max_concurrent)
             .await?;
+    }
+    // 按模型的限额在这里就地生效：闸门调大放行、调小收紧，不等下一个任务来取许可时才读
+    // ——那时可能所有 worker 都等在闸门上，唯一在飞的还是一次复读（#1302）。限额已经存下了，
+    // 调闸门失败只记一笔：下一次取许可照样读到新限额
+    if limits_changed {
+        if let Err(e) = state.model_gates.refresh(&state.pool).await {
+            tracing::warn!(error = %e, "限额已保存，闸门要等下一次取许可才按新限额调");
+        }
     }
     Ok(Json(json!({ "ok": true })))
 }

@@ -22,6 +22,9 @@
 //!   过滤——修正行、重复行都按全库找，会改到别的测试正在物化、改写的行。
 //! - `a_row_a_rule_implied_follows_its_statements`：把迁移 0101 原样跑一遍，同样不按 kb
 //!   过滤——它按来源重算全库类型化行的见证，会改到别的测试正在物化的行。
+//! - `a_due_base_is_queued_once`：`queue_due_inferences` 扫全库到期的库。0050 起新建的库开着
+//!   推理又从没推过，别的测试刚建的库全算到期，会被它排上推理任务——数自己库任务的测试
+//!   （比如 lib 单元测试里的 `phrase_bindings_delivery_tests`）就会多数出一个。
 //!
 //! 新加测试默认放这个目录；只有碰上面那类全局状态时才放顶层，并在这里补一行为什么。
 mod a_batch_decides_like_a_person;

@@ -2783,6 +2783,26 @@ pub async fn due_for_inference(pool: &PgPool) -> AppResult<Vec<Uuid>> {
     .await?)
 }
 
+/// 定时扫描的一拍：到期的库各排一份推理任务，已经排着一份的不再排。
+///
+/// 只跳过排着的就够（#1304）：处理器先 `mark_inference_ran` 再推，任务一开始跑这个库就
+/// 不再到期；还到期的只有任务排着、`last_inference_at` 还没动的那段，而那段正是这里挡住的。
+/// 一个库排不进去不拦着别的库
+pub async fn queue_due_inferences(pool: &PgPool) -> AppResult<()> {
+    for kb_id in due_for_inference(pool).await? {
+        if let Err(e) = crate::jobs::enqueue_unless_queued(
+            pool,
+            "materialize_inferences",
+            json!({ "kb_id": kb_id }),
+        )
+        .await
+        {
+            tracing::warn!(kb_id = %kb_id, error = %e, "推理任务入队失败");
+        }
+    }
+    Ok(())
+}
+
 /// 记下这一轮推完的时间。
 ///
 /// **推完就记，哪怕什么都没变**：这一列答的是「上次看过没有」，不是「上次改过
