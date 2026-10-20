@@ -50,6 +50,54 @@ pub fn normalize_name(raw: &str) -> String {
     mapped.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// Fold unambiguous Markdown formatting in names; evidence keeps the original text.
+/// Input should already have passed through [`normalize_name`]. Only whole-name
+/// `**...**` / `__...__` emphasis is removed; empty, nested, mismatched or
+/// whitespace-padded markup is kept.
+/// `__identifier__` stays literal (Unicode letters/digits and underscores count).
+/// Single backticks are removed only around a slash path or a dotted filename
+/// containing a letter: only letters, digits, `/`, `.`, `_` and `-` are allowed,
+/// with at least one alphanumeric character and no trailing dot. This deliberately
+/// leaves code, bare identifiers, numeric versions and paths with spaces alone.
+pub fn fold_markdown_markers(name: &str) -> &str {
+    for marker in ["**", "__", "`"] {
+        let Some(inner) = name
+            .strip_prefix(marker)
+            .and_then(|s| s.strip_suffix(marker))
+        else {
+            continue;
+        };
+        if inner.is_empty()
+            || inner.trim() != inner
+            || inner.contains(['*', '`'])
+            || (marker != "`"
+                && (inner.starts_with('_') || inner.ends_with('_') || inner.contains("__")))
+        {
+            return name;
+        }
+        let fold = match marker {
+            "__" => !inner.chars().all(|c| c.is_alphanumeric() || c == '_'),
+            "`" => {
+                (inner.contains('/')
+                    || (inner.contains('.') && inner.chars().any(char::is_alphabetic)))
+                    && inner.chars().any(char::is_alphanumeric)
+                    && !inner.ends_with('.')
+                    && inner
+                        .chars()
+                        .all(|c| c.is_alphanumeric() || matches!(c, '/' | '.' | '_' | '-'))
+            }
+            _ => true,
+        };
+        return if fold { inner } else { name };
+    }
+    name
+}
+
+/// Shared identity key for recall and document-level name claims.
+pub fn name_key(raw: &str) -> String {
+    fold_markdown_markers(&normalize_name(raw)).to_lowercase()
+}
+
 /// 泛用后缀词表：中文直接拼在词干后；英文按独立词算、首尾两种语序都认
 /// （"Phoenix Project" / "Project Phoenix"）。只影响召回，判定仍走画像相似度。
 const GENERIC_SUFFIXES_CJK: &[&str] = &["项目", "公司", "集团", "部门", "团队"];
@@ -89,10 +137,12 @@ pub fn name_stem(name: &str) -> Option<String> {
     None
 }
 
+/// 输入应已过 [`normalize_name`]。
 /// mention 的召回键集合（全 lower）：本名 + 词干 + 词干的泛用后缀增广。
 /// 增广覆盖反方向（库内是"星尘项目"、mention 只说"星尘"）；词干含 CJK 拼中文
-/// 尾缀，否则拼英文词（两种语序）。键数 ≤10，走 (kb,type,lower(name)) 索引多点查。
-pub fn recall_keys(name: &str) -> Vec<String> {
+/// 尾缀，否则拼英文词（两种语序）。键数 ≤11，走 (kb,type,lower(name)) 索引多点查。
+pub fn recall_keys(normalized: &str) -> Vec<String> {
+    let name = fold_markdown_markers(normalized);
     let lower = name.to_lowercase();
     let base = name_stem(name).unwrap_or_else(|| lower.clone());
     let mut keys = vec![lower];
@@ -101,6 +151,8 @@ pub fn recall_keys(name: &str) -> Vec<String> {
             keys.push(k);
         }
     }
+    // Keep exact recall of names already stored with formatting as well.
+    add(&mut keys, normalized.to_lowercase());
     add(&mut keys, base.clone());
     if base.chars().any(|c| ('\u{4E00}'..='\u{9FFF}').contains(&c)) {
         for suf in GENERIC_SUFFIXES_CJK {
@@ -320,7 +372,7 @@ async fn propose_by_name_vector(
     exclude: &[Uuid],
     r: &mut Resolution,
 ) -> AppResult<()> {
-    let mention_name = normalize_name(raw_name).to_lowercase();
+    let mention_name = name_key(raw_name);
     let mention_family = match type_id {
         Some(t) => type_label(pool, t)
             .await?
@@ -398,10 +450,12 @@ async fn resolve_by_name(
     // and recallable on later calls, but this mention cannot attach to them.
     exclude: &[Uuid],
 ) -> AppResult<Resolution> {
-    let name = normalize_name(raw_name);
+    let normalized = normalize_name(raw_name);
     // 召回键 = 本名 + 泛用后缀词干及其增广（"星尘"↔"星尘项目"互为候选）。
     // 只扩召回，归并与否仍由下方画像相似度分层定夺。
-    let keys = recall_keys(&name);
+    let keys = recall_keys(&normalized);
+    // Store the same spelling whichever form is mentioned first.
+    let name = fold_markdown_markers(&normalized);
     // 名字召回读名字事实（0041 决定 1）：本名、简称、曾用名都是 `known_as` 上的一条。
     // 度数不数名字事实——名字不是一条「关于它的事」，数进去每个实体都凭空多一
     // 度数要等真有几个候选得比时才数：每个候选一条计数子查询，大库上很贵（#1296）
@@ -430,7 +484,7 @@ async fn resolve_by_name(
     if candidates.is_empty() {
         // 同类型无候选 ≠ 新名字：类型标签会漂（同一团队被抽成 organization/project/
         // concept），先查其它类型下的同名实体，按类型对的互斥强度分流。
-        return resolve_type_drift(pool, kb_id, type_id, &name, &keys, context, exclude).await;
+        return resolve_type_drift(pool, kb_id, type_id, name, &keys, context, exclude).await;
     }
 
     let Some(ctx) = context else {
@@ -517,7 +571,7 @@ async fn resolve_by_name(
                     }
                 }
                 let (id, created) =
-                    create_entity(pool, kb_id, type_id, &name, context, &weighed).await?;
+                    create_entity(pool, kb_id, type_id, name, context, &weighed).await?;
                 if !created {
                     // 并行的另一份文档刚建好它：用它的，审核对也是它排的
                     return Ok(Resolution {
@@ -526,7 +580,7 @@ async fn resolve_by_name(
                         reviews: Vec::new(),
                     });
                 }
-                refresh_disambiguators(pool, kb_id, &name).await?;
+                refresh_disambiguators(pool, kb_id, name).await?;
                 let reviews = [(best, sim), (runner, r_sim)]
                     .into_iter()
                     .map(|(c, s)| ReviewRequest {
@@ -594,7 +648,7 @@ async fn resolve_by_name(
             });
         }
     }
-    let (id, created) = create_entity(pool, kb_id, type_id, &name, context, &weighed).await?;
+    let (id, created) = create_entity(pool, kb_id, type_id, name, context, &weighed).await?;
     if !created {
         // 并行的另一份文档刚建好它：用它的，审核对也是它排的
         return Ok(Resolution {
@@ -603,7 +657,7 @@ async fn resolve_by_name(
             reviews: Vec::new(),
         });
     }
-    refresh_disambiguators(pool, kb_id, &name).await?;
+    refresh_disambiguators(pool, kb_id, name).await?;
     let mut reviews = best_scored
         .filter(|(_, sim)| *sim >= SIM_NEW)
         .map(|(c, sim)| {
@@ -617,7 +671,7 @@ async fn resolve_by_name(
         .unwrap_or_default();
     // 名字互相包含的既有实体：等值召回看不见它们（前缀枚举不完），
     // 于是简称会静默变成第二个实体。只入队，不合并
-    reviews.extend(containment_reviews(pool, kb_id, type_id, &name, id, context).await?);
+    reviews.extend(containment_reviews(pool, kb_id, type_id, name, id, context).await?);
     Ok(Resolution {
         entity_id: id,
         created: true,
@@ -721,6 +775,13 @@ const MAX_CONTAIN_REVIEWS: usize = 4;
 /// 只取 4 行的话可能 4 行全是互斥类型，真正那一对反而被 LIMIT 切掉。
 const CONTAIN_SCAN_LIMIT: i64 = 16;
 
+/// 名字当 LIKE 的字面子串用：不转义的话名字里的 `_` 会匹配任意一个字（#1293）
+fn like_escaped(name: &str) -> String {
+    name.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
 /// 新建实体之后，找出**名字互相包含**的既有实体，作为审阅候选。
 ///
 /// 中文商业文本在一篇之内就会全称转简称（「星云科技上海研究院」→「上海研究院」），
@@ -792,8 +853,8 @@ async fn containment_reviews(
            AND lower(e.canonical_name) <> $3
            AND (
              (char_length(e.canonical_name) >= $4
-              AND (lower(e.canonical_name) LIKE '%' || $3 || '%'
-                   OR $3 LIKE '%' || lower(e.canonical_name) || '%'))
+              AND (lower(e.canonical_name) LIKE '%' || $6 || '%'
+                   OR $3 LIKE '%' || replace(replace(replace(lower(e.canonical_name), '\\', '\\\\'), '%', '\\%'), '_', '\\_') || '%'))
              -- **别的名字也要参与召回，否则每合并一次就少一条桥。**
              --
              -- 合并把名字事实搬到存活者身上：Holmes 并入 Sherlock Holmes 之后，
@@ -810,8 +871,8 @@ async fn containment_reviews(
                   AND nr.builtin AND nr.key = 'known_as'
                   AND nf.invalidated_at IS NULL
                   AND char_length(nf.object_value->>'value') >= $4
-                  AND (lower(nf.object_value->>'value') LIKE '%' || $3 || '%'
-                       OR $3 LIKE '%' || lower(nf.object_value->>'value') || '%'))
+                  AND (lower(nf.object_value->>'value') LIKE '%' || $6 || '%'
+                       OR $3 LIKE '%' || replace(replace(replace(lower(nf.object_value->>'value'), '\\', '\\\\'), '%', '\\%'), '_', '\\_') || '%'))
            )
          ORDER BY char_length(e.canonical_name)
          LIMIT $5",
@@ -821,6 +882,7 @@ async fn containment_reviews(
     .bind(&lower)
     .bind(MIN_CONTAIN_CHARS)
     .bind(CONTAIN_SCAN_LIMIT)
+    .bind(like_escaped(&lower))
     .fetch_all(pool)
     .await?;
 
@@ -2536,10 +2598,47 @@ mod tests {
     use super::*;
 
     #[test]
+    fn like_escaped_turns_backslash_percent_and_underscore_into_literals() {
+        assert_eq!(like_escaped(r"a\b%c_d"), r"a\\b\%c\_d");
+    }
+
+    #[test]
     fn normalize_fullwidth_and_whitespace() {
         assert_eq!(normalize_name("　ＡＣＭＥ  Corp　"), "ACME Corp");
         assert_eq!(normalize_name("张三"), "张三");
         assert_eq!(normalize_name("张  三"), "张 三");
+    }
+
+    #[test]
+    fn markdown_folding_is_conservative() {
+        for (raw, expected) in [
+            ("**Pump 1**", "Pump 1"),
+            ("__Pump 1__", "Pump 1"),
+            ("__init__", "__init__"),
+            ("`docs/setup.md`", "docs/setup.md"),
+            ("`setup.md`", "setup.md"),
+            ("`acme`", "`acme`"),
+            ("`main()`", "`main()`"),
+            ("`1.2`", "`1.2`"),
+            ("**Pump 1*", "**Pump 1*"),
+            ("***Pump 1***", "***Pump 1***"),
+            ("** Pump 1 **", "** Pump 1 **"),
+            ("****", "****"),
+        ] {
+            assert_eq!(fold_markdown_markers(raw), expected, "{raw:?}");
+        }
+    }
+
+    #[test]
+    fn recall_keys_fold_markdown_before_stemming_and_keep_exact_spelling() {
+        let normalized = normalize_name("　＊＊Ｐｈｏｅｎｉｘ　 Project＊＊ ");
+        let keys = recall_keys(&normalized);
+        assert_eq!(keys[0], name_key(&normalized));
+        for key in recall_keys("Phoenix Project") {
+            assert!(keys.contains(&key), "must recall {key:?}");
+        }
+        assert!(keys.contains(&"**phoenix project**".to_string()));
+        assert!(keys.len() <= 11);
     }
 
     #[test]

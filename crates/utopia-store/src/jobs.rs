@@ -371,6 +371,9 @@ pub async fn status_in_kb(pool: &PgPool, kb_id: Uuid, id: i64) -> AppResult<Opti
 }
 
 /// 认领一个到期任务；没有则返回 None。
+///
+/// 不调对话模型的任务排在前面（`job_priority`，迁移 0116，#1300）：同步、文档入库这些几秒
+/// 的活，不该等在几百个更早的抽取后面
 async fn claim_one(pool: &PgPool) -> AppResult<Option<Job>> {
     let job = sqlx::query_as(
         "UPDATE jobs SET status = 'running', locked_at = now(),
@@ -378,7 +381,7 @@ async fn claim_one(pool: &PgPool) -> AppResult<Option<Job>> {
          WHERE id = (
              SELECT id FROM jobs
              WHERE status = 'queued' AND run_at <= now()
-             ORDER BY run_at
+             ORDER BY job_priority(kind), run_at
              FOR UPDATE SKIP LOCKED
              LIMIT 1
          )
@@ -674,6 +677,10 @@ where
 #[cfg(test)]
 #[path = "jobs_writeback_tests.rs"]
 mod writeback_tests;
+
+#[cfg(test)]
+#[path = "jobs_claim_tests.rs"]
+mod claim_tests;
 
 #[cfg(test)]
 mod tests {

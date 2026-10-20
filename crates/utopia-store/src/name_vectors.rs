@@ -25,6 +25,21 @@ pub const TOP_K: usize = 8;
 /// 0.4 上下的余弦——所以这条线比画像的 `SIM_ATTACH` 高。同样是待测量的临时值
 pub const SIM_FLOOR: f32 = 0.60;
 
+/// `known_as` 的 id 用子查询取，不要改回 JOIN：子查询先算出一个值，`predicate_id = 它` 才成了
+/// `facts_live_predicate_idx`（0115）的索引条件，扫描只碰这个库的名字事实，且仍按 id 走，
+/// `ORDER BY ... LIMIT` 不用排序。写成 JOIN，规划器沿 `facts_kb_id_key` 把整个库按 id 读一遍，
+/// 谓词只能逐行筛（#1296：20 万条事实的库上读 20 万行，这样读 2 万行）
+const PENDING_SQL: &str = "SELECT f.id, f.subject_id, f.object_value->>'value'
+       FROM facts f
+       LEFT JOIN name_vectors v ON v.fact_id = f.id
+      WHERE f.kb_id = $1
+        AND f.predicate_id = (SELECT nr.id FROM relation_types nr
+                               WHERE nr.kb_id = $1 AND nr.builtin AND nr.key = $2)
+        AND f.invalidated_at IS NULL AND f.object_value IS NOT NULL
+        AND v.fact_id IS NULL
+      ORDER BY f.id
+      LIMIT $3";
+
 /// 还没有向量的名字事实：现行的、`known_as` 上的、`name_vectors` 里没有它的。
 /// 按写入先后取（`facts.id` 是 uuid v7，按它排即按写入排；这张表没有 created_at——
 /// 端到端跑出来的：按一个不存在的列排，补向量每篇都静默失败），一次取一批
@@ -33,22 +48,12 @@ pub async fn pending(
     kb_id: Uuid,
     limit: i64,
 ) -> AppResult<Vec<(Uuid, Uuid, String)>> {
-    let rows: Vec<(Uuid, Uuid, String)> = sqlx::query_as(
-        "SELECT f.id, f.subject_id, f.object_value->>'value'
-           FROM facts f
-           JOIN relation_types nr ON nr.id = f.predicate_id
-           LEFT JOIN name_vectors v ON v.fact_id = f.id
-          WHERE f.kb_id = $1 AND nr.kb_id = $1 AND nr.builtin AND nr.key = $2
-            AND f.invalidated_at IS NULL AND f.object_value IS NOT NULL
-            AND v.fact_id IS NULL
-          ORDER BY f.id
-          LIMIT $3",
-    )
-    .bind(kb_id)
-    .bind(crate::names::KNOWN_AS)
-    .bind(limit)
-    .fetch_all(pool)
-    .await?;
+    let rows: Vec<(Uuid, Uuid, String)> = sqlx::query_as(PENDING_SQL)
+        .bind(kb_id)
+        .bind(crate::names::KNOWN_AS)
+        .bind(limit)
+        .fetch_all(pool)
+        .await?;
     Ok(rows)
 }
 
@@ -135,3 +140,7 @@ pub async fn nearest(pool: &PgPool, kb_id: Uuid, query: &[f32], k: usize) -> App
         .await?;
     Ok(rows)
 }
+
+#[cfg(test)]
+#[path = "name_vectors_plan_tests.rs"]
+mod plan_tests;

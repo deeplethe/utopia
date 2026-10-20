@@ -271,6 +271,7 @@ pub enum SourceKind {
     Url,
     Rss,
     GithubIssues,
+    GithubRepo,
     JiraIssues,
     S3,
     AzureBlob,

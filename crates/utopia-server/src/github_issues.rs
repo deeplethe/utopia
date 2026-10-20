@@ -209,6 +209,41 @@ pub fn sort_events(mut events: Vec<Event>) -> Vec<Event> {
     events
 }
 
+/// 发一个带令牌的 GET 并判状态。github_issues 与 github_repo 共用这一条，
+/// 免得限流提示在两个来源里各写一份、慢慢漂移。
+pub(crate) async fn get_checked(
+    http: &reqwest::Client,
+    url: reqwest::Url,
+    auth: Option<&str>,
+    accept: Option<&str>,
+) -> anyhow::Result<reqwest::Response> {
+    let mut req = http.get(url);
+    if let Some(a) = auth {
+        req = req.header(reqwest::header::AUTHORIZATION, a);
+    }
+    if let Some(a) = accept {
+        req = req.header(reqwest::header::ACCEPT, a);
+    }
+    let resp = req.send().await?;
+    let status = resp.status();
+    if !status.is_success() {
+        // 限流说清楚是限流：未认证时每小时 60 次，一个中等仓库一次同步就能吃光。
+        // 报成通用 HTTP 错会让人去查网络，而正确的动作是配一个令牌
+        let remaining = resp
+            .headers()
+            .get("x-ratelimit-remaining")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("?");
+        if status == reqwest::StatusCode::FORBIDDEN && remaining == "0" {
+            anyhow::bail!(
+                "GitHub 限流：本小时配额已用尽。未认证时每小时 60 次，配一个令牌可提到 5000"
+            );
+        }
+        anyhow::bail!("HTTP {status} from GitHub");
+    }
+    Ok(resp)
+}
+
 /// 分页取一个端点，直到空页或触顶。
 pub async fn fetch_all<T: for<'de> Deserialize<'de>>(
     http: &reqwest::Client,
@@ -229,27 +264,7 @@ pub async fn fetch_all<T: for<'de> Deserialize<'de>>(
             q.append_pair("per_page", &PER_PAGE.to_string());
             q.append_pair("page", &page.to_string());
         }
-        let mut req = http.get(url);
-        if let Some(a) = auth {
-            req = req.header(reqwest::header::AUTHORIZATION, a);
-        }
-        let resp = req.send().await?;
-        let status = resp.status();
-        if !status.is_success() {
-            // 限流说清楚是限流：未认证时每小时 60 次，一个中等仓库一次同步就能吃光。
-            // 报成通用 HTTP 错会让人去查网络，而正确的动作是配一个令牌
-            let remaining = resp
-                .headers()
-                .get("x-ratelimit-remaining")
-                .and_then(|v| v.to_str().ok())
-                .unwrap_or("?");
-            if status == reqwest::StatusCode::FORBIDDEN && remaining == "0" {
-                anyhow::bail!(
-                    "GitHub 限流：本小时配额已用尽。未认证时每小时 60 次，配一个令牌可提到 5000"
-                );
-            }
-            anyhow::bail!("HTTP {status} from GitHub");
-        }
+        let resp = get_checked(http, url, auth, None).await?;
         let batch: Vec<T> = resp.json().await?;
         let n = batch.len();
         out.extend(batch);

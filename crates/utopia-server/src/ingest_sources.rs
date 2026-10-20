@@ -83,6 +83,7 @@ pub async fn sync_source(state: &AppState, source_id: Uuid) -> anyhow::Result<()
         Some(SourceKind::Rss) => sync_rss(state, &source).await,
         Some(SourceKind::Custom) => sync_custom(state, &source, since).await,
         Some(SourceKind::GithubIssues) => sync_github_issues(state, &source, since).await,
+        Some(SourceKind::GithubRepo) => sync_github_repo(state, &source).await,
         Some(SourceKind::JiraIssues) => sync_jira_issues(state, &source, since).await,
         Some(SourceKind::S3 | SourceKind::AzureBlob | SourceKind::Gcs) => {
             sync_object_storage(state, &source).await
@@ -886,6 +887,106 @@ async fn sync_github_issues_with_client(
     Ok(stats)
 }
 
+/// GitHub 仓库文件：一次递归取默认分支的整棵树，一条路径一篇文档。
+/// 树里的 blob SHA 就判得出「没变」，变了的才逐条取提交日期与原文。
+async fn sync_github_repo(state: &AppState, source: &Source) -> anyhow::Result<SyncStats> {
+    // 与 github_issues 同一个口径：固定的公网主机按内容级严格度收
+    let url = reqwest::Url::parse("https://api.github.com/")?;
+    let http = crate::http_fetch::client_for(
+        &url,
+        crate::http_fetch::Reach::Content,
+        crate::http_fetch::Limits::default(),
+    )
+    .await?;
+    sync_github_repo_with_client(state, source, &http, "https://api.github.com").await
+}
+
+// HTTP 接缝让回归测试走同一条同步与落库路径，生产仍固定访问 GitHub 公网 API。
+async fn sync_github_repo_with_client(
+    state: &AppState,
+    source: &Source,
+    http: &reqwest::Client,
+    api_base: &str,
+) -> anyhow::Result<SyncStats> {
+    use crate::{github_issues::get_checked, github_repo as gr};
+    let repo = source.config["repo"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("github_repo source is missing config.repo (owner/name)"))?;
+    if repo.split('/').count() != 2 {
+        anyhow::bail!("config.repo should look like owner/name, got {repo:?}");
+    }
+    let auth = source.config["auth_header"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let filter = gr::FileFilter::from_config(&source.config)?;
+    let base = format!("{api_base}/repos/{repo}");
+    let tree_url = reqwest::Url::parse(&format!("{base}/git/trees/HEAD?recursive=1"))?;
+    let tree: gr::TreeResponse = get_checked(http, tree_url, auth, None)
+        .await?
+        .json()
+        .await?;
+    let (truncated, chosen) = (tree.truncated, gr::choose(tree.tree, &filter));
+    let keys: Vec<String> = chosen
+        .iter()
+        .map(|e| format!("github:{repo}:{}", e.path))
+        .collect();
+    let mut stats = SyncStats::default();
+    for (entry, key) in chosen.iter().zip(&keys) {
+        // 没变的整条跳过：已落库的字节算出同一个 git SHA，就不必再花两次请求
+        let old =
+            utopia_store::documents::find_by_external_key(&state.pool, source.id, key).await?;
+        let unchanged = match old {
+            Some(d) if Some(d.size_bytes) == entry.size => state
+                .blob
+                .get(&d.sha256)
+                .await
+                .is_ok_and(|b| gr::git_blob_sha(&b) == entry.sha),
+            _ => false,
+        };
+        if unchanged {
+            continue;
+        }
+        // 文档日期取最后一次动过这条路径的提交，只在新出现或变了时问
+        let mut cu = reqwest::Url::parse(&format!("{base}/commits"))?;
+        cu.query_pairs_mut()
+            .append_pair("path", &entry.path)
+            .append_pair("per_page", "1");
+        let commits: serde_json::Value = get_checked(http, cu, auth, None).await?.json().await?;
+        let doc_time = commits[0]["commit"]["committer"]["date"]
+            .as_str()
+            .and_then(|d| d.parse().ok());
+        let bu = reqwest::Url::parse(&format!("{base}/git/blobs/{}", entry.sha))?;
+        let bytes = get_checked(http, bu, auth, Some("application/vnd.github.raw+json"))
+            .await?
+            .bytes()
+            .await?;
+        let action = ingest_item(
+            state,
+            source.kb_id,
+            source.id,
+            key,
+            &entry.path,
+            "text/markdown",
+            &bytes,
+            doc_time,
+        )
+        .await?;
+        stats.absorb(action);
+    }
+    if truncated {
+        // 树不全就不判「谁消失了」——缺席可能只是还没列到
+        tracing::warn!(%repo, "GitHub 文件树被截断，本轮只摄入列出的文件，不做不在来源中对账");
+    } else {
+        utopia_store::documents::reconcile_missing(&state.pool, source.id, &keys)
+            .await
+            .map_err(|e| anyhow::anyhow!(e))?;
+    }
+    Ok(stats)
+}
+
 /// Jira 工单：一张工单一篇文档，正文里带**字段级**的变更史。
 ///
 /// 比 GitHub 那条路省：`search?expand=changelog` 一次调用就带回工单本体、
@@ -1311,3 +1412,7 @@ mod source_filename_tests;
 #[cfg(test)]
 #[path = "github_sync_tests.rs"]
 mod github_sync_tests;
+
+#[cfg(test)]
+#[path = "github_repo_sync_tests.rs"]
+mod github_repo_sync_tests;

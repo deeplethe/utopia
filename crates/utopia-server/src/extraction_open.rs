@@ -34,6 +34,7 @@ use utopia_store::extraction_drops::reason;
 use utopia_store::graph::FactObject;
 use utopia_store::graph::Validity;
 use utopia_store::pending::{Outcome, Proposal};
+pub(crate) use utopia_store::resolution::name_key;
 use uuid::Uuid;
 
 /// 一块调 + 解析完后的中间产物，apply 半步读它落库（#588 cut 1）。
@@ -42,6 +43,14 @@ use uuid::Uuid;
 struct ChunkParsed {
     extraction: utopia_extract::open::OpenExtraction,
     name_vecs: HashMap<String, Vec<f32>>,
+}
+
+/// 回复为什么是半截的：端点撞上了 token 上限（#760），或护栏看见它在复读、停了读（#1301）。
+/// 两种都当半截处理，丢弃行要说清是哪一种——复读的去查上限，是找错了地方
+#[derive(Debug, Clone, Copy)]
+enum Cut {
+    Ceiling,
+    Repeating,
 }
 
 /// 一个分块的前半步：调模型、解析回复、算名字向量（#588 cut 1）。这半步不写图，
@@ -71,8 +80,8 @@ async fn call_and_parse_one_chunk(
     unextracted: &mut Vec<(i32, String)>,
 ) -> anyhow::Result<Option<ChunkParsed>> {
     // 推送来的陈述：块就是契约，解析它而不是问模型（0054）。下面从解析起一步不变
-    let (reply_text, cut_by_ceiling) = if pushed {
-        (chunk.text.clone(), false)
+    let (reply_text, cut) = if pushed {
+        (chunk.text.clone(), None)
     } else {
         let (settings, client) = match (settings, client) {
             (Some(s), Some(c)) => (s, c),
@@ -108,27 +117,35 @@ async fn call_and_parse_one_chunk(
             }
         };
         tracing::debug!(%document_id, seq = chunk.seq, reply = %reply.text, "开放抽取的原始回复");
-        // 端点说它是撞上 token 上限停的。解析器只看得见 JSON 少了尾巴，看不见
-        // 少的原因，所以这句话得从回复里带过来（#760）
-        let cut_by_ceiling = reply.hit_token_ceiling();
-        (reply.text, cut_by_ceiling)
+        // 解析器只看得见 JSON 少了尾巴，看不见少的原因，所以原因得从回复里带过来（#760）
+        let cut = if reply.repeating {
+            Some(Cut::Repeating)
+        } else if reply.hit_token_ceiling() {
+            Some(Cut::Ceiling)
+        } else {
+            None
+        };
+        (reply.text, cut)
     };
     let mut extraction = match utopia_extract::open::parse_open_response(&reply_text) {
         Ok(x) => x,
         Err(e) => {
-            tracing::warn!(%document_id, seq = chunk.seq, error = %e, hit_token_ceiling = cut_by_ceiling, "开放抽取回复解析失败，跳过该分块");
-            // 一整块没进图，而原因不同：撞上上限是「答案太长」，改得动；
-            // 别的解析失败是「回复不合结构」。两种都写成同一句话就分不开了
-            let (why, detail) = if cut_by_ceiling {
-                (
+            tracing::warn!(%document_id, seq = chunk.seq, error = %e, hit_token_ceiling = matches!(cut, Some(Cut::Ceiling)), repeating = matches!(cut, Some(Cut::Repeating)), "开放抽取回复解析失败，跳过该分块");
+            // 一整块没进图，而原因不同：撞上上限是「答案太长」，改得动；复读是模型卡在一行上；
+            // 别的解析失败是「回复不合结构」。写成同一句话就分不开了
+            let (why, detail) = match cut {
+                Some(Cut::Ceiling) => (
                     "response hit the token ceiling and could not be parsed; this chunk did not enter the graph",
                     format!("#{}: hit the token ceiling; {e}", chunk.seq),
-                )
-            } else {
-                (
+                ),
+                Some(Cut::Repeating) => (
+                    "response started repeating itself and could not be parsed; this chunk did not enter the graph",
+                    format!("#{}: started repeating itself; {e}", chunk.seq),
+                ),
+                None => (
                     "response could not be parsed; this chunk did not enter the graph",
                     format!("#{}: {e}", chunk.seq),
-                )
+                ),
             };
             drop_signal(
                 state,
@@ -163,12 +180,16 @@ async fn call_and_parse_one_chunk(
             kb_id,
             document_id,
             reason::TRUNCATED_REPLY,
-            if cut_by_ceiling {
-                "the open reply hit the token ceiling; kept up to the last complete item"
-            } else {
+            match cut {
+                Some(Cut::Ceiling) => {
+                    "the open reply hit the token ceiling; kept up to the last complete item"
+                }
+                Some(Cut::Repeating) => {
+                    "the reply started repeating itself; kept up to the last complete item"
+                }
                 // 回复正常结束而整体不合法：模型写坏了括号。逐条读出来的都收了，写坏的
                 // 条数在下面那条信号里
-                "the open reply was not valid JSON as a whole; read item by item"
+                None => "the open reply was not valid JSON as a whole; read item by item",
             },
             None,
         )
@@ -298,7 +319,7 @@ async fn apply_open_extraction(
                 )
                 .await;
             }
-            touched_names.insert(utopia_store::resolution::normalize_name(name).to_lowercase());
+            touched_names.insert(name_key(name));
             if !doc_entities.iter().any(|(x, _, _)| *x == id) {
                 doc_entities.push((id, kind.to_string(), name.to_string()));
                 known_by_name.entry(key.clone()).or_insert(id);
@@ -661,7 +682,7 @@ async fn apply_open_extraction(
         }
         // 一个名字不会同时是两样东西的名字：这一块或本文档前面已经把它认成
         // 另一个实体的，不记
-        let key = utopia_store::resolution::normalize_name(name).to_lowercase();
+        let key = name_key(name);
         let claimed = handled_by_name
             .get(&key)
             .is_some_and(|ids| ids.iter().any(|x| *x != id));
@@ -893,13 +914,6 @@ async fn embed_pending_names(
     }
     utopia_store::name_vectors::set(&state.pool, kb_id, &items).await?;
     Ok(items.len())
-}
-
-pub(crate) fn name_key(name: &str) -> String {
-    name.split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_lowercase()
 }
 
 /// 陈述里写的名字 → 实体。先看这一块列出的，再看本文档前面认下的（提示词里的清单）。

@@ -102,6 +102,14 @@ fn vector_reviews(r: &utopia_store::resolution::Resolution) -> Vec<(Uuid, f32)> 
         .collect()
 }
 
+fn contained(r: &utopia_store::resolution::Resolution) -> Vec<Uuid> {
+    r.reviews
+        .iter()
+        .filter(|v| v.reason.starts_with("contains|"))
+        .map(|v| v.other_id)
+        .collect()
+}
+
 /// 相近的名字：新建实体，给裁决器排一对，绝不静默归并
 #[tokio::test]
 async fn a_near_name_creates_an_entity_and_proposes_a_pair() -> anyhow::Result<()> {
@@ -267,26 +275,40 @@ async fn the_same_literal_name_is_not_proposed_twice() -> anyhow::Result<()> {
     let f = seed(&pool, "name-vector-literal").await?;
     let run = async {
         let same: Vec<f32> = vec![1.0, 0.0, 0.0];
-        // 没有上下文向量：v1 路径归并到唯一的字面候选
-        let r = utopia_store::resolution::resolve_mention(
-            &pool,
-            f.kb,
-            Some(f.device),
-            "海洋探测器1号",
-            None,
-            Some(&same),
-            None,
-            &[],
+        // A second entity with the same name stays a channel-1 decision, including
+        // when the mention carries Markdown. Neither candidate is excluded here.
+        sqlx::query(
+            "UPDATE entities SET canonical_name = '海洋探测器1号', type_id = $2 WHERE id = $1",
         )
+        .bind(f.captain)
+        .bind(f.device)
+        .execute(&pool)
         .await?;
-        assert_eq!(r.entity_id, f.probe, "字面相等走通道 1");
-        // 夹具里 海洋探测队长 的向量与之相同、大类又拦不住，它照常被提议；要看的只是
-        // 已归并到的 海洋探测器1号 自己不会再被排一对
-        assert!(
-            !vector_reviews(&r).iter().any(|(id, _)| *id == f.probe),
-            "已经归并到它，不再对它排 name_vector：{:?}",
-            r.reviews
-        );
+        sqlx::query(
+            "UPDATE facts SET object_value = '{\"value\":\"海洋探测器1号\"}' WHERE subject_id = $1",
+        )
+        .bind(f.captain)
+        .execute(&pool)
+        .await?;
+        for mention in ["海洋探测器1号", "**海洋探测器1号**"] {
+            let r = utopia_store::resolution::resolve_mention(
+                &pool,
+                f.kb,
+                Some(f.device),
+                mention,
+                None,
+                Some(&same),
+                None,
+                &[],
+            )
+            .await?;
+            assert!(!r.created);
+            assert!(
+                vector_reviews(&r).is_empty(),
+                "a namesake must not be reconsidered by name vector: {:?}",
+                r.reviews
+            );
+        }
         Ok::<_, anyhow::Error>(())
     }
     .await;
@@ -326,6 +348,42 @@ async fn a_new_name_is_pending_until_its_vector_is_set() -> anyhow::Result<()> {
         name_vectors::set(&pool, f.kb, &[(fact, fresh, vec![0.0, 0.0, 1.0])]).await?;
         let after = name_vectors::pending(&pool, f.kb, 100).await?;
         assert!(after.iter().all(|(fid, _, _)| *fid != fact), "写了向量就不该再待补");
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    teardown(&pool, &f).await?;
+    run
+}
+
+/// 上一篇文档没补上的名字，下一篇照样补：`pending` 取整个库里没有向量的名字，先记的在前，
+/// 不只是这篇刚记的。有向量的名字不在里面（#1296 改这条查询时守住这次重试）
+#[tokio::test]
+async fn a_name_left_without_a_vector_earlier_is_pending_before_a_new_one() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let f = seed(&pool, "name-vector-backlog").await?;
+    let run = async {
+        let mut recorded = Vec::new();
+        for name in ["远洋重工", "深蓝船舶"] {
+            let entity = Uuid::now_v7();
+            sqlx::query(
+                "INSERT INTO entities (id, kb_id, type_id, canonical_name) VALUES ($1, $2, $3, $4)",
+            )
+            .bind(entity)
+            .bind(f.kb)
+            .bind(f.device)
+            .bind(name)
+            .execute(&pool)
+            .await?;
+            let fact = names::record(&pool, f.kb, entity, name, None, None)
+                .await?
+                .expect("a name fact");
+            recorded.push((fact, entity, name.to_string()));
+        }
+
+        assert_eq!(name_vectors::pending(&pool, f.kb, 100).await?, recorded);
         Ok::<_, anyhow::Error>(())
     }
     .await;
@@ -447,13 +505,6 @@ async fn names_that_carry_different_numbers_are_not_proposed() -> anyhow::Result
         );
 
         // 包含关系：`migration 39` 是 `migration 395` 的子串，但不是它的简称
-        let contained = |r: &utopia_store::resolution::Resolution| {
-            r.reviews
-                .iter()
-                .filter(|v| v.reason.starts_with("contains|"))
-                .map(|v| v.other_id)
-                .collect::<Vec<_>>()
-        };
         let long = resolve("migration 395", None).await?;
         let short = resolve("migration 39", None).await?;
         assert!(short.created);
@@ -468,6 +519,49 @@ async fn names_that_carry_different_numbers_are_not_proposed() -> anyhow::Result
         assert!(
             contained(&brief).contains(&full.entity_id),
             "简称照常配到带版本号的全称上：{:?}",
+            brief.reviews
+        );
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    teardown(&pool, &f).await?;
+    run
+}
+
+/// 名字里的 `_` 按字面比，不当通配符（#1293）：`src/a_b.ts` 不包含在 `src/axb.ts::adds` 里，
+/// 反过来 `a_b.ts` 也不在后者里；真包含的 `src/a_b.ts` 照常配对
+#[tokio::test]
+async fn an_underscore_in_a_name_is_not_a_wildcard() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let f = seed(&pool, "contain-underscore").await?;
+    let run = async {
+        let resolve = |name: &'static str| {
+            utopia_store::resolution::resolve_mention(
+                &pool,
+                f.kb,
+                Some(f.device),
+                name,
+                None,
+                None,
+                None,
+                &[],
+            )
+        };
+        let file = resolve("src/a_b.ts").await?;
+        let other = resolve("src/axb.ts::adds").await?;
+        assert!(
+            !contained(&other).contains(&file.entity_id),
+            "库里名字的 _ 不匹配 x：{:?}",
+            other.reviews
+        );
+        let brief = resolve("a_b.ts").await?;
+        assert_eq!(
+            contained(&brief),
+            vec![file.entity_id],
+            "mention 的 _ 不匹配 x，真包含的照常配对：{:?}",
             brief.reviews
         );
         Ok::<_, anyhow::Error>(())

@@ -13,7 +13,7 @@
 //!   一条「事实」，不能冒充证据，也不能把计数撑大。
 
 use crate::graph::{add_evidence, insert_value_fact, Validity};
-use crate::resolution::normalize_name;
+use crate::resolution::{fold_markdown_markers, normalize_name};
 use sqlx::PgPool;
 use std::collections::HashMap;
 use utopia_core::models::NameView;
@@ -78,6 +78,7 @@ pub async fn record(
     attested_at: Option<chrono::DateTime<chrono::Utc>>,
 ) -> AppResult<Option<Uuid>> {
     let name = normalize_name(name);
+    let name = fold_markdown_markers(&name);
     if name.is_empty() {
         return Ok(None);
     }

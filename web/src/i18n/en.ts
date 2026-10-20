@@ -643,6 +643,7 @@ export const en = {
       statements: "Statements",
       custom: "Custom",
       github_issues: "GitHub issues",
+      github_repo: "GitHub repository files",
       jira_issues: "Jira issues",
       s3: "S3 / MinIO",
       azure_blob: "Azure Blob",
@@ -662,6 +663,9 @@ export const en = {
         "Syncs a repository's issues. **Each ticket, together with its state history**, becomes " +
         "one document — when it was opened, closed, relabelled, reassigned, all dated. " +
         "Without a token GitHub allows only 60 requests an hour.",
+      github_repo:
+        "Reads markdown files off a repository's default branch. Each file becomes one " +
+        "document dated by its last commit; unchanged files are not fetched again.",
       s3:
         "Reads documents out of an S3 bucket, or anything speaking the same protocol " +
         "(MinIO, Ceph, R2). **Leave the endpoint empty for AWS**; fill it in for a " +
@@ -759,6 +763,8 @@ export const en = {
     notionQueryField: "Search term (optional — empty takes every shared page)",
     tokenField: "GitHub token (optional, never shown again)",
     includePullRequests: "Treat pull requests as tickets too",
+    includeGlobsField: "Include globs (comma-separated, optional)",
+    excludeGlobsField: "Exclude globs (comma-separated, optional)",
     interval: "Sync schedule",
     intervalManual: "Manual only",
     intervalEvery: (m: number) =>

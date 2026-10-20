@@ -126,7 +126,9 @@ impl Direction {
     }
 }
 
-/// 系统消息。例子是中性的，不出自任何测量语料；规则 1 的「每一条」是整条路的判据
+/// 系统消息。例子是中性的，不出自任何测量语料；规则 1 的「每一条」是整条路的判据。
+/// Reply slots use placeholders: a local model copied the old example's 12/13/14
+/// into a batch numbered 0/1/2, leaving every signature unanswered (#1321).
 const PHRASE_SYSTEM: &str = "\
 You bind the relation phrases documents use to the properties of a knowledge base's ontology. \
 Each numbered item is one signature: a phrase as the documents wrote it, the class of the thing \
@@ -144,9 +146,13 @@ states by that property's definition, and the direction: \"forward\" when the st
 subject is the property's subject, \"reverse\" when the statement's object is; or null. For a \
 state, also say which end of it a statement dated at a single moment marks (rule 6).\n\
 \n\
-Output exactly one JSON object and nothing else, one entry per item:\n\
-{\"b\": [[12, \"headquartered_in\", \"forward\", \"none\"], [13, \"member_of\", \"forward\", \"start\"], \
-[14, null, null, null]]}\n\
+Output exactly one JSON object and nothing else, one entry per item. Format (uppercase words \
+and the ellipsis are placeholders, not literal output):\n\
+{\"b\": [[ITEM_ID, PROPERTY_KEY_OR_NULL, DIRECTION_OR_NULL, MARKS_OR_NULL], ...]}\n\
+Copy the exact integer after \"Item\" in the user message into that item's ITEM_ID slot. \
+Never invent an id or renumber the items. Answer every supplied id exactly once. \
+The other slots contain the chosen property's key, direction and marks, as described below; \
+when no property fits, all three are null.\n\
 \n\
 1. Choose a property only when each of the statements under this signature states that \
 property, by the definition as given. The property may be broader than the phrase: \"opened a \

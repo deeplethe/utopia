@@ -105,3 +105,101 @@ async fn a_known_name_is_found_by_any_spelling_and_an_unknown_one_is_not() -> an
     teardown(&pool, &f).await?;
     run
 }
+
+#[tokio::test]
+async fn markdown_mentions_recall_names_in_either_order() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let f = seed(&pool).await?;
+    let run = async {
+        // Open-graph extraction resolves names before they have an ontology type.
+        sqlx::query("UPDATE entities SET type_id = NULL WHERE id = $1")
+            .bind(f.acme)
+            .execute(&pool)
+            .await?;
+        utopia_store::names::record(&pool, f.kb, f.acme, "`docs/setup.md`", None, None).await?;
+        for mention in [
+            "**Acme Corporation**",
+            "__Acme Corporation__",
+            "**ACME**",
+            "docs/setup.md",
+            "`docs/setup.md`",
+        ] {
+            assert_eq!(
+                utopia_store::resolution::existing_by_name(&pool, f.kb, mention).await?,
+                Some(f.acme),
+                "{mention} must recall the existing name"
+            );
+            let resolved = utopia_store::resolution::resolve_mention(
+                &pool,
+                f.kb,
+                None,
+                mention,
+                None,
+                None,
+                None,
+                &[],
+            )
+            .await?;
+            assert_eq!(resolved.entity_id, f.acme);
+            assert!(!resolved.created);
+            assert!(resolved.reviews.is_empty());
+        }
+        let canonical: String =
+            sqlx::query_scalar("SELECT canonical_name FROM entities WHERE id = $1")
+                .bind(f.acme)
+                .fetch_one(&pool)
+                .await?;
+        assert_eq!(canonical, "Acme Corporation");
+
+        // Marked-first names must remain recallable by later plain mentions.
+        let written = "**Pump 2**";
+        let created = utopia_store::resolution::resolve_mention(
+            &pool,
+            f.kb,
+            None,
+            written,
+            None,
+            None,
+            None,
+            &[],
+        )
+        .await?;
+        assert!(created.created);
+        let canonical: String =
+            sqlx::query_scalar("SELECT canonical_name FROM entities WHERE id = $1")
+                .bind(created.entity_id)
+                .fetch_one(&pool)
+                .await?;
+        assert_eq!(canonical, "Pump 2");
+        let recorded: String = sqlx::query_scalar(
+            "SELECT object_value->>'value' FROM facts
+             WHERE subject_id = $1 AND predicate_id = $2",
+        )
+        .bind(created.entity_id)
+        .bind(utopia_store::names::ensure_known_as(&pool, f.kb).await?)
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(recorded, "Pump 2");
+        let recalled = utopia_store::resolution::resolve_mention(
+            &pool,
+            f.kb,
+            None,
+            "Pump 2",
+            None,
+            None,
+            None,
+            &[],
+        )
+        .await?;
+        assert_eq!(recalled.entity_id, created.entity_id);
+        assert!(!recalled.created);
+        assert!(recalled.reviews.is_empty());
+        anyhow::Ok(())
+    }
+    .await;
+    teardown(&pool, &f).await?;
+    run
+}

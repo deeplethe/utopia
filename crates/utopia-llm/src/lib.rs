@@ -386,6 +386,9 @@ pub struct Reply {
     pub finish_reason: Option<String>,
     /// 端点报的用量（最后一帧）。不报就是 `None`——账上不编数字
     pub usage: Option<Usage>,
+    /// 回复在复读，是我们停了读（#1301），不是端点收的尾。与 `finish_reason` 分开记：
+    /// 记成 `length` 的话丢弃行会说「撞上了 token 上限」，看的人就去查那个上限了
+    pub repeating: bool,
 }
 
 /// 一次调用的 token 用量，端点自己报的
@@ -508,6 +511,28 @@ fn strip_reasoning(reply: &str) -> &str {
         Some(pos) => &reply[pos + "</think>".len()..],
         None => reply,
     }
+}
+
+/// 回复的尾巴是不是同一段在复读（#1301）。
+///
+/// 温度 0 的小模型会掉进复读：同一行陈述一遍遍写下去，直到撞上
+/// [`MAX_COMPLETION_TOKENS`]。本地 qwen3-8b 上约 3% 的抽取调用如此，每次占一个槽
+/// 一个多小时，吃掉六成的生成量。上限本身不能降（开推理的端点上它是思考预算），
+/// 所以看尾巴：同一段（至少 30 字节）一字不差连着出现五次，就不是在答题了——
+/// 真实的陈述行彼此不同。按字节比，多字节字符切在哪都不影响。
+///
+/// 只算**最短周期**也有 30 字节的尾巴：每条陈述以原文引文开头，一段 150 字节以上的
+/// 短周期串照样能拆成 30 字节以上的段——目录行 200 个点的引导线、一排二十个空
+/// `<td></td>`，不加这一条就可能被当成复读截断（看每 256 字节的检查落在哪），引文之后
+/// 的全丢了。真复读是整行在重复；短于 30 字节的行复读时这里不截（一夜 57 次截断里有
+/// 4 次是这种），宁可让它跑到上限，也不截断引文
+fn repeats_at_tail(text: &[u8]) -> bool {
+    const REPEATS: usize = 5;
+    (30..=600.min(text.len() / REPEATS)).any(|span| {
+        let tail = &text[text.len() - span * REPEATS..];
+        tail.chunks(span).all(|piece| piece == &tail[..span])
+            && !(1..30).any(|shift| tail[shift..] == tail[..tail.len() - shift])
+    })
 }
 
 impl LlmClient {
@@ -698,7 +723,8 @@ impl LlmClient {
         let (mut saw_frame, mut ended) = (false, false);
         let mut finish_reason: Option<String> = None;
         let mut usage: Option<Usage> = None;
-        while let Some(part) = bytes.next().await {
+        let (mut checked, mut repeating) = (0, false);
+        'read: while let Some(part) = bytes.next().await {
             let part = part.map_err(Unreachable)?;
             // 网络片段可能断在 UTF-8 字符中间，等完整 SSE 帧到齐再解码。
             buf.push(&part);
@@ -712,6 +738,24 @@ impl LlmClient {
                     &mut finish_reason,
                     &mut usage,
                 );
+                // 复读了就不再读，回复记成 `repeating`：抽取当它是半截的，前面完整的陈述照收，
+                // 不再等它写到 65,536 个 token。丢掉响应流，连接一关，端点那边也就停了。按帧看
+                // 而不是按网络片段看：一个片段可能装着整段复读。每多 256 字节看一次
+                if !ended && answer.len() >= checked + 256 {
+                    checked = answer.len();
+                    if repeats_at_tail(answer.as_bytes()) {
+                        tracing::warn!(
+                            model = %self.model,
+                            call = %call_label(messages),
+                            chars = answer.len(),
+                            "回复在复读，按截断收下"
+                        );
+                        repeating = true;
+                        ended = true;
+                        buf = SseBuffer::default();
+                        break 'read;
+                    }
+                }
             }
         }
         // **收尾那一帧也算**：末尾不跟空行的实现有的是，丢掉它就是丢掉答案的尾巴
@@ -749,6 +793,7 @@ impl LlmClient {
             text: strip_reasoning(&answer).to_string(),
             finish_reason,
             usage,
+            repeating,
         })
     }
 
@@ -1996,6 +2041,55 @@ mod tests {
                 );
             }
         }
+    }
+
+    fn content_frame(text: &str) -> String {
+        format!(
+            "data: {}\n\n",
+            json!({"choices": [{"delta": {"content": text}}]})
+        )
+    }
+
+    async fn streamed_reply(sse: &str) -> Reply {
+        let (addr, server) = an_http_response("200 OK", "text/event-stream", sse).await;
+        let user = ChatMessage {
+            role: "user".into(),
+            content: "hi".into(),
+        };
+        let reply = client_at(addr)
+            .chat_at_streaming(&[user], Some(0.0))
+            .await
+            .unwrap();
+        server.await.unwrap();
+        reply
+    }
+
+    /// 复读的回复按截断收下（#1301）：这条流没有收尾，没有护栏就是「流断在半路」
+    #[tokio::test]
+    async fn a_reply_that_keeps_repeating_comes_back_cut() {
+        let row = r#"[null,"a","is on","b",null,{},null,null],"#;
+        let sse =
+            content_frame(r#"{"e":[["a","thing",true]],"s":["#) + &content_frame(row).repeat(200);
+        let reply = streamed_reply(&sse).await;
+        assert!(reply.repeating);
+        assert!(!reply.hit_token_ceiling(), "the endpoint never said length");
+        assert!(
+            reply.text.len() < row.len() * 20,
+            "read {} bytes past the loop",
+            reply.text.len()
+        );
+    }
+
+    /// 引文里一条 200 个点的目录引导线不是复读：周期是一个点，不是一整行
+    #[tokio::test]
+    async fn a_quoted_dot_leader_comes_back_whole() {
+        let sse = content_frame(r#"{"e":[["Introduction","section",true]],"s":[["Introduction "#)
+            + &content_frame(&".".repeat(200))
+            + &content_frame(r#" 3","Introduction","is on page",null,"3",{},null,null]],"n":[]}"#)
+            + "data: [DONE]\n\n";
+        let reply = streamed_reply(&sse).await;
+        assert!(!reply.repeating);
+        assert!(reply.text.ends_with(r#""n":[]}"#), "{}", reply.text);
     }
 
     #[tokio::test]

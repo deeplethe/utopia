@@ -319,6 +319,7 @@ async fn align_types_locked(
                     items = items.len(),
                     malformed,
                     finish_reason = ?reply.finish_reason,
+                    repeating = reply.repeating,
                     chars = reply.text.chars().count(),
                     reply = %snippet(&reply.text),
                     "类别词对齐回复读不出一项，这一批留到下次"

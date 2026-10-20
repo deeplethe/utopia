@@ -87,14 +87,18 @@ push documents in.
 
 7. **A token reads the graph** (added 2026-10-16, #1262). A service that mirrors into a base reads the
    base back to check what landed, and a session JWT is the wrong credential for a backend
-   (decision 6). Four reads now also take any live token, acting as its owner: searching a base's
+   (decision 6). Six reads now also take any live token, acting as its owner: searching a base's
    entities (`GET /kbs/{id}/entities`), an entity's detail (`GET /kbs/{id}/entities/{eid}`), its
-   record-axis history (`…/history`), and a fact's evidence (`GET /kbs/{id}/facts/{fid}/evidence`).
-   Search finds the entity by name; the detail gives its facts, names and derivations; the
-   history says when we changed our mind; the evidence ties a fact to its sentence. Read is the
-   lowest scope, so any token qualifies; the owner's role is still the ceiling and Viewer
-   suffices; a token whose `kb_ids` exclude the base gets 404, as for document content (0052).
-   Changing an entity on the same path (`PATCH`) still takes a session.
+   record-axis history (`…/history`), a fact's evidence (`GET /kbs/{id}/facts/{fid}/evidence`),
+   the graph overview (`GET /kbs/{id}/graph/overview`) and an entity's neighbourhood
+   (`GET /kbs/{id}/graph/neighborhood`). Search finds the entity by name; the detail gives its
+   facts, names and derivations; the history says when we changed our mind; the evidence ties a
+   fact to its sentence; the overview gives the most connected entities with the base's totals,
+   so a client sees the shape of what it pushed; the neighbourhood gives the entities around one,
+   so it can follow what a statement touches, and one started from another base's entity comes
+   back empty. Read is the lowest scope, so any token qualifies; the owner's role is still the
+   ceiling and Viewer suffices; a token whose `kb_ids` exclude the base gets 404, as for document
+   content (0052). Changing an entity on the same path (`PATCH`) still takes a session.
 
 ## Dead ends
 
@@ -121,7 +125,8 @@ push documents in.
   push-only as well; a backend mirroring several kinds of documents pushes them through one. A
   token now creates `api` sources too.
 - 2026-10-16: decision 7 opens four graph reads to any token; decision 6's "only these routes
-  and document content" now also counts them.
+  and document content" now also counts them. 2026-10-19: the graph overview and neighbourhood
+  join them.
 
 ## Open questions
 

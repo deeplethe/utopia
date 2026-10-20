@@ -582,6 +582,7 @@ export const zh: Strings = {
       statements: "陈述",
       custom: "自定义",
       github_issues: "GitHub 工单",
+      github_repo: "GitHub 仓库文件",
       jira_issues: "Jira 工单",
       s3: "S3 / MinIO",
       azure_blob: "Azure Blob",
@@ -600,6 +601,9 @@ export const zh: Strings = {
         "同步一个仓库的工单。**每张工单连同它的状态变更史**成为一篇文档——" +
         "何时开出、何时关闭、标签与负责人怎么变的，都带着日期。未配令牌时" +
         "每小时只有 60 次请求配额。",
+      github_repo:
+        "读取一个仓库默认分支上的 markdown 文件。每个文件成为一篇文档，" +
+        "日期取最后一次改动它的提交；没变的文件不会重抓。",
       s3:
         "从 S3 桶里读文档，或者任何说同一套协议的东西（MinIO、Ceph、R2）。" +
         "**端点留空就是 AWS**，填了就是自建。每个对象成为一篇文档，" +
@@ -692,6 +696,8 @@ export const zh: Strings = {
     notionQueryField: "搜索词（可选——留空则取全部已分享页面）",
     tokenField: "GitHub 令牌（可选，不再显示）",
     includePullRequests: "把 PR 也当工单收进来",
+    includeGlobsField: "包含的 glob（逗号分隔，可选）",
+    excludeGlobsField: "排除的 glob（逗号分隔，可选）",
     interval: "同步计划",
     intervalManual: "仅手动",
     intervalEvery: (m: number) =>
