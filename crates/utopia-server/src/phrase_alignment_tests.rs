@@ -1469,3 +1469,53 @@ async fn asking_what_a_date_marks_never_reopens_the_binding() -> anyhow::Result<
     f.cleanup().await?;
     run
 }
+
+#[tokio::test]
+async fn a_base_with_no_properties_queues_propose_ontology_once_twenty_signatures_are_unbound(
+) -> anyhow::Result<()> {
+    let Some(f) = Fx::new().await? else {
+        return Ok(());
+    };
+    let run = async {
+        sqlx::query("DELETE FROM relation_type_domains WHERE relation_type_id=$1")
+            .bind(f.based_in)
+            .execute(&f.pool)
+            .await?;
+        sqlx::query("DELETE FROM relation_type_ranges WHERE relation_type_id=$1")
+            .bind(f.based_in)
+            .execute(&f.pool)
+            .await?;
+        sqlx::query("DELETE FROM relation_types WHERE kb_id=$1")
+            .bind(f.kb)
+            .execute(&f.pool)
+            .await?;
+        for n in 0..crate::ontology_agent::TRIGGER_UNBOUND {
+            let place = Uuid::now_v7();
+            sqlx::query("INSERT INTO entities(id,kb_id,canonical_name,type_id) VALUES($1,$2,$3,$4)")
+                .bind(place)
+                .bind(f.kb)
+                .bind(format!("Place {n}"))
+                .bind(f.place)
+                .execute(&f.pool)
+                .await?;
+            sqlx::query("INSERT INTO facts(id,kb_id,subject_id,object_id,layer,phrase) VALUES($1,$2,$3,$4,'open',$5)")
+                .bind(Uuid::now_v7())
+                .bind(f.kb)
+                .bind(f.acme)
+                .bind(place)
+                .bind(format!("phrase {n}"))
+                .execute(&f.pool)
+                .await?;
+        }
+        f.run().await?;
+        let queued = f.queued().await?;
+        anyhow::ensure!(
+            queued.contains(&"propose_ontology".to_string()),
+            "propose_ontology not queued, queued: {queued:?}"
+        );
+        anyhow::Ok(())
+    }
+    .await;
+    f.cleanup().await?;
+    run
+}
