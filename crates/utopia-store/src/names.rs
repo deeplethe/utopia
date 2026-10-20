@@ -277,6 +277,98 @@ fn digit_runs(name: &str) -> Vec<String> {
     runs
 }
 
+/// Characters that join into one Latin word: ASCII and accented Latin letters, combining accents,
+/// ASCII digits, `_`.
+///
+/// The ranges are written out because Postgres `\w`, `[[:alnum:]]` and `\y` follow the database
+/// locale, and a UTF-8 locale counts CJK characters as letters. CJK must keep the substring match.
+const LATIN_WORD: &[(char, char)] = &[
+    ('0', '9'),
+    ('A', 'Z'),
+    ('_', '_'),
+    ('a', 'z'),
+    ('\u{C0}', '\u{D6}'),
+    // Combining accents: a decomposed `é` is still part of its word
+    ('\u{300}', '\u{36F}'),
+    ('\u{D8}', '\u{F6}'),
+    ('\u{F8}', '\u{24F}'),
+    ('\u{1E00}', '\u{1EFF}'),
+];
+
+fn is_latin_word(c: char) -> bool {
+    LATIN_WORD.iter().any(|&(lo, hi)| (lo..=hi).contains(&c))
+}
+
+/// `shorter` occurs in `longer`, and at each edge of `shorter` that is a Latin word character,
+/// the character just beyond it in `longer` is not one (#1104).
+///
+/// `token` is not in `service_token`, `area` is not in `areascorecard`, `holmes` is in
+/// `sherlock holmes`. An edge in another script has no boundary, so a CJK short form still
+/// matches inside its full name. [`word_edges_pattern`] and `word_edges_sql` are the same rule in SQL.
+pub fn contains_at_word_edges(longer: &str, shorter: &str) -> bool {
+    // An empty name is in every name, as `LIKE` and the regex say
+    let (Some(first), Some(last)) = (shorter.chars().next(), shorter.chars().last()) else {
+        return true;
+    };
+    // Every start, not `match_indices`: a failed match can overlap one that passes, as the regex sees
+    longer.char_indices().any(|(at, _)| {
+        if !longer[at..].starts_with(shorter) {
+            return false;
+        }
+        let before = longer[..at].chars().next_back();
+        let after = longer[at + shorter.len()..].chars().next();
+        let joins_before = is_latin_word(first) && before.is_some_and(is_latin_word);
+        let joins_after = is_latin_word(last) && after.is_some_and(is_latin_word);
+        !(joins_before || joins_after)
+    })
+}
+
+fn word_class() -> String {
+    LATIN_WORD
+        .iter()
+        .map(|&(lo, hi)| {
+            if lo == hi {
+                lo.to_string()
+            } else {
+                format!("{lo}-{hi}")
+            }
+        })
+        .collect()
+}
+
+/// A Postgres regex that matches where `name` occurs at word edges.
+pub fn word_edges_pattern(name: &str) -> String {
+    let (Some(first), Some(last)) = (name.chars().next(), name.chars().last()) else {
+        return String::new();
+    };
+    let class = word_class();
+    let mut p = String::new();
+    if is_latin_word(first) {
+        p.push_str(&format!("(^|[^{class}])"));
+    }
+    for c in name.chars() {
+        if r"\.^$|?*+()[]{}".contains(c) {
+            p.push('\\');
+        }
+        p.push(c);
+    }
+    if is_latin_word(last) {
+        p.push_str(&format!("($|[^{class}])"));
+    }
+    p
+}
+
+/// [`word_edges_pattern`] as an SQL expression, for a name that is stored in a column.
+/// `expr` is SQL text from the caller, never user input.
+pub(crate) fn word_edges_sql(expr: &str) -> String {
+    let class = word_class();
+    format!(
+        r"(CASE WHEN {expr} ~ '^[{class}]' THEN '(^|[^{class}])' ELSE '' END
+          || regexp_replace({expr}, '([\\.^$|?*+()[\]{{}}])', '\\\1', 'g')
+          || CASE WHEN {expr} ~ '[{class}]$' THEN '($|[^{class}])' ELSE '' END)"
+    )
+}
+
 /// 本名以外的现行名字，按首次记下的先后。给裁决器与审阅卡的「又名」那一行
 pub async fn other_names(pool: &PgPool, entity_id: Uuid) -> AppResult<Vec<String>> {
     Ok(other_names_many(pool, &[entity_id])
@@ -320,7 +412,63 @@ pub(crate) async fn other_names_many(
 
 #[cfg(test)]
 mod tests {
-    use super::numbers_differ;
+    use super::{contains_at_word_edges, numbers_differ, word_edges_pattern, word_edges_sql};
+
+    /// (longer, shorter, contained). The Rust rule and both SQL forms must give the same answer
+    const WORD_EDGES: &[(&str, &str, bool)] = &[
+        ("service_token", "token", false),
+        ("install_scheduled_task.ps1", "task", false),
+        ("areascorecard", "area", false),
+        ("pumpkin soup", "pump", false),
+        ("sherlock holmes", "holmes", true),
+        ("mr. holmes", "holmes", true),
+        ("install_scheduled_task.ps1", "install_scheduled_task", true),
+        ("api/main.py", "main.py", true),
+        ("café royal", "café", true),
+        ("cafés", "café", false),
+        ("zürich ag", "rich", false),
+        ("issue#440", "#440", true),
+        ("a.b+c (x) d", "b+c (x)", true),
+        ("axb", "a.b", false),
+        ("星云科技上海研究院", "上海研究院", true),
+        ("nebula上海研究院", "上海研究院", true),
+        ("openai中国", "openai", true),
+        ("tokens token", "token", true),
+        ("cafe\u{301}s", "cafe\u{301}", false),
+        ("anything", "", true),
+        ("x1.1.1", "1.1", true),
+        (r"x [a]{2}\b|c? y", r"[a]{2}\b|c?", true),
+    ];
+
+    #[test]
+    fn the_rust_rule_contains_a_latin_name_only_at_word_edges() {
+        for &(longer, shorter, want) in WORD_EDGES {
+            assert_eq!(
+                contains_at_word_edges(longer, shorter),
+                want,
+                "{shorter} in {longer}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn the_sql_rule_agrees_with_the_rust_rule() -> anyhow::Result<()> {
+        let Some(url) = crate::test_db::url() else {
+            return Ok(());
+        };
+        let pool = sqlx::PgPool::connect(&url).await?;
+        let sql = format!("SELECT $1 ~ $2, $1 ~ {}", word_edges_sql("$3"));
+        for &(longer, shorter, want) in WORD_EDGES {
+            let (by_pattern, by_sql): (bool, bool) = sqlx::query_as(&sql)
+                .bind(longer)
+                .bind(word_edges_pattern(shorter))
+                .bind(shorter)
+                .fetch_one(&pool)
+                .await?;
+            assert_eq!((by_pattern, by_sql), (want, want), "{shorter} in {longer}");
+        }
+        Ok(())
+    }
 
     #[test]
     fn names_with_different_numbers_are_not_a_pair() {
