@@ -1,6 +1,6 @@
 # 0071 · A source may declare its names identities
 
-- **Status**: Proposed · 2026-10-19 · [#1293](https://github.com/deeplethe/utopia/issues/1293) · open: all six decisions
+- **Status**: In progress · 2026-10-19 · [#1293](https://github.com/deeplethe/utopia/issues/1293) · open: decisions 5 and 6, and the `name_vectors::pending` skip of decision 4
 - **Written**: 2026-10-19 (conventions in the [README](README.md))
 - **Related**: [0054](0054-a-source-may-push-statements-in-the-open-contract.md) decision 3 sends pushed statements down the same resolution path as prose, and this record narrows that for one kind of source; [0041](0041-a-name-is-a-claim-about-an-entity.md) owns name facts and name-vector recall; [#1248](https://github.com/deeplethe/utopia/issues/1248) meets the same problem from the merge side; [#1296](https://github.com/deeplethe/utopia/issues/1296) measured what the recall costs; [#1308](https://github.com/deeplethe/utopia/pull/1308) is the disjointness fix that stands on its own
 
@@ -40,6 +40,7 @@ One name fact can carry evidence from both an identity source and a prose docume
 
 - **On:** the update that sets the flag also deletes the stored vectors of name facts that now have identity evidence, in the same transaction. Leaving them in place and skipping them would put an evidence join into every `nearest` query, which is the per-mention cost #1296 measured.
 - **Off:** nothing is deleted. Those name facts become pending again, and the next extraction in the base backfills their vectors through `pending`, as it does for any name whose vector is missing. Recall for them returns from then on. Pairs that were never proposed while the flag was on are not proposed in retrospect.
+**A NULL-typed holder keeps its class for now.** A typed mention that attaches to a holder with `type_id IS NULL` does not upgrade the holder's class, as the type-drift path does. PR 2 decides that.
 
 ## Not doing
 

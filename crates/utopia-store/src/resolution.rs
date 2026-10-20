@@ -362,6 +362,57 @@ async fn kept_apart_from(pool: &PgPool, kb_id: Uuid, entity_id: Uuid) -> AppResu
     Ok(rows.into_iter().map(|(id,)| id).collect())
 }
 
+/// 0071 决定 2、3：恰有一个活着的同名持有者（类为声明的类或无类）时，不看画像，直接归并；
+/// 没有就新建，哪怕该名字在别的类下已有（类型漂移审核照留）；两个及以上走原来的画像路径。
+/// 持有者按本名或名字事实认（合并会把输家的名字作为 known_as 移给存活者）。
+pub async fn resolve_identity_name(
+    pool: &PgPool,
+    kb_id: Uuid,
+    type_id: Option<Uuid>,
+    raw_name: &str,
+    context: Option<&[f32]>,
+    text: Option<&str>,
+    exclude: &[Uuid],
+) -> AppResult<Resolution> {
+    let normalized = normalize_name(raw_name);
+    let name = fold_markdown_markers(&normalized);
+    let spellings = vec![normalized.to_lowercase(), name.to_lowercase()];
+    let holders: Vec<Candidate> = sqlx::query_as(&format!(
+        "SELECT e.id, e.canonical_name, e.profile_embedding, e.profile_n
+           FROM entities e
+          WHERE e.kb_id = $1 AND e.merged_into IS NULL AND e.description IS NULL
+            AND (e.type_id IS NULL OR e.type_id = $2)
+            AND (lower(e.canonical_name) = ANY($3) OR {named})",
+        named = crate::names::has_name_in("e", 1, 3),
+    ))
+    .bind(kb_id)
+    .bind(type_id)
+    .bind(&spellings)
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .filter(|holder: &Candidate| !exclude.contains(&holder.id))
+    .collect();
+    match holders.as_slice() {
+        [holder] => {
+            match context {
+                Some(ctx) => update_profile(pool, holder.id, holder.profile_n, ctx).await?,
+                None => touch_entity(pool, holder.id).await?,
+            }
+            Ok(Resolution {
+                entity_id: holder.id,
+                created: false,
+                reviews: Vec::new(),
+            })
+        }
+        [] => {
+            let keys = recall_keys(&normalized);
+            resolve_type_drift(pool, kb_id, type_id, name, &keys, context, exclude, false).await
+        }
+        _ => resolve_by_name(pool, kb_id, type_id, raw_name, context, text, exclude).await,
+    }
+}
+
 /// 通道 2：mention 名字向量的近邻，各排一对（规矩见 [`resolve_mention`]）
 async fn propose_by_name_vector(
     pool: &PgPool,
@@ -484,7 +535,7 @@ async fn resolve_by_name(
     if candidates.is_empty() {
         // 同类型无候选 ≠ 新名字：类型标签会漂（同一团队被抽成 organization/project/
         // concept），先查其它类型下的同名实体，按类型对的互斥强度分流。
-        return resolve_type_drift(pool, kb_id, type_id, name, &keys, context, exclude).await;
+        return resolve_type_drift(pool, kb_id, type_id, name, &keys, context, exclude, true).await;
     }
 
     let Some(ctx) = context else {
@@ -1033,6 +1084,7 @@ fn confusable_reviews(
 /// concept 兜底型候选跑既有画像分层：高相似直接 ATTACH（漂移的召回修复，concept
 /// 侧类型升格为具体类型），灰区/无从判别 → 宁分勿合新建 + 审核对；易混具体类型
 /// 一律新建 + 审核对（同名 + 类型摇摆本身就是信号，不设相似度门槛）；硬互斥忽略。
+#[allow(clippy::too_many_arguments)]
 async fn resolve_type_drift(
     pool: &PgPool,
     kb_id: Uuid,
@@ -1042,6 +1094,8 @@ async fn resolve_type_drift(
     keys: &[String],
     context: Option<&[f32]>,
     exclude: &[Uuid],
+    // false = never attach to a concept fallback (identity mentions create in their own class)
+    may_attach: bool,
 ) -> AppResult<Resolution> {
     // 这一侧也可能还没判出类型（0009），那时没有 key 可查
     let mention_key: Option<String> = match type_id {
@@ -1098,7 +1152,7 @@ async fn resolve_type_drift(
         }
     }
 
-    if let Some(ctx) = context {
+    if let Some(ctx) = context.filter(|_| may_attach) {
         let best = recall_cands
             .iter()
             .filter_map(|c| {

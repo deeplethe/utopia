@@ -119,6 +119,7 @@ mod an_end_date_closes_the_open_span;
 mod an_event_holds_at_the_moment_it_names;
 mod an_exploration_says_what_it_covered;
 mod an_export_carries_the_whole_ledger;
+mod an_identity_name_attaches_by_its_exact_name;
 mod an_instance_list_names_what_a_type_lacks;
 mod an_open_statement_keeps_the_documents_words;
 mod an_sso_login_finds_or_opens_its_account;

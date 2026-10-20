@@ -251,6 +251,7 @@ async fn apply_open_extraction(
     attested_at: Option<chrono::DateTime<chrono::Utc>>,
     bound_types: &HashMap<String, Uuid>,
     pushed: bool,
+    identity: bool,
     await_nod: bool,
     proposer: Proposer,
     pending_count: &mut usize,
@@ -291,6 +292,7 @@ async fn apply_open_extraction(
                 ctx,
                 name_vecs.get(&key).map(Vec::as_slice),
                 Some(&chunk.text),
+                identity,
                 &mut response_claims,
                 handled_by_name,
                 ambiguous_bare_cache,
@@ -971,6 +973,8 @@ pub(crate) async fn run_open(
     proposer: Proposer,
     await_nod: bool,
     pushed: bool,
+    // 0071: the source's names are identities, so they get no name vectors
+    identity: bool,
 ) -> anyhow::Result<()> {
     let pool = &state.pool;
     let document_id = doc.id;
@@ -1005,7 +1009,9 @@ pub(crate) async fn run_open(
 
     // 名字向量的嵌入客户端（0041 决定 3 通道 2）。没配嵌入模型就是 None：召回退回
     // 字面相等，抽取照常
-    let embed = settings.and_then(crate::llm_util::embed_client);
+    let embed = settings
+        .and_then(crate::llm_util::embed_client)
+        .filter(|_| !identity);
     // 文档自己说到的日期（0064 决定 1）：每一块报上来的，连它所在的标题路径。块与块之间
     // 不传——一条日期管到哪，看的是它自己那一块正文里的标题，块并行抽的时候照样成立（#588）
     let mut time_entries: Vec<utopia_extract::time::TimeEntry> = Vec::new();
@@ -1101,6 +1107,7 @@ pub(crate) async fn run_open(
             attested_at,
             &bound_types,
             pushed,
+            identity,
             await_nod,
             proposer,
             &mut pending_count,
@@ -1242,6 +1249,10 @@ pub(crate) async fn run_open(
 #[cfg(test)]
 #[path = "extraction_open_known_flow_tests.rs"]
 mod known_flow_tests;
+
+#[cfg(test)]
+#[path = "extraction_open_identity_names_tests.rs"]
+mod identity_names_tests;
 
 #[cfg(test)]
 #[path = "extraction_open_out_of_credit_tests.rs"]
