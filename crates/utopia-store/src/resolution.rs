@@ -808,9 +808,9 @@ fn like_escaped(name: &str) -> String {
 /// `CREATE EXTENSION pg_trgm` 需要超级权限——本仓库是受限角色连库（见 `migrations/0010_least_privilege_role.sql`），
 /// 装扩展会在部署上失败。留给需要时再说。
 ///
-/// **性能**：反向那半（新名字包含旧名字）用不上任何索引，别名那半同样，
-/// 所以这里靠 `kb_id` 收窄行集并设上限，且只在**新建实体时**跑一次，
-/// 不是每条 mention。大库上如果不够，正解是建一张「后缀键」表走等值查，
+/// **性能**：从这个库的 `known_as` 事实出发（走 `facts_live_predicate_idx`），按 id 回连实体，
+/// 一趟读完，没有逐实体的相关子查询。LIKE 本身用不上索引，仍是对每个名字的一次扫描；
+/// 只在**新建实体时**跑一次，不是每条 mention。大库上如果不够，正解是建一张「后缀键」表走等值查，
 /// 而不是加模糊索引。
 /// 包含扫描的一行：(id, 本名, 类型 key, 类型 id, 画像)。类型 id 用来比本体声明的互斥
 type ContainRow = (Uuid, String, Option<String>, Option<Uuid>, Option<Vector>);
@@ -848,32 +848,23 @@ async fn containment_reviews(
     let rows: Vec<ContainRow> = sqlx::query_as(
         "SELECT e.id, e.canonical_name, t.key, e.type_id, e.profile_embedding
          FROM entities e LEFT JOIN entity_types t ON t.id = e.type_id
-         WHERE e.kb_id = $1 AND e.merged_into IS NULL
+         WHERE e.id IN (
+             -- **从名字事实出发，不逐个实体去探。** 本名和别名都是 `known_as` 事实，一条路覆盖两种。
+             -- 合并搬走名字事实后，`Holmes` 并入 `Sherlock Holmes` 的桥照样在存活者身上。
+             -- 谓词用标量子查询：这样它是 `facts_live_predicate_idx` 的索引条件（同 `name_vectors::PENDING_SQL`），
+             -- 写成 JOIN 规划器会沿别的索引读整个库。
+             -- 按描述建的实体没有名字事实（0044），不在这里出现：描述不是召回的桥。
+             SELECT nf.subject_id FROM facts nf
+              WHERE nf.kb_id = $1
+                AND nf.predicate_id = (SELECT nr.id FROM relation_types nr
+                                        WHERE nr.kb_id = $1 AND nr.builtin AND nr.key = 'known_as')
+                AND nf.invalidated_at IS NULL
+                AND char_length(nf.object_value->>'value') >= $4
+                AND (lower(nf.object_value->>'value') LIKE '%' || $6 || '%'
+                     OR $3 LIKE '%' || replace(replace(replace(lower(nf.object_value->>'value'), '\\', '\\\\'), '%', '\\%'), '_', '\\_') || '%'))
+           AND e.kb_id = $1 AND e.merged_into IS NULL
            AND e.id <> $2
            AND lower(e.canonical_name) <> $3
-           AND (
-             (char_length(e.canonical_name) >= $4
-              AND (lower(e.canonical_name) LIKE '%' || $6 || '%'
-                   OR $3 LIKE '%' || replace(replace(replace(lower(e.canonical_name), '\\', '\\\\'), '%', '\\%'), '_', '\\_') || '%'))
-             -- **别的名字也要参与召回，否则每合并一次就少一条桥。**
-             --
-             -- 合并把名字事实搬到存活者身上：Holmes 并入 Sherlock Holmes 之后，
-             -- Holmes 那一行 merged_into 非空、被上面第一个条件滤掉了。可十分钟后
-             -- 出现的 Mr. Holmes 跟 Sherlock Holmes 谁也不含谁——本来正是靠
-             -- Holmes 才桥得上。实测就是这么漏的：同类型那个 bug 修好、Holmes
-             -- 正确合并之后，Mr. Holmes 反而永远进不了队列。
-             --
-             -- 合并越成功，桥拆得越多。这个洞会自我加剧。
-             OR EXISTS (
-               SELECT 1 FROM facts nf
-                 JOIN relation_types nr ON nr.id = nf.predicate_id
-                WHERE nf.subject_id = e.id AND nf.kb_id = $1
-                  AND nr.builtin AND nr.key = 'known_as'
-                  AND nf.invalidated_at IS NULL
-                  AND char_length(nf.object_value->>'value') >= $4
-                  AND (lower(nf.object_value->>'value') LIKE '%' || $6 || '%'
-                       OR $3 LIKE '%' || replace(replace(replace(lower(nf.object_value->>'value'), '\\', '\\\\'), '%', '\\%'), '_', '\\_') || '%'))
-           )
          ORDER BY char_length(e.canonical_name)
          LIMIT $5",
     )
