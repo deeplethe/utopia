@@ -100,6 +100,13 @@ push documents in.
    ceiling and Viewer suffices; a token whose `kb_ids` exclude the base gets 404, as for document
    content (0052). Changing an entity on the same path (`PATCH`) still takes a session.
 
+   Reading a pushed document back by the `external_id` it was pushed under
+   (`GET /kbs/{id}/sources/{sid}/documents/by-external-id`, added 2026-10-19, #1276) takes a
+   token on the same terms. It is a document-content read (0052), but a client pushing into an
+   `api` or `statements` source names its documents by its own ids and keeps none of ours, so
+   without it the client can check what landed only by searching for its own text. The source's
+   push key is not a credential here, so a leaked key stays push-only.
+
 ## Dead ends
 
 - **Base-level machine tokens**, one per base and unrelated to a person. It would be a third
@@ -126,7 +133,7 @@ push documents in.
   token now creates `api` sources too.
 - 2026-10-16: decision 7 opens four graph reads to any token; decision 6's "only these routes
   and document content" now also counts them. 2026-10-19: the graph overview and neighbourhood
-  join them.
+  join them, and so does reading a pushed document back by its `external_id` (#1276).
 
 ## Open questions
 

@@ -570,3 +570,93 @@ async fn an_underscore_in_a_name_is_not_a_wildcard() -> anyhow::Result<()> {
     teardown(&pool, &f).await?;
     run
 }
+
+/// 别名也是召回的桥：`Holmes` 是 `Sherlock Holmes` 的别名，`Mr. Holmes` 含 `Holmes`，
+/// 却不含本名 `Sherlock Holmes`，也不被它包含
+#[tokio::test]
+async fn mr_holmes_is_paired_with_sherlock_holmes_through_its_alias_holmes() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let f = seed(&pool, "contain-alias").await?;
+    let run = async {
+        let resolve = |name: &'static str| {
+            utopia_store::resolution::resolve_mention(
+                &pool,
+                f.kb,
+                Some(f.device),
+                name,
+                None,
+                None,
+                None,
+                &[],
+            )
+        };
+        let detective = resolve("Sherlock Holmes").await?;
+        names::record(&pool, f.kb, detective.entity_id, "Holmes", None, None).await?;
+        let mr = resolve("Mr. Holmes").await?;
+        assert_eq!(
+            contained(&mr),
+            vec![detective.entity_id],
+            "别名 Holmes 被 Mr. Holmes 包含：{:?}",
+            mr.reviews
+        );
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    teardown(&pool, &f).await?;
+    run
+}
+
+/// 按描述建的实体没有名字事实（0044），描述文字不是召回的桥；
+/// 同样的文字落在普通实体的 `known_as` 上照常配对
+#[tokio::test]
+async fn a_described_entity_is_not_paired_by_containment() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let f = seed(&pool, "contain-described").await?;
+    let run = async {
+        let described = utopia_store::resolution::create_described(
+            &pool,
+            f.kb,
+            "the museum Sherlock Holmes fans visit",
+            None,
+        )
+        .await?;
+        let named = utopia_store::resolution::resolve_mention(
+            &pool,
+            f.kb,
+            Some(f.device),
+            "the museum Sherlock Holmes fans visit",
+            None,
+            None,
+            None,
+            &[],
+        )
+        .await?;
+        let mention = utopia_store::resolution::resolve_mention(
+            &pool,
+            f.kb,
+            Some(f.device),
+            "Sherlock Holmes",
+            None,
+            None,
+            None,
+            &[],
+        )
+        .await?;
+        assert_eq!(
+            contained(&mention),
+            vec![named.entity_id],
+            "描述建的 {described} 不配对，同文字的普通实体配对：{:?}",
+            mention.reviews
+        );
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    teardown(&pool, &f).await?;
+    run
+}

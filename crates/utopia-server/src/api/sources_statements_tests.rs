@@ -97,6 +97,7 @@ struct Fixture {
     app: axum::Router,
     org: Uuid,
     kb: Uuid,
+    user: Uuid,
     source: Uuid,
     api_source: Uuid,
     token: String,
@@ -157,6 +158,7 @@ impl Fixture {
             app,
             org,
             kb,
+            user,
             source,
             api_source,
             token,
@@ -234,6 +236,22 @@ impl Fixture {
         Ok((status, value))
     }
 
+    /// 编辑者的一枚读令牌；`kb_ids` 为 `None` 时不限库
+    async fn read_token(&self, kb_ids: Option<&[Uuid]>) -> anyhow::Result<String> {
+        let (_, token) =
+            utopia_store::tokens::issue(&self.pool, self.user, "ci", "read", kb_ids, None).await?;
+        Ok(token)
+    }
+
+    /// 按 external_id 读回 statements 来源的文档
+    async fn read_back(
+        &self,
+        token: &str,
+        external_id: &str,
+    ) -> anyhow::Result<(StatusCode, Value)> {
+        read_back(self.app.clone(), self.kb, self.source, token, external_id).await
+    }
+
     async fn cleanup(self) -> anyhow::Result<()> {
         sqlx::query("DELETE FROM organizations WHERE id = $1")
             .bind(self.org)
@@ -242,6 +260,32 @@ impl Fixture {
         self.pool.close().await;
         Ok(())
     }
+}
+
+/// 不借 `Fixture`，好在测试里另起一个任务去读
+async fn read_back(
+    app: axum::Router,
+    kb: Uuid,
+    source: Uuid,
+    token: &str,
+    external_id: &str,
+) -> anyhow::Result<(StatusCode, Value)> {
+    let path = format!(
+        "/api/v1/kbs/{kb}/sources/{source}/documents/by-external-id?external_id={external_id}"
+    );
+    let response = app
+        .oneshot(
+            Request::get(path)
+                .header("Authorization", format!("Bearer {token}"))
+                .body(Body::empty())?,
+        )
+        .await?;
+    let status = response.status();
+    let bytes = to_bytes(response.into_body(), 1 << 20).await?;
+    Ok((
+        status,
+        serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+    ))
 }
 
 fn observation(when: &str, place: &str) -> Value {
@@ -734,5 +778,118 @@ async fn a_trashed_id_pushed_with_another_documents_content_stays_in_the_trash(
         .await?
         .expect("a is still stored");
     assert!(a.deleted_at.is_some(), "a stays in the trash");
+    f.cleanup().await
+}
+
+/// 推上去的身份按 external_id 读得回来（#1276）：读令牌拿到当前正文与两个版本；
+/// 限定到别的库的令牌和读不到的文档一样是 404
+#[tokio::test]
+async fn a_read_token_reads_an_updated_identity_back_and_one_for_another_base_gets_404(
+) -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    for place in ["kitchen table", "counter"] {
+        let (status, body) = f
+            .push(f.source, &f.token, &observation("08:14:03", place))
+            .await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+    let token = f.read_token(Some(&[f.kb])).await?;
+    let (status, body) = f.read_back(&token, "obs-000412").await?;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let content: Value = serde_json::from_str(body["content"].as_str().unwrap_or_default())?;
+    assert_eq!(content["e"][1][0], "counter", "the current content");
+    let versions: Vec<&Value> = body["versions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|v| &v["version"])
+        .collect();
+    assert_eq!(
+        (&body["external_id"], &body["version"], versions),
+        (&json!("obs-000412"), &json!(2), vec![&json!(1), &json!(2)])
+    );
+    let elsewhere = f.read_token(Some(&[Uuid::now_v7()])).await?;
+    let (status, body) = f.read_back(&elsewhere, "obs-000412").await?;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
+    f.cleanup().await
+}
+
+/// 墓碑标记过的身份和回收站里的文档都读不到，与没推过的身份一样是 404
+#[tokio::test]
+async fn a_tombstoned_identity_and_a_trashed_document_read_back_as_404() -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    let mut trashed = observation("08:14:03", "counter");
+    trashed["external_id"] = json!("obs-000413");
+    for body in [
+        observation("08:14:03", "kitchen table"),
+        json!({ "external_id": "obs-000412", "deleted": true }),
+        trashed,
+    ] {
+        let (status, body) = f.push(f.source, &f.token, &body).await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+    let doc = documents::find_by_external_key(&f.pool, f.source, "statements:obs-000413")
+        .await?
+        .expect("obs-000413 is stored");
+    documents::delete(&f.pool, f.kb, doc.id, None).await?;
+
+    let token = f.read_token(None).await?;
+    for external_id in ["obs-000412", "obs-000413"] {
+        let (status, body) = f.read_back(&token, external_id).await?;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{external_id}: {body}");
+    }
+    f.cleanup().await
+}
+
+/// 查到文档之后、读原件之前它被墓碑标记了：判断落在锁住的那一行上，所以答 404，
+/// 而不是把锁之前读到的那一行当真，照样把正文交出去
+#[tokio::test]
+async fn an_identity_tombstoned_while_the_read_waits_for_its_row_reads_back_as_404(
+) -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    let (status, body) = f
+        .push(f.source, &f.token, &observation("08:14:03", "counter"))
+        .await?;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let doc = documents::find_by_external_key(&f.pool, f.source, "statements:obs-000412")
+        .await?
+        .expect("obs-000412 is stored");
+    let token = f.read_token(None).await?;
+
+    // 未提交的墓碑握着行锁：读路由的查找看到的还是活的那行，随后卡在锁上
+    let mut tombstone = f.pool.begin().await?;
+    let holder: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+        .fetch_one(&mut *tombstone)
+        .await?;
+    sqlx::query("UPDATE documents SET missing_since = now() WHERE id = $1")
+        .bind(doc.id)
+        .execute(&mut *tombstone)
+        .await?;
+    let (app, kb, source) = (f.app.clone(), f.kb, f.source);
+    let read = tokio::spawn(async move { read_back(app, kb, source, &token, "obs-000412").await });
+    let mut waiting = false;
+    for _ in 0..500 {
+        waiting = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid)))",
+        )
+        .bind(holder)
+        .fetch_one(&f.pool)
+        .await?;
+        if waiting {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert!(waiting, "the read waits on the tombstone's row lock");
+    tombstone.commit().await?;
+
+    let (status, body) = read.await??;
+    assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
     f.cleanup().await
 }

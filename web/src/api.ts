@@ -225,10 +225,13 @@ export interface SourceView {
     feed_url?: string;
     content_mode?: "feed" | "full_new_items";
     endpoint?: string;
-    /** github_issues：owner/name */
+    /** github_issues / github_repo：owner/name */
     repo?: string;
     /** github_issues：PR 在 GitHub 模型里也是工单，默认不收 */
     include_pull_requests?: boolean;
+    /** github_repo：给了就整列替换默认的 glob（markdown；隐藏目录、node_modules、vendor） */
+    include?: string[];
+    exclude?: string[];
     /** jira_issues：站点地址，如 https://issues.apache.org/jira */
     base_url?: string;
     /** jira_issues：项目 key，如 KAFKA */

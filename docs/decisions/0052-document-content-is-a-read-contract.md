@@ -57,3 +57,16 @@ Range requests, multipart previews, transcoding, a hash-keyed public blob
 route, or a projection of bytes into derived text. Those are media-delivery
 contracts and should be designed after callers rely on this byte-exact
 baseline.
+
+## Revisions
+
+- 2026-10-19 (#1276): a third Viewer-level read finds a pushed document by the identity its
+  source pushed it under:
+  `GET /api/v1/kbs/{kb_id}/sources/{source_id}/documents/by-external-id?external_id=…`. It
+  answers an `api` or `statements` source's document with its metadata, the current version's
+  content as text, and the list `/versions` returns; older text stays behind
+  `/documents/{id}/content?version=N`. It takes the same credentials as the two reads above and
+  not the source's push key, so a leaked push key stays push-only. The trash, tombstone and
+  identity are judged on the document row the content read locks, and anything but a live
+  document under that identity is `404`; purge erases the identity, so a purged one is `404`
+  as well, not `410`.
