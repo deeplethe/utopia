@@ -16,6 +16,7 @@ import { api, type Doc, type ExtractionDrop, type SourceView } from "../api";
 import { S } from "../i18n";
 import {
   CREATABLE_SOURCE_KINDS,
+  hasSyncFields,
   type CreatableSourceKind,
 } from "../sourceKinds";
 import { useKb, useKbId } from "../kb";
@@ -1477,7 +1478,7 @@ function SourceModal({
               ? davUrl.trim()
             : kind === "s3" || kind === "azure_blob" || kind === "gcs"
             ? s3Bucket.trim()
-            : true);
+            : hasSyncFields(kind, { repo, jiraUrl, jiraProject }));
 
   // 注意用 div 而非 label：label 会把 :hover/click 转发给内部第一个可标记控件
   //（button 也算），导致图标网格/日程选择器悬停时第一个按钮常亮
@@ -1961,7 +1962,8 @@ function SourceEditModal({
         ? feedUrl.trim()
         : kind === "custom"
           ? endpoint.trim()
-          : true);
+          : // Jira 的配置这里改不了：挡住它只会让人连名字都改不成
+            kind === "jira_issues" || hasSyncFields(kind, { repo }));
 
   // div 而非 label：label 会把 :hover/click 转发给第一个可标记控件
   const field = (label: string, node: React.ReactNode) => (
