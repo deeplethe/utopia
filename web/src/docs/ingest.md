@@ -162,6 +162,41 @@ The response is the API push's: `{ "action": "created" }` · `updated` · `uncha
 
 ---
 
+## Reading a pushed document back
+
+An API or Statements source's document can be read back by the identity it was pushed under: its `external_id`, or for an API push without one, its `filename`. The identity goes in the query string, URL-encoded, so it may contain `/`.
+
+```
+GET {your-utopia-base}/api/v1/kbs/{kb_id}/sources/{source_id}/documents/by-external-id?external_id=note-42
+Authorization: Bearer utp_pat_…
+```
+
+The credential is a personal access token (or a signed-in session) of someone who can view the base; a token limited to other bases gets `404`. The source's push token is **not** accepted here, so a leaked push token can only push.
+
+```json
+{
+  "id": "0199…",
+  "external_id": "note-42",
+  "filename": "runbook.md",
+  "mime": "text/plain",
+  "sha256": "9f2c…",
+  "size_bytes": 57,
+  "status": "ready",
+  "doc_time": "2026-08-20T09:00:00Z",
+  "updated_at": "2026-08-20T09:00:04Z",
+  "version": 2,
+  "content": "# Runbook v2 …",
+  "versions": [
+    { "version": 1, "sha256": "41aa…", "size_bytes": 54, "ingested_at": "2026-08-19T10:00:00Z" },
+    { "version": 2, "sha256": "9f2c…", "size_bytes": 57, "ingested_at": "2026-08-20T09:00:04Z" }
+  ]
+}
+```
+
+`content` is the current version's text; older versions are at `GET /api/v1/documents/{id}/content?version=N`. An identity marked "Not in source", a document in the trash or purged, and an identity this source never pushed are all `404`.
+
+---
+
 ## Shared semantics
 
 - **Identity, not filenames.** Documents are tracked by `custom:{id}` / `api:{external_id}` / `statements:{external_id}` keys. Renames are recognized as moves; content changes update the same document.

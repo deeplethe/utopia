@@ -47,7 +47,7 @@ fn push_key_matches(stored: Option<&str>, offered: &str) -> bool {
 /// `require_kb` 只查人对库的权限；来源 id 是另一个维度——不比对的话，A 库的
 /// Editor 拿着 B 库来源的 id 就能同步、清理、删除它。不属于就当不存在（404），
 /// 与 `get_token` 一直以来的做法一致
-async fn source_in_kb(
+pub(crate) async fn source_in_kb(
     state: &AppState,
     kb_id: Uuid,
     source_id: Uuid,
@@ -158,8 +158,15 @@ pub async fn create(
 
 /// 有推送密钥的来源：`api` 推文档，`statements` 推陈述（0054）。两种的密钥同一套
 /// 生成、查看、轮换
-fn is_push_kind(kind: &str) -> bool {
+pub(crate) fn is_push_kind(kind: &str) -> bool {
     matches!(kind, "api" | "statements")
+}
+
+/// The `external_key` a push source files a pushed identity under (`api:…`, `statements:…`).
+/// The push handlers write it and the read by `external_id` (#1276) looks it up, so the two
+/// cannot drift apart.
+pub(crate) fn pushed_key(source: &utopia_core::models::Source, identity: &str) -> String {
+    format!("{}:{identity}", source.kind)
 }
 
 /// 查看推送密钥（Editor；列表响应从不携带，查看走这里）。
@@ -496,7 +503,7 @@ async fn handle_push(
             "external_id or filename is required".into(),
         ));
     }
-    let key = format!("api:{identity}");
+    let key = pushed_key(source, &identity);
 
     // 墓碑：标记"不在来源中"（与 custom 的 deleted[] 同一条路径），content 可省略
     if body.deleted {
@@ -810,7 +817,7 @@ async fn handle_statements_push(
 ) -> Result<crate::ingest_sources::IngestAction, PushError> {
     let (body, content) = validate_statements_payload(bytes).map_err(PushError::Rejected)?;
     let identity = body.external_id.trim().to_string();
-    let key = format!("statements:{identity}");
+    let key = pushed_key(source, &identity);
     let Some(content) = content else {
         utopia_store::documents::mark_missing_keys(&state.pool, source.id, &[key])
             .await

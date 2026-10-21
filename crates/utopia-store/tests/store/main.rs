@@ -25,6 +25,8 @@
 //! - `a_due_base_is_queued_once`：`queue_due_inferences` 扫全库到期的库。0050 起新建的库开着
 //!   推理又从没推过，别的测试刚建的库全算到期，会被它排上推理任务——数自己库任务的测试
 //!   （比如 lib 单元测试里的 `phrase_bindings_delivery_tests`）就会多数出一个。
+//! - `a_sync_runs_while_model_work_holds_every_slot`：同样起真实的 `run_worker`，同样会认领
+//!   库里任何排队任务，不是自己的就报错。
 //!
 //! 新加测试默认放这个目录；只有碰上面那类全局状态时才放顶层，并在这里补一行为什么。
 mod a_batch_decides_like_a_person;
