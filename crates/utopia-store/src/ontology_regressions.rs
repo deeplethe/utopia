@@ -103,20 +103,6 @@ pub async fn add(pool: &PgPool, kb_id: Uuid, case: NewCase<'_>) -> AppResult<Uui
     Ok(id)
 }
 
-/// Hold within the caller's transaction. Adoption takes these locks before changing
-/// bindings (which update case results), avoiding inversion with a concurrent confirmation.
-pub async fn lock_statement(
-    conn: &mut PgConnection,
-    kb_id: Uuid,
-    statement_id: Uuid,
-) -> AppResult<()> {
-    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
-        .bind(format!("ontology_regression:{kb_id}:{statement_id}"))
-        .execute(conn)
-        .await?;
-    Ok(())
-}
-
 /// Adoption calls this in its own transaction so marking a proposal adopted and keeping
 /// its examples cannot commit separately. Duplicate requests retain the first actor/origin.
 pub async fn add_on(conn: &mut PgConnection, kb_id: Uuid, case: NewCase<'_>) -> AppResult<Uuid> {
@@ -145,25 +131,6 @@ pub async fn add_on(conn: &mut PgConnection, kb_id: Uuid, case: NewCase<'_>) -> 
     .fetch_optional(&mut *conn)
     .await?;
     let value = value.ok_or(AppError::NotFound)?;
-    // Serialize opposite expectations too: separate unique indexes alone would allow
-    // a concurrent bound/none pair. Retries must retain the first actor and origin.
-    lock_statement(conn, kb_id, case.statement_id).await?;
-    let conflicting: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM ontology_regression_cases WHERE kb_id=$1 AND statement_id=$2
-            AND (expected_property_id IS NULL) <> $3)",
-    )
-    .bind(kb_id)
-    .bind(case.statement_id)
-    .bind(case.expected_property_id.is_none())
-    .fetch_one(&mut *conn)
-    .await?;
-    if conflicting {
-        return Err(AppError::CodedConflict {
-            code: "conflicting_case_expectation",
-            message: "This statement already has the opposite expectation. No case was added."
-                .into(),
-        });
-    }
     if let Some(property) = case.expected_property_id {
         let kind: Option<String> = sqlx::query_scalar(
             "SELECT kind FROM relation_types WHERE kb_id=$1 AND id=$2 FOR SHARE",

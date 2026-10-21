@@ -48,7 +48,6 @@ export const en = {
       契约守卫（调错接口才碰得到）刻意不在这里——它们的读者是开发者 */
   err: {
     bad_case_expectation: "Choose a property and direction, or expect no binding.",
-    conflicting_case_expectation: "This statement already has the opposite expectation. No case was added.",
 
     bad_email: "That doesn't look like an email address.",
     password_too_short: "Password must be at least 8 characters.",

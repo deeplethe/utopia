@@ -1062,12 +1062,6 @@ async fn adopt_on(
         return Err(AppError::NotFound);
     };
     let p = &locked.proposal;
-    // Binding writes also update existing cases. Take their confirmation locks first,
-    // then let the enclosing transaction roll back any opposite-expectation conflict.
-    for (statement, _) in regression_examples(p, &[])? {
-        utopia_store::ontology_regressions::lock_statement(tx, kb_id, statement).await?;
-    }
-
     // 人改过几格：决定 5 的第二个数要它
     let edited = edits.label.is_some()
         || edits.description.is_some()
@@ -1209,10 +1203,19 @@ async fn embed_then_align(
     Ok(())
 }
 
-fn regression_examples(
-    proposal: &StoredProposal,
+/// 回归用例和采纳的状态（决定 4），在采纳的事务里。人改过没有（决定 5 的第二个数）和状态同一条
+/// UPDATE 写下：从前是采纳提交之后的另一条语句。复用留着没写的形状（`skipped`）不写用例：人定得
+/// 和提案不一样；人后来定得一样的照写
+async fn finish_adoption(
+    tx: &mut Transaction<'_, Postgres>,
+    kb_id: Uuid,
+    locked: &Locked,
+    property_id: Uuid,
+    actor: Uuid,
+    edited: bool,
     skipped: &[Value],
-) -> Result<Vec<(Uuid, &'static str)>, AppError> {
+) -> Result<(), AppError> {
+    let proposal = &locked.proposal;
     let mut examples = Vec::new();
     let property = matches!(
         proposal.section.as_str(),
@@ -1241,28 +1244,11 @@ fn regression_examples(
             examples.extend(ids.into_iter().map(|statement| (statement, direction)));
         }
     }
-    // Multiple proposals can share examples; acquire case locks in the same order.
-    examples.sort_unstable();
-    examples.dedup();
-    Ok(examples)
-}
-
-/// 回归用例和采纳的状态（决定 4），在采纳的事务里。人改过没有（决定 5 的第二个数）和状态同一条
-/// UPDATE 写下：从前是采纳提交之后的另一条语句。复用留着没写的形状（`skipped`）不写用例：人定得
-/// 和提案不一样；人后来定得一样的照写
-async fn finish_adoption(
-    tx: &mut Transaction<'_, Postgres>,
-    kb_id: Uuid,
-    locked: &Locked,
-    property_id: Uuid,
-    actor: Uuid,
-    edited: bool,
-    skipped: &[Value],
-) -> Result<(), AppError> {
-    let examples = regression_examples(&locked.proposal, skipped)?;
     for (statement_id, direction) in examples {
-        // Removed examples cannot be checked; never substitute another statement.
-        let live: Option<Uuid> = sqlx::query_scalar("SELECT id FROM facts WHERE kb_id=$1 AND id=$2 AND layer='open' AND invalidated_at IS NULL FOR SHARE")
+        // A negative case observes disagreement; it must not veto adoption or gain an
+        // automatic positive counterpart. Removed examples are skipped too, never replaced.
+        let live: Option<Uuid> = sqlx::query_scalar("SELECT f.id FROM facts f WHERE f.kb_id=$1 AND f.id=$2 AND f.layer='open' AND f.invalidated_at IS NULL
+            AND NOT EXISTS (SELECT 1 FROM ontology_regression_cases c WHERE c.kb_id=f.kb_id AND c.statement_id=f.id AND c.expected_property_id IS NULL) FOR SHARE OF f")
             .bind(kb_id).bind(statement_id).fetch_optional(&mut **tx).await?;
         if live.is_none() {
             continue;

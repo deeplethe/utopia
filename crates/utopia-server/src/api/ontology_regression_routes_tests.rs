@@ -198,10 +198,13 @@ async fn editor_adds_regression_case_while_viewer_and_cross_kb_statement_are_rej
             json!({"statement_id":negative,"relation_type_id":property,"direction":"forward"}),
         ] {
             let response = post_body(&app, kb, &editor_token, request).await?;
-            assert_eq!(response.status(), StatusCode::CONFLICT);
+            assert_eq!(response.status(), StatusCode::CREATED);
             let body: serde_json::Value =
                 serde_json::from_slice(&to_bytes(response.into_body(), 65536).await?)?;
-            assert_eq!(body["code"], "conflicting_case_expectation");
+            assert_ne!(
+                body["id"], negative_id,
+                "opposite cases do not overwrite a confirmation"
+            );
         }
         let sig = utopia_store::phrase_bindings::signatures(&pool, kb)
             .await?

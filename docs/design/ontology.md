@@ -258,8 +258,9 @@ the prompt, a description is read by people and by the aligner.
   both target fields absent or null); omitting the mode keeps the existing bound request.
   Only an explicit `none` decision passes a negative case. Bound or undecided decisions fail,
   including a conflicting human binding, which remains authoritative in the formal graph.
-  With no decision the case stays unchecked. Reconfirming a case retains its first creator;
-  an opposite bound/none expectation for the same statement is refused, including on adoption.
+  With no decision the case stays unchecked. Reconfirming a case retains its first creator.
+  Adoption skips positive case registration for an example with a negative case; the
+  existing case reports any disagreement after alignment without blocking adoption.
 
 - **Exploration proposes an alignment per table** through `ontology_proposals`, adopted as one
   thing; `Metric` / `Dimension` retire (#554, #556) [0036].

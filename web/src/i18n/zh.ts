@@ -50,7 +50,6 @@ export const zh: Strings = {
   },
   err: {
     bad_case_expectation: "请选择属性及方向，或选择预期无绑定。",
-    conflicting_case_expectation: "这条陈述已有相反的预期，未添加新案例。",
 
     bad_email: "这看起来不像一个邮箱地址。",
     password_too_short: "密码至少 8 位。",
