@@ -43,8 +43,8 @@ pub async fn get_deployment(
 #[derive(Deserialize)]
 pub struct DeploymentReq {
     pub open_registration: bool,
-    /// 任务 worker 并发（1-256）：**外层兜底**，防任务无限堆积。
-    /// 真正的节流是按模型的限额，这个值应当明显大于各模型限额之和
+    /// 任务 worker 并发（1-256）：管模型任务，另有 `jobs::NO_CHAT_LANE` 个名额留给入库任务。
+    /// 它是**外层兜底**，防任务无限堆积；真正的节流是按模型的限额，这个值应当明显大于各模型限额之和
     #[serde(default)]
     pub worker_concurrency: Option<i32>,
     /// 未单独配置的模型走的并发缺省
