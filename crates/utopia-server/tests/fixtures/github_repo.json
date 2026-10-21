@@ -1,0 +1,19 @@
+{
+ "note": "取自 deeplethe/utopia 的真实 GitHub 响应（树 cda3747），条目和字段已裁到我们读的那些。blobs 是 Accept: application/vnd.github.raw+json 取回的原文；commits 是 commits?path=…&per_page=1 的第一条。",
+ "tree": {"sha": "cda374771577b2d42ed257312864ecf8e067bfbd", "truncated": false, "tree": [
+  {"path": ".github/PULL_REQUEST_TEMPLATE.md", "mode": "100644", "type": "blob", "sha": "9b05a587001713b657e8cc51bb94f3a14add1dee", "size": 1067},
+  {"path": "Cargo.toml", "mode": "100644", "type": "blob", "sha": "5b65de568922150141e12599d393e21db58eb6e3", "size": 4030},
+  {"path": "SECURITY.md", "mode": "100644", "type": "blob", "sha": "274cff38310d7322ef84f27174e0344435ef5afc", "size": 2920},
+  {"path": "crates/utopia-server/packs/README.md", "mode": "100644", "type": "blob", "sha": "69dbb3020bce31ed843185f1dd24af44184a5781", "size": 1364},
+  {"path": "crates/utopia-server/testdata/README.md", "mode": "100644", "type": "blob", "sha": "2460624379264fed241f0986cd7dda7a5d86c104", "size": 1026},
+  {"path": "docs", "mode": "040000", "type": "tree", "sha": "c2e443619c8b74e52530a296f1282b77c3e4f954"}
+ ]},
+ "commits": {
+  "crates/utopia-server/packs/README.md": [{"sha": "92db693c3e4763f03551fcb1144684336ccd83f5", "commit": {"committer": {"date": "2026-08-30T01:17:00Z"}}}],
+  "crates/utopia-server/testdata/README.md": [{"sha": "798fb2476f4ec8eacf3d6220657f27333ad50d94", "commit": {"committer": {"date": "2026-09-30T10:04:58Z"}}}]
+ },
+ "blobs": {
+  "69dbb3020bce31ed843185f1dd24af44184a5781": "# 预制本体包\n\n来源文件按原样保存（gzip 压缩），由 `src/ontology_packs.rs` 用 `include_bytes!` 内嵌进二进制。\n\n**为什么内嵌而不是运行时下载**：README 承诺整套系统可以运行在完全离线的内网环境。\n运行时抓取会让这句话失效，也让构建不可复现（上游随时会发新版）。\n\n**为什么压缩**：未压缩合计 1.7 MB，压缩后 316 KB。这是个公开仓库，clone 体积是真实成本。\n`flate2` 本来就在依赖树里，解压是三行。\n\n| 文件 | 来源 | 许可 | 抓取日 |\n|---|---|---|---|\n| `schema-org.ttl.gz` | https://schema.org/version/latest/schemaorg-current-https.ttl | CC BY-SA 3.0 | 2026-08-30 |\n| `w3c-org.ttl.gz` | https://www.w3.org/ns/org.ttl | W3C Document License | 2026-08-30 |\n| `prov-o.ttl.gz` | https://www.w3.org/ns/prov.ttl | W3C Document License | 2026-08-30 |\n| `foaf.rdf.gz` | http://xmlns.com/foaf/spec/index.rdf | CC BY 1.0 | 2026-08-30 |\n| `iof-core.rdf.gz` | https://spec.industrialontologies.org/ontology/core/Core/ | MIT | 2026-08-30 |\n\n## 更新一个包\n\n重新抓取、`gzip -9c` 覆盖、更新 `ontology_packs.rs` 里的计数与本文件的抓取日。\n**不要改动原文内容**——投影只覆盖当下能消费的部分，原文保真是 [0001](../../../docs/decisions/0001-ontology-import-and-governance.md) 判据 1。\n",
+  "2460624379264fed241f0986cd7dda7a5d86c104": "# OCR page fixture\n\n`ark-ocr-pages.pdf` is a synthetic three-page PDF created for OCR acceptance tests.\nPages 1 and 3 contain rasterized Chinese and English text, dates, amounts, a small\ntable, an instruction printed as source text, and an unlabelled line chart. Page 2\nis blank. There is no text layer. All content is authored for this test and carries\nno third-party or private data.\n\nThe fixture tests real Poppler rendering, original page numbering after a blank\npage, and restarting a failed pass from page 1. Mock replies test those contracts;\nthey do not measure a model's recognition accuracy.\n\nWith `ARK_API_KEY` set, run the manual Agent Plan acceptance test:\n\n```sh\ncargo test -p utopia-server live_agent_plan_reads_scans -- --ignored --nocapture\n```\n\nThis sends the probe and this fixture to the real API. Optional\n`ARK_OCR_TEST_PDF` adds a public scan, and `ARK_OCR_TEST_OUTPUT` saves its text and\nprovenance without credentials. `ARK_OCR_TEST_BASE_URL` and\n`ARK_OCR_TEST_MODEL` override the Agent Plan defaults.\n"
+ }
+}

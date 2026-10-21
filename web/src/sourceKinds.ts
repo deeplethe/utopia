@@ -13,6 +13,7 @@ export const CREATABLE_SOURCE_KINDS = [
   "url",
   "rss",
   "github_issues",
+  "github_repo",
   "jira_issues",
   "s3",
   "azure_blob",

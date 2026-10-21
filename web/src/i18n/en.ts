@@ -640,6 +640,7 @@ export const en = {
       statements: "Statements",
       custom: "Custom",
       github_issues: "GitHub issues",
+      github_repo: "GitHub repository files",
       jira_issues: "Jira issues",
       s3: "S3 / MinIO",
       azure_blob: "Azure Blob",
@@ -659,6 +660,9 @@ export const en = {
         "Syncs a repository's issues. **Each ticket, together with its state history**, becomes " +
         "one document — when it was opened, closed, relabelled, reassigned, all dated. " +
         "Without a token GitHub allows only 60 requests an hour.",
+      github_repo:
+        "Reads markdown files off a repository's default branch. Each file becomes one " +
+        "document dated by its last commit; unchanged files are not fetched again.",
       s3:
         "Reads documents out of an S3 bucket, or anything speaking the same protocol " +
         "(MinIO, Ceph, R2). **Leave the endpoint empty for AWS**; fill it in for a " +
@@ -756,6 +760,8 @@ export const en = {
     notionQueryField: "Search term (optional — empty takes every shared page)",
     tokenField: "GitHub token (optional, never shown again)",
     includePullRequests: "Treat pull requests as tickets too",
+    includeGlobsField: "Include globs (comma-separated, optional)",
+    excludeGlobsField: "Exclude globs (comma-separated, optional)",
     interval: "Sync schedule",
     intervalManual: "Manual only",
     intervalEvery: (m: number) =>
@@ -1188,9 +1194,11 @@ export const en = {
         "When off, the sign-up form is closed and only admins can create accounts here.",
       workers: "Background workers",
       workersHint:
-        "An outer ceiling on how many jobs run at once (1–256), there to stop work piling up " +
-        "without bound. The real throttle is the per-model limit below, so keep this comfortably " +
-        "above the sum of those. Takes effect immediately.",
+        "How many model jobs (extraction, resolution) can run at once (1–256), plus two slots " +
+        "reserved for intake jobs such as syncs, which make no model call and so never wait " +
+        "behind model work. It is an outer ceiling that stops work piling up without bound; the " +
+        "real throttle is the per-model limit below, so keep this comfortably above the sum of " +
+        "those. Takes effect immediately.",
       workersApply: "Apply",
       /* 真正的节流：约束来自供应商的速率限制，而那是按模型算的 */
       modelConcurrency: "Model concurrency",
