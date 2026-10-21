@@ -12,7 +12,7 @@
 //! 没有 `UTOPIA_DATABASE_URL` 时跳过而不是失败。自建自拆，绝不碰已有的库。
 
 use sqlx::PgPool;
-use utopia_store::{ontology, resolution};
+use utopia_store::{name_vectors, names, ontology, resolution};
 use uuid::Uuid;
 
 struct Fx {
@@ -185,6 +185,67 @@ async fn a_declared_disjointness_keeps_names_apart() -> anyhow::Result<()> {
             drift_reviews(&pool, &f, "Delta", f.federal_agency).await?,
             vec![delta],
             "with the declaration gone, kinship sends the pair to Review again"
+        );
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+
+    let _ = sqlx::query("DELETE FROM organizations WHERE id = $1")
+        .bind(f.org)
+        .execute(&pool)
+        .await;
+    run
+}
+
+/// 名字向量那条通道也听声明（#1293）：project 认不出大类，从前声明了互斥照样排对
+#[tokio::test]
+async fn a_declared_disjointness_keeps_near_names_apart() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let f = seed(&pool).await?;
+
+    let run = async {
+        let orion = entity(&pool, &f, "Orion Labs", f.organization).await?;
+        let fact = names::record(&pool, f.kb, orion, "Orion Labs", None, None)
+            .await?
+            .expect("a named entity gets a name fact");
+        let near = vec![1.0, 0.0, 0.0];
+        name_vectors::set(&pool, f.kb, &[(fact, orion, near.clone())]).await?;
+        let proposed = |mention: &'static str| {
+            let (pool, near) = (&pool, &near);
+            async move {
+                let r = resolution::resolve_mention(
+                    pool,
+                    f.kb,
+                    Some(f.project),
+                    mention,
+                    None,
+                    Some(near),
+                    None,
+                    &[],
+                )
+                .await?;
+                anyhow::Ok(
+                    r.reviews
+                        .iter()
+                        .filter(|v| v.reason.starts_with("name_vector|"))
+                        .map(|v| v.other_id)
+                        .collect::<Vec<Uuid>>(),
+                )
+            }
+        };
+
+        assert_eq!(
+            proposed("Nebula Rollout").await?,
+            vec![orion],
+            "without a declaration a near organization name is proposed for a project"
+        );
+        ontology::set_disjoint_for(&pool, f.kb, f.organization, &[f.project]).await?;
+        assert!(
+            proposed("Nebula Migration").await?.is_empty(),
+            "organization declared disjoint from project: no name_vector pair"
         );
         Ok::<_, anyhow::Error>(())
     }

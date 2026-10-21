@@ -392,6 +392,7 @@ async fn the_anchor_moves_earlier_and_is_inherited() -> anyhow::Result<()> {
                 to_precision: Some("day"),
                 attested_at: None,
                 from_grade: None,
+                ..Default::default()
             },
         )
         .await?

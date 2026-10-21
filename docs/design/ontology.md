@@ -49,6 +49,14 @@ classes of context neighbours, interleaved and never scored together; a class in
 subtree applied on its own, a cross-axis class sent to a person, each pair acknowledged once) runs
 from the ontology page; extraction no longer enqueues it [0001, 0016, #736].
 
+**A class's member list can name what its members lack** [#1269]. The instance list
+(`GET /kbs/{id}/ontology/entity-types/{type_id}/entities`) takes `missing_predicate`, a property key
+or an open phrase, and `missing_direction` (`out`, the default, with the member as subject; `in`;
+`either`), and keeps only the members no live fact links by that predicate: a typed row, a derived
+row, a row of the inverse (or symmetric) property from the other end, an open statement whose phrase
+normalizes to it, or one whose phrase is bound to the property. The answer echoes what was matched
+(`missing.relation_type_id`, `missing.phrases`); membership itself is unchanged (`entities.type_id`).
+
 **One statement draws one edge** [#755]. The typed graph is a view, so the canvas and the entity
 panel show one edge per statement: the property's name when a live typed row was computed from it,
 the document's phrase when none was. The document's wording is not lost with the folded edge, it
@@ -70,11 +78,11 @@ the ten properties nearest by the ontology's own vectors (`embed_ontology`) are 
 label shares a word with the phrase; without an embedding model the model sees every structural
 candidate. A property without a vector never enters the shortlist, so the fingerprint of the
 shapes it could bind does not change and they are never re-decided: every path that adds or
-relabels an element therefore refreshes the index before alignment. The ontology agent's adoption
-refreshes it in place [0061 cut 1.1]; the editor's create and update handlers queue
-`embed_ontology` ahead of the alignment job, and both aligners wait while that job is queued or
-running, so the order is vectors, then kind words, then phrases. The shortlist is part of the
-decision's basis, so a changed list re-asks. The candidate
+relabels an element therefore refreshes the index before alignment. The ontology agent's adoption,
+like the editor's create and update handlers and an OWL import, queues `embed_ontology` ahead of
+the alignment job; adoption queues both in the element's commit [0061]. Both aligners wait while
+that job is queued or running, so the order is vectors, then kind words, then phrases. The
+shortlist is part of the decision's basis, so a changed list re-asks. The candidate
 properties are described once per batch and each item names only its keys. A signature the votes disagree on is `undecided` for the alignment queue of #725; one with no
 fitting property is `none`, its statements stay in the open graph and it counts toward the
 workbench's suggestions. Bindings live in `phrase_bindings`. A binding to a state property also
@@ -95,6 +103,14 @@ and ancestor closure, read from one snapshot before the model is called. A reply
 if that basis still matches the rows when it is written; otherwise it is discarded and the kind
 word asked again [0053 revision, #795]. Cosmetic edits to a candidate class still count as a
 change.
+
+**A pushed phrase that names a declared relation binds without the model** [0044 revision, #1242].
+A signature from a document a `statements` source pushed (0054) whose phrase equals the key or label
+of exactly one declared relation that is not a state, with the subject's class in its declared
+domain and the object's in its declared range, is bound when the document's extraction finishes,
+`decided_by = 'ontology'`; the extraction then queues `materialize`. A person's decision stands over
+it, and the aligner re-decides it only once the relation stops declaring it. Anything short of that
+equality, and every state relation, goes to the aligner.
 
 **A shape of statement can imply a fact of another property** [0044 decision 3, migration 0073].
 An implication rule is keyed like a binding (a signature) or by a kind word, names the property it
@@ -222,7 +238,9 @@ the prompt, a description is read by people and by the aligner.
   per signature costs distinct phrasings, not documents, and a changed ontology recomputes only the
   affected signatures instead of re-extracting [0044].
 - **Standard vocabularies reify events as classes**, so every pack object property is a state; a
-  person changes `temporal` on the page and reads pick it up at once [0031].
+  person changes `temporal` on the page and reads pick it up at once, and a vocabulary that
+  annotates a property with `utopia:temporal` (what the export writes) is imported with that value,
+  a re-import updating an existing relation's [0031].
 
 ## Proposed and not built
 

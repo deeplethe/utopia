@@ -187,6 +187,35 @@ pub async fn enqueue_with_max_attempts_tx(
     Ok(id)
 }
 
+/// 同 [`enqueue_with_max_attempts_tx`]，但 `after` 之后才到期。从插入这一刻
+/// （`clock_timestamp()`）算起：`now()` 是事务开始的时刻，事务长了，提交时延迟已经用掉
+pub async fn enqueue_with_max_attempts_after_tx(
+    tx: &mut Transaction<'_, Postgres>,
+    kind: &str,
+    payload: serde_json::Value,
+    max_attempts: i32,
+    after: Duration,
+) -> AppResult<i64> {
+    if !(1..=32).contains(&max_attempts) {
+        return Err(utopia_core::AppError::Validation(
+            "max_attempts must be between 1 and 32".into(),
+        ));
+    }
+    let (id,): (i64,) = sqlx::query_as(
+        "INSERT INTO jobs (kind, payload, max_attempts, run_at)
+         VALUES ($1, $2, $3, clock_timestamp() + make_interval(secs => $4))
+         RETURNING id",
+    )
+    .bind(kind)
+    .bind(payload)
+    .bind(max_attempts)
+    .bind(after.as_secs_f64())
+    .fetch_one(&mut **tx)
+    .await?;
+    notify_worker_tx(tx).await?;
+    Ok(id)
+}
+
 /// Wake idle workers only after the transaction containing the job is committed.
 /// PostgreSQL delivers `NOTIFY` at commit, so a worker can never wake up before
 /// the row it needs to claim is visible.
@@ -342,6 +371,9 @@ pub async fn status_in_kb(pool: &PgPool, kb_id: Uuid, id: i64) -> AppResult<Opti
 }
 
 /// 认领一个到期任务；没有则返回 None。
+///
+/// 不调对话模型的任务排在前面（`job_priority`，迁移 0116，#1300）：同步、文档入库这些几秒
+/// 的活，不该等在几百个更早的抽取后面
 async fn claim_one(pool: &PgPool) -> AppResult<Option<Job>> {
     let job = sqlx::query_as(
         "UPDATE jobs SET status = 'running', locked_at = now(),
@@ -349,7 +381,7 @@ async fn claim_one(pool: &PgPool) -> AppResult<Option<Job>> {
          WHERE id = (
              SELECT id FROM jobs
              WHERE status = 'queued' AND run_at <= now()
-             ORDER BY run_at
+             ORDER BY job_priority(kind), run_at
              FOR UPDATE SKIP LOCKED
              LIMIT 1
          )
@@ -645,6 +677,10 @@ where
 #[cfg(test)]
 #[path = "jobs_writeback_tests.rs"]
 mod writeback_tests;
+
+#[cfg(test)]
+#[path = "jobs_claim_tests.rs"]
+mod claim_tests;
 
 #[cfg(test)]
 mod tests {

@@ -274,7 +274,7 @@ pub(crate) async fn resolve_handle(
     needs_adjudication: &mut bool,
     human_reviews_found: &mut bool,
 ) -> anyhow::Result<Uuid> {
-    let normalized = utopia_store::resolution::normalize_name(name).to_lowercase();
+    let normalized = utopia_store::resolution::name_key(name);
     let response_excluded = response_claims
         .get(&normalized)
         .cloned()
@@ -584,7 +584,7 @@ mod tests {
                 &pool,
                 kb,
                 Some(person),
-                "Zhang Wei",
+                "**Zhang Wei**",
                 None,
                 None,
                 None,

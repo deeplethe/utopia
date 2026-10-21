@@ -271,6 +271,7 @@ pub enum SourceKind {
     Url,
     Rss,
     GithubIssues,
+    GithubRepo,
     JiraIssues,
     S3,
     AzureBlob,
@@ -607,6 +608,19 @@ pub struct FactQualifier {
     pub entity_name: Option<String>,
 }
 
+/// 开放陈述上的一个属性（0044 第一刀、0061）：按文档的角色词记，不按本体属性——没有
+/// `qualifier_type_id`，所以不混进 [`FactQualifier`]（RDF 导出靠那一格拼 IRI）。
+/// 值或实体二选一；实体那一格带上它的显示名。物化出来的类型化行带着抄过去的那一份
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StatementQualifier {
+    /// 文档自己的角色词（"amount"、"buyer"）
+    pub role: String,
+    /// 形状与 [`FactQualifier::value`] 一致：{"value": …}
+    pub value: Option<serde_json::Value>,
+    pub entity_id: Option<Uuid>,
+    pub entity_name: Option<String>,
+}
+
 /// 一次 OWL 导入的记录。原文按内容寻址存在 blob 里，这行只是账。
 /// `summary` 记下那次投影做了什么，包括**暂未投影**的公理——将来补上消费者
 /// 时据此知道哪些导入值得重跑。
@@ -729,6 +743,9 @@ pub struct GraphEdge {
     /// 边上的属性（0037）：画布把金额写到边的标签上要靠它
     #[sqlx(skip)]
     pub qualifiers: Vec<FactQualifier>,
+    /// 按文档角色词记的属性（0061，#1267）：与 `qualifiers` 分开，没有就是空列表
+    #[sqlx(skip)]
+    pub statement_qualifiers: Vec<StatementQualifier>,
     /// 推它出来的那条规则（`transitive` / `symmetric` / `inverse` / `sub_property`）；
     /// 断言的边为 None。
     ///
@@ -804,6 +821,9 @@ pub struct EntityFact {
     /// 边上的属性（0037）。不在行里——`fact_qualifiers` 另一张表，加载后按事实 id 补
     #[sqlx(skip)]
     pub qualifiers: Vec<FactQualifier>,
+    /// 按文档角色词记的属性（0061，#1267）：`statement_qualifiers` 那张表，同样加载后补
+    #[sqlx(skip)]
+    pub statement_qualifiers: Vec<StatementQualifier>,
     pub valid_from: Option<DateTime<Utc>>,
     pub valid_to: Option<DateTime<Utc>>,
     /// 精度描述的是这条事实**有的那些日期**的粒度。两端都没有日期时为 None——
@@ -830,6 +850,9 @@ pub struct EntityFact {
     /// 终点是时间线推出来的（`facts.end_derived`）：后一条事实开始时引擎把它关上，原文没说
     /// 这一天（#970）
     pub end_derived: bool,
+    /// `valid_to` 仍是存的边界；true 说原文讲的是在它之前结束的那个时段（`facts.end_after_period`，
+    /// #994）：「2024 年离开」存 2025-01-01，原文说的是 2024
+    pub end_after_period: bool,
     /// 区间是人改过的（#970）：`corrected_ends` 有值。与 `corrected` 不同，那一位是任何一次
     /// 改写：自动接续、审阅裁决、人手改
     pub time_corrected: bool,

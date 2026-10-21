@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use utopia_core::models::{
     ChunkFactView, EntityFact, EntityHistoryEvent, EntityType, EvidenceView, FactQualifier,
-    FactReviewItem, GraphChange, GraphEdge, GraphNode, RelationType,
+    FactReviewItem, GraphChange, GraphEdge, GraphNode, RelationType, StatementQualifier,
 };
 use utopia_core::{AppError, AppResult};
 use uuid::Uuid;
@@ -199,17 +199,6 @@ pub async fn fact_qualifiers_for(
     Ok(out)
 }
 
-/// 开放陈述上的一个属性（0044 第一刀）：按文档的角色词记，不按本体属性。
-/// 值或实体二选一；实体那一格带上它的显示名
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct StatementQualifier {
-    /// 文档自己的角色词（"amount"、"buyer"）
-    pub role: String,
-    pub value: Option<serde_json::Value>,
-    pub entity_id: Option<Uuid>,
-    pub entity_name: Option<String>,
-}
-
 /// 往一条开放陈述上写一个按角色词记的属性。**先写者留着**：同一条陈述同一个角色词
 /// 再听到一次不覆盖（与 [`upsert_fact_qualifier`] 的 Conflict 一条规矩——两次观察
 /// 不一致该另立一行加一条冲突，这一刀还没走到那一步）。值与实体必须恰好给一个
@@ -340,6 +329,10 @@ pub struct Validity<'a> {
     /// `C` 有时间词但锚不到。`None` = 没经过时间解析（人写的、规则算的），按 A 算。
     /// 时态引擎读它决定这一行能不能关上前任
     pub from_grade: Option<&'a str>,
+    /// 终点是原文所说时段之后的那一刻（`facts.end_after_period`，#994）：「2024 年离开」关上
+    /// 2024-03-01 起的那段，存 2025-01-01，原文说的是 2024。只看值分不出它和「到 2025 年」。
+    /// 写入口归一（`drop_period_mark_unless`），只留在带得了它的行上（[`period_mark_fits`]）
+    pub end_after_period: bool,
 }
 
 /// `valid_to_precision` 表示「结束了，但不知道是哪天」。
@@ -458,6 +451,7 @@ impl<'a> Validity<'a> {
             to_precision: None,
             attested_at: None,
             from_grade: None,
+            end_after_period: false,
         }
     }
 
@@ -527,6 +521,15 @@ impl<'a> Validity<'a> {
         self
     }
 
+    /// 「终点说的是它之前那个时段」带不了的行（[`period_mark_fits`]），标记在这里丢掉：两个
+    /// 写入口（`insert_fact_on`、`correct_interval`）在 [`Validity::under`] 之后各过一遍。
+    /// 事件归一成一刻、恒常抹掉日期、没有谓词的行不过 `under`，都落在这里。进写入口的终点是
+    /// 写明的，不是时间线画的
+    pub(crate) fn drop_period_mark_unless(mut self, declared_state: bool) -> Self {
+        self.end_after_period &= period_mark_fits(declared_state, self.from, self.to, false);
+        self
+    }
+
     /// 这条断言是否已经不再成立——**两种结束都算**。
     ///
     /// 判据写在这里而不是散在各处的 `valid_to.is_some()`：那种写法会把
@@ -534,6 +537,23 @@ impl<'a> Validity<'a> {
     pub fn has_ended(&self) -> bool {
         self.to.is_some() || self.to_precision == Some(ENDED_UNKNOWN)
     }
+}
+
+/// 一个终点带不带得了「说的是它之前那个时段」的标记（`end_after_period`，#994）：属性声明成
+/// 状态、有起点、终点有日期、不是时间线画的。
+///
+/// 与约束 `facts_end_after_period_needs_a_stated_end` 同一句话（属性是不是状态约束看不到，
+/// 由这里查）。Rust 这边判这件事的都调它：写入口的归一（`Validity::drop_period_mark_unless`）、
+/// `temporal::rewrite_end_tx` 落标记前、`temporal::mark_end_after_period` 补标记前、改区间的
+/// 路由。没有起点的行第一刀不标：终点只在起点落在那个时段里时才被挪到时段的尽头。第二刀让
+/// 时间解析自己写这种终点时，起点那一条在这里和约束里一起去掉
+pub fn period_mark_fits(
+    declared_state: bool,
+    from: Option<chrono::DateTime<chrono::Utc>>,
+    to: Option<chrono::DateTime<chrono::Utc>>,
+    end_derived: bool,
+) -> bool {
+    declared_state && from.is_some() && to.is_some() && !end_derived
 }
 
 /// 一段起止同值的状态（#966）：写入、改区间、关上都拒它，说的是同一句话
@@ -592,7 +612,8 @@ pub(crate) async fn insert_fact_on(
         validity.truncated().under(temporal)?
     } else {
         validity.truncated()
-    };
+    }
+    .drop_period_mark_unless(declared_state);
     let same_sql = match object {
         FactObject::Entity(_) => {
             "SELECT id, valid_from, valid_to, valid_to_precision FROM facts
@@ -650,9 +671,14 @@ pub(crate) async fn insert_fact_on(
                 && vtp.as_deref() == Some(ENDED_UNKNOWN)
                 && validity.from.is_none_or(|f| Some(f) == *vf)
         }) {
-            if let Some(stated) =
-                crate::temporal::state_derived_end(&mut *conn, *ended, None, validity.attested_at)
-                    .await?
+            if let Some(stated) = crate::temporal::state_derived_end(
+                &mut *conn,
+                *ended,
+                None,
+                false,
+                validity.attested_at,
+            )
+            .await?
             {
                 return Ok((stated, true));
             }
@@ -674,27 +700,43 @@ pub(crate) async fn insert_fact_on(
             // 照旧关在时段的开头（0053 修订 2026-09-27）。同一天开始又结束的也是这样：关在
             // 那一天的尽头，不关在它自己的起点——那是一段不成立的状态（#966）
             let period_end = declared_state.then(|| bucket_end(to, Some(precision)));
+            // 关在哪一刻，和终点是不是因此挪到了时段的尽头：挪了的，行上记下终点说的是它之前
+            // 那个时段（`end_after_period`，#994），读者才印得出原文说的 2024
             let closes_at = |from: Option<chrono::DateTime<chrono::Utc>>| match (from, period_end) {
-                (Some(f), Some(end)) if to <= f && f < end => end,
-                _ => to,
+                (Some(f), Some(end)) if to <= f && f < end => (end, true),
+                _ => (to, false),
             };
             // 已经关在那一刻的：同一件事，复用那一行（引擎推的终点改成写明的，同上）
             if let Some((ended, from, _, _)) = same
                 .iter()
-                .find(|(_, vf, vt, _)| *vt == Some(closes_at(*vf)))
+                .find(|(_, vf, vt, _)| *vt == Some(closes_at(*vf).0))
             {
+                let (at, moved) = closes_at(*from);
                 if let Some(stated) = crate::temporal::state_derived_end(
                     &mut *conn,
                     *ended,
-                    Some((closes_at(*from), precision)),
+                    Some((at, precision)),
+                    moved,
                     validity.attested_at,
                 )
                 .await?
                 {
                     return Ok((stated, true));
                 }
-                attest_earlier(&mut *conn, *ended, validity.attested_at, true).await?;
-                return Ok((*ended, false));
+                // 写明的终点被另一种说法再说一遍：那一行是「到 2025 年」关上的，这次是「2024 年
+                // 离开」，同一个终点。标上它，两句谁先到都一样。上面只比了时刻：人改过的终点、
+                // 别的精度写明的终点不改，由 `mark_end_after_period` 锁住那一行再查。
+                // 标上了也是并进那一行，不报新行：报成新行，物化会给它记上这句的
+                // `from_statement_id`、规则会记上 `implied`，人关上的行就成了算出来的，这句的
+                // 陈述一没，它跟着被作废
+                let marked = if moved {
+                    crate::temporal::mark_end_after_period(&mut *conn, *ended, precision).await?
+                } else {
+                    None
+                };
+                let row = marked.unwrap_or(*ended);
+                attest_earlier(&mut *conn, row, validity.attested_at, true).await?;
+                return Ok((row, false));
             }
             let open = same
                 .iter()
@@ -708,13 +750,9 @@ pub(crate) async fn insert_fact_on(
                 })
                 .max_by_key(|(_, vf, _, _)| *vf);
             if let Some((open, from, _, _)) = open {
-                if let Some(closed) = crate::temporal::close_superseded(
-                    &mut *conn,
-                    *open,
-                    closes_at(*from),
-                    precision,
-                )
-                .await?
+                let (at, moved) = closes_at(*from);
+                if let Some(closed) =
+                    crate::temporal::close_stated(&mut *conn, *open, at, precision, moved).await?
                 {
                     return Ok((closed, true));
                 }
@@ -724,13 +762,16 @@ pub(crate) async fn insert_fact_on(
     // 精确重复：同 valid_from → 复用。同起点、**这次带了终点、那行还开着** → 关上它
     // （「自 2020-01-10 起任董事」之后读到「2020-01-10 至 2024-04-30 任董事」）
     if let Some((existing, _, vt, vtp)) = same.iter().find(|(_, vf, _, _)| *vf == validity.from) {
+        // 这次带来的终点若说的是它之前那个时段（勘误改出来的行接旧行的标记），关上时一起带上；
+        // 复用的那行原样留着它自己的终点和标记
         if temporal == Temporal::State && vt.is_none() && vtp.is_none() {
             if let Some(to) = validity.to {
-                if let Some(closed) = crate::temporal::close_superseded(
+                if let Some(closed) = crate::temporal::close_stated(
                     &mut *conn,
                     *existing,
                     to,
                     validity.to_precision.unwrap_or("day"),
+                    validity.end_after_period,
                 )
                 .await?
                 {
@@ -747,6 +788,7 @@ pub(crate) async fn insert_fact_on(
                 &mut *conn,
                 *existing,
                 stated_to,
+                validity.end_after_period,
                 validity.attested_at,
             )
             .await?
@@ -800,22 +842,22 @@ pub(crate) async fn insert_fact_on(
             if vf.is_some() {
                 return None;
             }
-            let end = match (validity.to, *vt) {
+            let (end, moved) = match (validity.to, *vt) {
                 (None, Some(t)) if declared_state && t <= from => {
                     let end = bucket_end(t, Some(vtp.as_deref().unwrap_or("day")));
                     if from >= end {
                         return None;
                     }
-                    Some(end)
+                    (Some(end), true)
                 }
                 (Some(to), Some(t)) if to != t => return None,
-                (_, vt) => vt,
+                (_, vt) => (vt, false),
             };
-            Some((*id, end, vtp.clone()))
+            Some((*id, end, vtp.clone(), moved))
         }),
         None => None,
     };
-    if let Some((_, Some(vt), vtp)) = &refine_target {
+    if let Some((_, Some(vt), vtp, moved)) = &refine_target {
         if validity.to.is_none() {
             validity.to = Some(*vt);
             validity.to_precision = vtp.as_deref().map(|p| match p {
@@ -827,9 +869,11 @@ pub(crate) async fn insert_fact_on(
                 "second" => "second",
                 _ => ENDED_UNKNOWN,
             });
+            // 沿用来的终点挪到了时段的尽头：与收尾那条路同一个标记，两种陈述顺序写下同一行
+            validity.end_after_period = *moved;
         }
     }
-    let refine_target = refine_target.map(|(id, _, _)| id);
+    let refine_target = refine_target.map(|(id, _, _, _)| id);
 
     let id = Uuid::now_v7();
     let insert_sql = match object {
@@ -838,17 +882,17 @@ pub(crate) async fn insert_fact_on(
             "INSERT INTO facts (id, kb_id, subject_id, predicate_id, object_id,
                                 valid_from, valid_from_precision,
                                 valid_to, valid_to_precision, confidence,
-                                attested_from, attested_to, valid_from_grade)
+                                attested_from, attested_to, valid_from_grade, end_after_period)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11, now()),
-                     CASE WHEN $9::text = 'unknown' THEN COALESCE($11, now()) END, $12)"
+                     CASE WHEN $9::text = 'unknown' THEN COALESCE($11, now()) END, $12, $13)"
         }
         FactObject::Value(_) => {
             "INSERT INTO facts (id, kb_id, subject_id, predicate_id, object_value,
                                 valid_from, valid_from_precision,
                                 valid_to, valid_to_precision, confidence,
-                                attested_from, attested_to, valid_from_grade)
+                                attested_from, attested_to, valid_from_grade, end_after_period)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, COALESCE($11, now()),
-                     CASE WHEN $9::text = 'unknown' THEN COALESCE($11, now()) END, $12)"
+                     CASE WHEN $9::text = 'unknown' THEN COALESCE($11, now()) END, $12, $13)"
         }
     };
     let mut ins = sqlx::query(insert_sql)
@@ -867,6 +911,7 @@ pub(crate) async fn insert_fact_on(
         .bind(confidence)
         .bind(validity.attested_at)
         .bind(validity.from_grade)
+        .bind(validity.end_after_period)
         .execute(&mut *conn)
         .await?;
 
@@ -1467,14 +1512,16 @@ async fn edges_among(
     .bind(as_of)
     .fetch_all(pool)
     .await?;
-    // 边上的属性另一张表（0037），按 id 一次取回补上
+    // 边上的属性另两张表（0037 按本体属性、0061 按角色词），按 id 一次取回补上
     {
         let ids: Vec<Uuid> = edges.iter().map(|x| x.id).collect();
-        let mut by_fact = fact_qualifiers_for(pool, &ids).await?;
+        let (mut typed, mut worded) = tokio::try_join!(
+            fact_qualifiers_for(pool, &ids),
+            statement_qualifiers_for(pool, &ids)
+        )?;
         for x in edges.iter_mut() {
-            if let Some(q) = by_fact.remove(&x.id) {
-                x.qualifiers = q;
-            }
+            x.qualifiers = typed.remove(&x.id).unwrap_or_default();
+            x.statement_qualifiers = worded.remove(&x.id).unwrap_or_default();
         }
     }
     Ok(edges)
@@ -1750,7 +1797,7 @@ pub async fn entity_detail(
                                  WHERE fe.fact_id = f.id AND {chunk_live})
                 ) AS stale,
                 (f.supersedes IS NOT NULL) AS corrected,
-                f.end_derived, {corrected_ends} AS corrected_ends,
+                f.end_derived, f.end_after_period, {corrected_ends} AS corrected_ends,
                 {corrected_ends} IS NOT NULL AS time_corrected,
                 closer.closed_by_id, closer.closed_by, closer.closed_by_value,
                 CASE WHEN {corrected_ends} IS NOT NULL THEN {correction_note} END
@@ -1814,14 +1861,16 @@ pub async fn entity_detail(
     .bind(at)
     .fetch_all(pool)
     .await?;
-    // 边上的属性另一张表（0037），按 id 一次取回补上
+    // 边上的属性另两张表（0037 按本体属性、0061 按角色词），按 id 一次取回补上
     {
         let ids: Vec<Uuid> = facts.iter().map(|x| x.id).collect();
-        let mut by_fact = fact_qualifiers_for(pool, &ids).await?;
+        let (mut typed, mut worded) = tokio::try_join!(
+            fact_qualifiers_for(pool, &ids),
+            statement_qualifiers_for(pool, &ids)
+        )?;
         for x in facts.iter_mut() {
-            if let Some(q) = by_fact.remove(&x.id) {
-                x.qualifiers = q;
-            }
+            x.qualifiers = typed.remove(&x.id).unwrap_or_default();
+            x.statement_qualifiers = worded.remove(&x.id).unwrap_or_default();
         }
     }
 
@@ -2160,7 +2209,18 @@ pub async fn first_live_evidence(
 
 /// 证据回放路径：不过滤 superseded——它的职责就是能看旧版。
 /// stale = 证据版本落后于文档当前版本（UI 标 "from v{n}"）。
-pub async fn fact_evidence(pool: &PgPool, fact_id: Uuid) -> AppResult<Vec<EvidenceView>> {
+/// 事实不在本 KB 时 NotFound：路由只校验了路径里的 kb，事实 id 是调用方给的。
+pub async fn fact_evidence(
+    pool: &PgPool,
+    kb_id: Uuid,
+    fact_id: Uuid,
+) -> AppResult<Vec<EvidenceView>> {
+    sqlx::query("SELECT 1 FROM facts WHERE id = $1 AND kb_id = $2")
+        .bind(fact_id)
+        .bind(kb_id)
+        .fetch_optional(pool)
+        .await?
+        .ok_or(AppError::NotFound)?;
     let rows: Vec<EvidenceView> = sqlx::query_as(
         "SELECT fe.quote, fe.proposed_predicate, fe.chunk_id, c.document_id, d.filename, c.seq,
                 c.doc_version,
@@ -2532,6 +2592,7 @@ mod temporal_shape_tests {
             to_precision: Some("day"),
             attested_at: None,
             from_grade: None,
+            end_after_period: false,
         }
         .under(Temporal::Event)
         .unwrap();
@@ -2549,6 +2610,7 @@ mod temporal_shape_tests {
             to_precision: Some("month"),
             attested_at: None,
             from_grade: None,
+            end_after_period: false,
         }
         .under(Temporal::Event)
         .unwrap();
@@ -2593,6 +2655,7 @@ mod temporal_shape_tests {
             to_precision: Some("day"),
             attested_at: None,
             from_grade: None,
+            end_after_period: false,
         };
         let refused = moment
             .under(Temporal::State)

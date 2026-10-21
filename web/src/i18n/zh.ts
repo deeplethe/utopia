@@ -54,6 +54,7 @@ export const zh: Strings = {
     bad_display_name: "显示名需要 1–64 个字符。",
     wrong_password: "当前密码不对。",
     registration_closed: "本部署已关闭自助注册——请找管理员开通账户。",
+    password_login_disabled: "本部署已关闭密码登录，请用单点登录。",
     no_chat_model: "还没有配置对话模型。到「管理 → 模型」里配一个。",
     // 对话流里没答成的那一轮：`error` 帧带的 code（服务端的英文原句只给日志）
     answer_empty: "模型没有给出回答，请再问一次。",
@@ -126,9 +127,14 @@ export const zh: Strings = {
     concurrency_range: "填一个 1 到 256 之间的数。",
     inference_off: "这个库没有打开物化推理。到设置里开。",
     bad_resolution: "这不是一个有效的裁决。",
+    interval_inverted: "终点早于起点。请给一个晚于起点的终点。",
     empty_state_span: "起止相同的状态任何时刻都不成立。给一个晚于起点的终点，或者让它开着。",
     unknown_marks: "单个日期标的是开始、结束，或者都不是。",
     marks_needs_state: "只有状态属性才说单个日期标的是什么，事件与恒常属性不说。",
+    // 采纳提案（0061 决定 3）：撞上别的写、整次回滚了；复用要写的都已由人另定
+    alignment_busy: "另一项操作正在改同样的内容，这次什么都没保存，请稍后再试。",
+    proposal_stale:
+      "这条提案已经没有可采纳的了：它的每个短语或类别词要么已由人另行判定，要么已不在任何陈述里。拒绝它就能清掉。",
   },
   errDetail: (msg: string, detail: string) => `${msg}（${detail}）`,
   toast: {
@@ -356,6 +362,7 @@ export const zh: Strings = {
     ssoButton: "使用单点登录",
     ssoErrors: {
       unlinked: "这个身份还没绑定任何账号。先用密码登录，再到账户页绑定。",
+      unlinked_sso_only: "这个身份登不进本部署，请找管理员开通。",
       cancelled: "单点登录已取消。",
       denied: "身份提供方的应答没能通过校验。",
       session: "这次登录是在另一个浏览器会话里开始的，请重试。",
@@ -526,6 +533,7 @@ export const zh: Strings = {
       chunk_unextracted: "这一段端点没能答上，没有进图",
       phrase_is_value: "已保留，但短语就是那个值",
       phrase_is_subject: "已保留，但短语就是主语的名字",
+      object_is_value: "已保留，宾语按值记下",
     },
     reExtractSource: "重新抽取",
     reExtractTitle: "重新抽取这个来源？",
@@ -571,6 +579,7 @@ export const zh: Strings = {
       statements: "陈述",
       custom: "自定义",
       github_issues: "GitHub 工单",
+      github_repo: "GitHub 仓库文件",
       jira_issues: "Jira 工单",
       s3: "S3 / MinIO",
       azure_blob: "Azure Blob",
@@ -589,6 +598,9 @@ export const zh: Strings = {
         "同步一个仓库的工单。**每张工单连同它的状态变更史**成为一篇文档——" +
         "何时开出、何时关闭、标签与负责人怎么变的，都带着日期。未配令牌时" +
         "每小时只有 60 次请求配额。",
+      github_repo:
+        "读取一个仓库默认分支上的 markdown 文件。每个文件成为一篇文档，" +
+        "日期取最后一次改动它的提交；没变的文件不会重抓。",
       s3:
         "从 S3 桶里读文档，或者任何说同一套协议的东西（MinIO、Ceph、R2）。" +
         "**端点留空就是 AWS**，填了就是自建。每个对象成为一篇文档，" +
@@ -681,6 +693,8 @@ export const zh: Strings = {
     notionQueryField: "搜索词（可选——留空则取全部已分享页面）",
     tokenField: "GitHub 令牌（可选，不再显示）",
     includePullRequests: "把 PR 也当工单收进来",
+    includeGlobsField: "包含的 glob（逗号分隔，可选）",
+    excludeGlobsField: "排除的 glob（逗号分隔，可选）",
     interval: "同步计划",
     intervalManual: "仅手动",
     intervalEvery: (m: number) =>
@@ -1571,6 +1585,7 @@ export const zh: Strings = {
     rejectProposal: "拒绝",
     rejectReasonPrompt: "为什么不要？（可不填——代理下次提案前会读）",
     rejectedProposal: "已拒绝",
+    adoptKept: (n: number) => `已保存。其中 ${n} 条已由人另行判定，按人的判定保留。`,
     questions: "能力问题",
     questionsHint:
       "这个知识库应该答得上来的问题。代理提的类与属性要服务它们；它们就是本体的验收标准。",
@@ -2070,6 +2085,9 @@ export const zh: Strings = {
     failedJobs: (n: number) => `${n} 个失败的任务`,
     requeue: "再跑一遍",
     requeued: (n: number) => `${n} 个任务回到队列`,
+    exportKb: "导出整个知识库（RDF）",
+    exportKbNote: "把所有事实及其出处下载为 Turtle 文件。",
+    exportKbAction: "导出",
     cardIdentity: "名字与描述",
     cardIdentityNote: "最长 64 个字符。切换器和这个库每一页的顶上用的都是它。",
     cardVisibilityNote:

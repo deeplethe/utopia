@@ -1,6 +1,6 @@
 # 0061 · The ontology is proposed from the open graph and judged by its questions
 
-- **Status**: In progress · accepted 2026-09-26 · cuts 1 and 1.1 built (#947, #950), cut 3 slices 1–2 (#955, #962) · open: cut 2, the rest of cut 3, cut 4
+- **Status**: In progress · accepted 2026-09-26 · cuts 1 and 1.1 built (#947, #950), cut 3 slices 1–2 (#955, #962) · revised 2026-10-16 (#1257) · revised 2026-10-17 (#1288) · open: cut 2, the rest of cut 3, cut 4
 - **Written**: 2026-09-26 (conventions in the [README](README.md))
 - **Related**: [0044](0044-the-ontology-is-a-view-over-what-documents-say.md) §4 decided the workbench and named this cut; [0003](0003-ontology-growth-loop.md) grew the ontology from `ontology_misses` and surface predicates, which [0044](0044-the-ontology-is-a-view-over-what-documents-say.md) cut 1 left idle and #725 retires; [0012](0012-the-ontology-is-a-contract-not-a-suggestion.md) makes every element a contract a person signed, which this record keeps; [0053](0053-a-phrase-decision-records-the-inputs-it-considered.md) is what makes approval re-decide signatures without a new mechanism; [0008](0008-ontology-packs-as-cold-start.md) is the second of the three sources; [0043](0043-every-review-queue-is-governed.md) and #725 give the queue its shape. From #725's "Ontology proposals" row and 0044's open question about a base with no questions.
 
@@ -17,6 +17,10 @@ The open graph holds statements with their phrases, quotes, kind words and names
 **2. The ontology agent proposes from the open graph, against the questions.** Its inputs are the signatures decided `none` or `undecided` with their statement counts and example quotes, the kind words with no class, the current ontology, and the accepted questions. It proposes object types, link types, properties and implication rules, and every proposal carries a definition written for the aligner, the example statements that motivated it, the signatures it would bind, and the questions it serves. Proposals land in `ontology_proposals`, one row per element key, refreshed rather than duplicated. The job runs on demand from the workbench and after alignment settles when unbound signatures have accumulated past a threshold; it never writes the ontology. It replaces the 0003 `Suggest` that read `ontology_misses`, whose own comment records that 86.7% of what it showed the model was single-document noise.
 
 **3. Approval is an action that writes the ontology and re-decides the signatures.** Adopting a proposal creates or edits the element with its definition, domains and ranges: structure is part of approval [0044 §4], so a property arrives with the classes it joins, not as a bare label. The signatures the proposal named are then re-decided by alignment with no new mechanism: their basis changed, which is exactly what 0053 made re-decision mean. Edit-and-approve is the same path with the person's text. A signature a person decided stays as the person left it. Rejecting records the reason so the agent does not propose the same element again for the same signatures.
+
+**Revision 2026-10-16 (adoption is one commit, #1257):** decision 3 did not say that adopting is one operation, and adoption committed the element, its alignment job and the adopted status separately, embedding the element inside the request; an attribute whose example statement has an entity object was committed before its regression case was refused, leaving an element no proposal adopted. Adopting now commits the element (for a reuse, the person's bindings), its regression cases, the adopted status and its follow-up jobs together or not at all, and makes no model call: like the editor, it queues `embed_ontology` ahead of alignment. Only adoption adopts; the status-only endpoint rejects.
+
+**Revision 2026-10-17 (a reuse keeps what a person decided after the agent read it, #1288):** decision 3's "A signature a person decided stays as the person left it" did not say against what. A reuse wrote every shape and kind word it named as the adopter's binding, overwriting a binding a colleague decided after the agent read it, which neither the proposal nor the adopter had seen. For a reuse, the decision the agent read is what the proposal answers and is replaced; a person's decision made after that read stays. The proposal records when each decision it read was made. A person's later decision that binds the way the proposal does counts as written, and a shape keeps its regression case; one that differs is left as it is, gets no case and is listed in the answer. A reuse with nothing left to write is refused. A reuse saved before this revision recorded no reads, so adopting it keeps every person's decision.
 
 **4. Every approved element carries regression cases.** The example statements that motivated a proposal become `ontology_regression_cases` on adoption: a statement and the property or class it is expected to bind to. A later edit to the element's definition, domains or ranges reruns alignment on exactly those signatures and records which cases still bind. A failing case is shown on the workbench beside the edit; it is not reverted for the person, because a definition may be tightened on purpose. A person can add a case from any statement ("this should bind here"), which is the "make a rule" action #725 names.
 
@@ -91,6 +95,47 @@ not supply statement IDs. Literal statements offer forward attributes only.
 The list refreshes through the existing graph and review events; refreshing reads
 saved results and never starts alignment. No evaluator, job, schema migration,
 or version identity is added.
+
+## Cut 2 negative expectations — proposed 2026-10-12
+
+The [review of #1184](https://github.com/deeplethe/utopia/pull/1184#pullrequestreview-5479816945)
+found that a person cannot say a statement should bind to no property. The
+example, `不再负责` bound to `responsibleFor`, motivates a human expectation,
+not a rule that every negation or ending must be unbound. This contract must
+land before implementation; the preceding slices remain implemented.
+
+**An expectation says either bound or none.** Extend the existing Editor POST
+with optional `expected_binding`, either `bound` or `none`; omission means
+`bound` and preserves existing requests. Bound requires `relation_type_id`
+and `direction` with their current validation. None uses
+`{statement_id, expected_binding: "none"}`, with both target fields omitted or
+null. Reject unknown expectation values, incomplete bound targets, and any
+non-null target on a none request. A missing property alone is not a negative
+expectation. Both kinds require a live open statement in the same base and
+Editor access. Adoption continues to write positive cases only.
+
+**Absence has no synthetic property.** For a negative case,
+`expected_property_id` and `expected_direction` are both null; for a positive
+case both remain present. Preserve existing rows, same-base isolation, and
+ownership checks. Repeated confirmation of the same negative expectation,
+including concurrent requests, returns the original case with its actor and
+origin. Deleting a target property removes its positive cases; a negative case
+has no target to delete.
+
+**Compare committed decisions, not just target IDs.** A negative case passes
+only on an explicit `none` decision. `bound` and `undecided` fail; no decision
+leaves the case unchecked. A null actual property alone does not pass, since
+undecided decisions also have no property. A person's explicit none decision
+passes a negative case and fails a positive one. Comparisons retain the actual
+decision and its time separately from the check time, in the existing binding
+transaction; no evaluator, extra job, or binding status is added.
+
+**The human-bound exception applies only to positive cases.** Positive cases
+retain the existing exception and report `human_bound`, not an independent
+match. A negative expectation conflicting with a person's bound signature
+fails and explicitly reports a conflict with the human binding, including the
+actual property and direction. A failed case does not overwrite the person's
+binding: it makes the disagreement visible for a person to resolve.
 
 ## Status history
 

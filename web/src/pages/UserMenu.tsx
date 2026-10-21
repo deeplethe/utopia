@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import { api, type User } from "../api";
 import { LANGS, LANG_NAMES, S, lang, setLang } from "../i18n";
+import { clearSessionState } from "../authSession";
 
 /** 首字母头像：中性灰底（chrome 零色偏），拉丁取词首两枚，CJK 取前两字。 */
 export function Avatar({ name, size = 24 }: { name: string; size?: number }) {
@@ -69,7 +70,7 @@ export function UserMenu({ user }: { user: User }) {
 
   const logout = async () => {
     await api.logout();
-    queryClient.clear();
+    clearSessionState(queryClient);
     navigate({ to: "/login" });
   };
 

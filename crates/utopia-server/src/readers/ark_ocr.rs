@@ -374,17 +374,25 @@ async fn run_tool(
         .take(max_stdout as u64 + 1);
     let mut bytes = Vec::new();
     let outcome = tokio::time::timeout(timeout, async {
-        let (status, _) = tokio::try_join!(child.wait(), stdout.read_to_end(&mut bytes))?;
-        Ok::<_, std::io::Error>(status)
+        stdout.read_to_end(&mut bytes).await?;
+        // 达到上限后 take 不再读管道；此时等进程退出会让仍在输出的 Poppler 堵到超时。
+        if bytes.len() > max_stdout {
+            return Ok::<_, std::io::Error>(None);
+        }
+        child.wait().await.map(Some)
     })
     .await;
     match outcome {
-        Ok(Ok(status)) if status.success() && bytes.len() <= max_stdout => Ok(bytes),
-        Ok(Ok(_)) if bytes.len() > max_stdout => {
+        Ok(Ok(Some(status))) if status.success() => Ok(bytes),
+        Ok(Ok(None)) => {
+            let _ = child.kill().await;
             Err(anyhow!("The rendered PDF page exceeds 12 MiB").context(Terminal))
         }
-        Ok(Ok(_)) => Err(anyhow!("The PDF could not be rendered").context(Terminal)),
-        Ok(Err(e)) => Err(anyhow!(e).context("the PDF renderer could not be run")),
+        Ok(Ok(Some(_))) => Err(anyhow!("The PDF could not be rendered").context(Terminal)),
+        Ok(Err(e)) => {
+            let _ = child.kill().await;
+            Err(anyhow!(e).context("the PDF renderer could not be run"))
+        }
         Err(_) => {
             let _ = child.kill().await;
             Err(anyhow!("The PDF renderer timed out"))
@@ -397,6 +405,56 @@ mod tests {
     use super::*;
     use tokio::io::AsyncWriteExt;
     use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn oversized_renderer_output_is_terminal_and_the_process_is_reaped() -> anyhow::Result<()>
+    {
+        let dir = tempfile::tempdir()?;
+        let pid_file = dir.path().join("renderer.pid");
+        let error = run_tool(
+            tokio::process::Command::new("sh")
+                .args(["-c", "echo $$ > \"$1\"; exec cat /dev/zero", "renderer"])
+                .arg(&pid_file),
+            4096,
+            Duration::from_secs(2),
+        )
+        .await
+        .unwrap_err();
+        assert!(utopia_core::is_terminal(&error), "{error:#}");
+        assert!(format!("{error:#}").contains("exceeds 12 MiB"));
+        let pid = tokio::fs::read_to_string(pid_file).await?;
+        let alive = tokio::process::Command::new("sh")
+            .args(["-c", "kill -0 \"$1\"", "renderer", pid.trim()])
+            .stderr(Stdio::null())
+            .status()
+            .await?;
+        assert!(!alive.success(), "the renderer was not reaped");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn renderer_output_at_the_limit_succeeds_and_a_stalled_renderer_times_out(
+    ) -> anyhow::Result<()> {
+        let bytes = run_tool(
+            tokio::process::Command::new("sh").args(["-c", "printf 12345678"]),
+            8,
+            Duration::from_secs(2),
+        )
+        .await?;
+        assert_eq!(bytes, b"12345678");
+        let error = run_tool(
+            tokio::process::Command::new("sh").args(["-c", "exec sleep 10"]),
+            8,
+            Duration::from_millis(50),
+        )
+        .await
+        .unwrap_err();
+        assert!(!utopia_core::is_terminal(&error));
+        assert_eq!(error.to_string(), "The PDF renderer timed out");
+        Ok(())
+    }
 
     /// 手动验收只发送公开或自制样本；密钥只从环境读，不写入结果。
     #[tokio::test]

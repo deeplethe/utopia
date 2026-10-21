@@ -42,6 +42,10 @@ pub struct AppConfig {
     pub cookie_secure: bool,
     /// 是否开放注册。false 时仅首个用户（引导部署）可注册，其余需管理员开放。
     pub open_registration: bool,
+    /// 能不能用密码登录、注册。关掉之后只走单点登录（配合
+    /// `UTOPIA_OIDC_ALLOWED_DOMAINS` 自动开户）；打开就是身份提供方出事时的后门。
+    /// `UTOPIA_PASSWORD_LOGIN`
+    pub password_login: bool,
 }
 
 impl Default for AppConfig {
@@ -59,6 +63,7 @@ impl Default for AppConfig {
             db_max_connections: None,
             cookie_secure: false,
             open_registration: true,
+            password_login: true,
         }
     }
 }

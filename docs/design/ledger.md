@@ -8,7 +8,7 @@ in [time](time.md), derived facts in [rules](rules.md).
 
 **A fact is a row that is never updated in place.** `facts (kb, subject_id, predicate_id NULL,
 object_id | object_value, confidence, valid_*, *_precision, attested_from, attested_to, recorded_at,
-invalidated_at, supersedes, end_derived, layer, phrase)`. A correction inserts a new row that
+invalidated_at, supersedes, end_derived, end_after_period, layer, phrase)`. A correction inserts a new row that
 `supersedes` the old one and invalidates it; a retraction invalidates; `entity_history` reads the
 chain back as "recorded as X, refined to Y, by whom" [0001, 0003]. Confirming a mapping by
 `UPDATE ... confidence = 1.0` was the one violation and is why mappings left the ledger [0011].
@@ -35,8 +35,9 @@ word for open statements; `fact_qualifiers (fact, qualifier_type, value | entity
 declared attribute for typed rows, converted by the attribute's datatype, the unit read from the
 text (`$4 billion` becomes 4000000000 with unit `$`) and the declared unit only when the text
 carries none; a qualifier is not part of the edge's identity; every superseding writer copies
-qualifiers with the evidence [0037, #731]. `time_mentions (fact, chunk, text, char_start)` hold
-verbatim time words [#731]. Names are value facts on `known_as` [0041]. `entities.description`
+qualifiers with the evidence [0037, #731]. Entity detail, graph edges and the MCP `entity_facts`
+tool return both: typed ones in `qualifiers`, role words in `statement_qualifiers` [#1267].
+`time_mentions (fact, chunk, text, char_start)` hold verbatim time words [#731]. Names are value facts on `known_as` [0041]. `entities.description`
 marks a described, unnamed thing [#731].
 
 **Derived facts live in their own table** (`derived_facts`, widened to literal objects, with

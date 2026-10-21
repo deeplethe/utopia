@@ -17,6 +17,8 @@ utopia-search.workspace = true
 utopia-llm.workspace = true
 utopia-extract = { path = "../utopia-extract" }
 sha2.workspace = true
+glob.workspace = true
+sha1.workspace = true
 futures-util.workspace = true
 async-stream.workspace = true
 tokio.workspace = true

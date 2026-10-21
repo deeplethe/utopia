@@ -14,7 +14,7 @@ mod kbs;
 mod mapping_routes;
 mod mcp;
 mod members_routes;
-mod oidc_routes;
+pub mod oidc_routes;
 mod ontology_regression_routes;
 pub(crate) mod ontology_routes;
 mod question_routes;
@@ -657,6 +657,12 @@ mod system_admin_tests;
 
 #[cfg(test)]
 mod oidc_exchange_tests;
+
+#[cfg(test)]
+mod token_setup_tests;
+
+#[cfg(test)]
+mod token_read_tests;
 
 #[cfg(test)]
 mod rule_expression_tests;

@@ -7,6 +7,11 @@ use std::io::{Cursor, Read, Write};
 use std::process::Command;
 
 const SPREADSHEET_ROW_LIMIT: usize = 2_000;
+// Each retained cell passes through a 40-byte GridRow entry and two 48-byte renderer
+// Cells, besides source values, strings and Vec spare capacity (~370 B/cell in a
+// full dense import). Bound actual records/segments, not their empty column spans:
+// a 2,000 x 150 sheet uses 300,000 entries and fits without losing any rows.
+const XLSX_SEGMENT_LIMIT: usize = 1_000_000;
 const CSV_RECORD_LIMIT: usize = 10_000;
 
 /// 文本解码：chardetng 探测编码（覆盖 GBK/GB18030/BIG5 等中文常见编码）。
@@ -773,53 +778,200 @@ pub fn spreadsheet(bytes: &[u8]) -> anyhow::Result<(String, Vec<crate::ParseWarn
     let mut out = String::new();
     let mut warnings = Vec::new();
     for sheet_name in workbook.sheet_names() {
-        let Ok(range) = workbook.worksheet_range(&sheet_name) else {
-            continue;
+        let (text, rows_read, rows_total) = match &mut workbook {
+            calamine::Sheets::Xlsx(book) => {
+                let Ok(sheet) = xlsx_sheet(book, &sheet_name, XLSX_SEGMENT_LIMIT) else {
+                    continue;
+                };
+                sheet
+            }
+            _ => {
+                let Ok(range) = workbook.worksheet_range(&sheet_name) else {
+                    continue;
+                };
+                let merges = match &mut workbook {
+                    calamine::Sheets::Xls(book) => book
+                        .merge_cells_by_sheet_name(&sheet_name)
+                        .unwrap_or_default(),
+                    _ => Vec::new(),
+                };
+                let (rows, headers) = spreadsheet_grid(&range, &merges);
+                let text = crate::table::render_grid_with_headers(&rows, headers)
+                    .map(|text| format!("{text}\n"))
+                    .unwrap_or_else(|| {
+                        let mut text = String::new();
+                        for row in &rows {
+                            let cells: Vec<&str> = row.iter().map(|(s, _, _)| s.as_str()).collect();
+                            text.push_str(&cells.join("\t"));
+                            text.push('\n');
+                        }
+                        text
+                    });
+                (
+                    text,
+                    range.height().min(SPREADSHEET_ROW_LIMIT),
+                    range.height(),
+                )
+            }
         };
-        if range.is_empty() {
+        if rows_read == 0 {
             continue;
         }
-        // xlsx/xls 把 merge 单独给出；xlsb/ods 的 calamine reader 没有这一步，按无 merge 读。
-        let merges = match &mut workbook {
-            calamine::Sheets::Xlsx(book) => book
-                .merge_cells_by_sheet_name(&sheet_name)
-                .unwrap_or_default(),
-            calamine::Sheets::Xls(book) => book
-                .merge_cells_by_sheet_name(&sheet_name)
-                .unwrap_or_default(),
-            _ => Vec::new(),
-        };
         out.push_str(&format!("\n# Sheet: {sheet_name}\n\n"));
-        let rows_total = range.height();
-        if rows_total > SPREADSHEET_ROW_LIMIT {
-            let rows_read = SPREADSHEET_ROW_LIMIT;
+        if rows_total > rows_read {
             warnings.push(crate::ParseWarning {
                 kind: crate::ParseWarning::SPREADSHEET_ROWS_TRUNCATED,
                 detail: serde_json::json!({
-                    "sheet": sheet_name.clone(),
+                    "sheet": sheet_name,
                     "rows_read": rows_read,
                     "rows_total": rows_total,
                     "rows_omitted": rows_total - rows_read,
                 }),
             });
         }
-        // 每张表按网格渲染成带列头的 Markdown 表；一格字都没有的表退回制表符分隔
-        let (rows, headers) = spreadsheet_grid(&range, &merges);
-        match crate::table::render_grid_with_headers(&rows, headers) {
-            Some(md) => {
-                out.push_str(&md);
-                out.push('\n');
-            }
-            None => {
-                for line in &rows {
-                    let cells: Vec<&str> = line.iter().map(|(s, _, _)| s.as_str()).collect();
-                    out.push_str(&cells.join("\t"));
-                    out.push('\n');
-                }
-            }
-        }
+        out.push_str(&text);
     }
     Ok((out, warnings))
+}
+
+fn xlsx_sheet(
+    book: &mut calamine::Xlsx<Cursor<Vec<u8>>>,
+    sheet: &str,
+    budget: usize,
+) -> anyhow::Result<(String, usize, usize)> {
+    let mut start_row = u32::MAX;
+    let mut end_row = 0;
+    let mut row_counts = vec![0usize; SPREADSHEET_ROW_LIMIT];
+    let mut reader = book.worksheet_cells_reader(sheet)?;
+    // Keep only the first 2,000 physical rows' counts, even if XML cells arrive
+    // out of order. The full row bounds survive so truncation remains honest.
+    while let Some(cell) = reader.next_cell()? {
+        if cell.get_value() == &calamine::DataRef::Empty {
+            continue;
+        }
+        let (row, col) = cell.get_position();
+        anyhow::ensure!(
+            row < 1_048_576 && col < 16_384,
+            "Cell exceeds the Excel worksheet limits"
+        );
+        if row < start_row {
+            let shift = (start_row - row).min(SPREADSHEET_ROW_LIMIT as u32) as usize;
+            row_counts.rotate_right(shift);
+            row_counts[..shift].fill(0);
+            start_row = row;
+        }
+        end_row = end_row.max(row);
+        let offset = (row - start_row) as usize;
+        if let Some(count) = row_counts.get_mut(offset) {
+            // Repeated coordinates overwrite values below, so even malformed
+            // XML cannot retain more than one physical row's worth of cells.
+            *count = (*count + 1).min(16_384);
+        }
+    }
+    drop(reader);
+    if start_row == u32::MAX {
+        return Ok((String::new(), 0, 0));
+    }
+    let rows_total = (end_row - start_row + 1) as usize;
+    let mut height = rows_total.min(SPREADSHEET_ROW_LIMIT);
+    let mut count = 0;
+    for (row, &cells) in row_counts[..height].iter().enumerate() {
+        if cells > budget - count {
+            height = row;
+            break;
+        }
+        count += cells;
+    }
+    // Counts bound this allocation before any source values are retained. A
+    // distant note adds one entry, not thousands of empty Data/String objects.
+    let mut values = vec![std::collections::BTreeMap::<u32, String>::new(); height];
+    let mut reader = book.worksheet_cells_reader(sheet)?;
+    while let Some(cell) = reader.next_cell()? {
+        let (row, col) = cell.get_position();
+        let offset = row.saturating_sub(start_row) as usize;
+        if row >= start_row && offset < height && cell.get_value() != &calamine::DataRef::Empty {
+            let text = spreadsheet_cell_text(Some(&calamine::Data::from(cell.get_value().clone())));
+            values[offset].insert(col, text);
+        }
+    }
+    drop(reader);
+    let merges = book.merge_cells_by_sheet_name(sheet).unwrap_or_default();
+    loop {
+        let start_col = values
+            .iter()
+            .filter_map(|row| row.keys().next())
+            .min()
+            .copied()
+            .unwrap();
+        let end_col = values
+            .iter()
+            .filter_map(|row| row.keys().next_back())
+            .max()
+            .copied()
+            .unwrap();
+        let width = (end_col - start_col + 1) as usize;
+        let text_at = |row: usize, col: usize| {
+            values[row]
+                .get(&(start_col + col as u32))
+                .cloned()
+                .unwrap_or_default()
+        };
+        let regions = spreadsheet_regions(
+            (start_row, start_col),
+            (start_row + height as u32 - 1, end_col),
+            &merges,
+            text_at,
+        );
+        let mut owner = vec![usize::MAX; width];
+        let mut rows = Vec::with_capacity(height);
+        let mut segments = 0;
+        for row in 0..height {
+            let cells = spreadsheet_row(
+                row,
+                width,
+                &regions,
+                &mut owner,
+                |col| text_at(row, col),
+                true,
+            );
+            if cells.len() > budget - segments {
+                break;
+            }
+            segments += cells.len();
+            rows.push(cells);
+        }
+        if rows.len() != height {
+            height = rows.len();
+            values.truncate(height);
+            // Dropped rows cannot leave a distant column in the kept window's
+            // geometry. Reproject merges too, retaining their physical spans.
+            continue;
+        }
+        let headers = spreadsheet_headers(&regions, &rows);
+        let text = match crate::table::render_grid_with_headers(&rows, headers) {
+            Some(text) => format!("{text}\n"),
+            None => {
+                // Preserve the old TSV fallback exactly, but materialize only
+                // one dense row at a time rather than the whole rectangle.
+                let mut text = String::new();
+                for row in 0..height {
+                    let cells = spreadsheet_row(
+                        row,
+                        width,
+                        &regions,
+                        &mut owner,
+                        |col| text_at(row, col),
+                        false,
+                    );
+                    let cells: Vec<&str> = cells.iter().map(|(s, _, _)| s.as_str()).collect();
+                    text.push_str(&cells.join("\t"));
+                    text.push('\n');
+                }
+                text
+            }
+        };
+        return Ok((text, height, rows_total));
+    }
 }
 
 #[derive(Clone)]
@@ -843,9 +995,36 @@ fn spreadsheet_grid(
     if height == 0 || width == 0 {
         return (Vec::new(), None);
     }
-    let end_row = start_row + height as u32 - 1;
-    let end_col = start_col + width as u32 - 1;
+    let text_at = |row, col| spreadsheet_cell_text(range.get((row, col)));
+    let regions = spreadsheet_regions(
+        (start_row, start_col),
+        (start_row + height as u32 - 1, start_col + width as u32 - 1),
+        merges,
+        text_at,
+    );
+    let mut owner = vec![usize::MAX; width];
+    let rows: Vec<_> = (0..height)
+        .map(|row| {
+            spreadsheet_row(
+                row,
+                width,
+                &regions,
+                &mut owner,
+                |col| text_at(row, col),
+                false,
+            )
+        })
+        .collect();
+    let headers = spreadsheet_headers(&regions, &rows);
+    (rows, headers)
+}
 
+fn spreadsheet_regions(
+    (start_row, start_col): (u32, u32),
+    (end_row, end_col): (u32, u32),
+    merges: &[calamine::Dimensions],
+    text_at: impl Fn(usize, usize) -> String,
+) -> Vec<GridMerge> {
     let mut regions = Vec::new();
     for merge in merges {
         if merge.start.0 > merge.end.0
@@ -868,30 +1047,40 @@ fn spreadsheet_grid(
         regions.push(GridMerge {
             start,
             end,
-            text: spreadsheet_cell_text(range.get(start)),
+            text: text_at(start.0, start.1),
         });
     }
+    regions
+}
 
-    let mut owner = vec![usize::MAX; height * width];
+fn spreadsheet_row(
+    row: usize,
+    width: usize,
+    regions: &[GridMerge],
+    owner: &mut [usize],
+    text_at: impl Fn(usize) -> String,
+    compact_empty: bool,
+) -> GridRow {
+    // One owner row keeps the old last-merge-wins projection and anchor jumps,
+    // without allocating height * width indices. XLSX bounds width at XFD.
+    owner.fill(usize::MAX);
     for (index, region) in regions.iter().enumerate() {
-        for row in region.start.0..=region.end.0 {
-            for col in region.start.1..=region.end.1 {
-                owner[row * width + col] = index;
-            }
+        if region.start.0 <= row && row <= region.end.0 {
+            owner[region.start.1..=region.end.1].fill(index);
         }
     }
-
-    let mut rows: Vec<GridRow> = Vec::with_capacity(height);
-    for row in 0..height {
-        let mut cells = GridRow::new();
-        let mut col = 0usize;
-        while col < width {
-            let index = owner[row * width + col];
-            if index == usize::MAX {
-                cells.push((spreadsheet_cell_text(range.get((row, col))), 1, 0));
-                col += 1;
-                continue;
+    let mut cells: GridRow = Vec::new();
+    let mut col = 0;
+    while col < width {
+        let index = owner[col];
+        if index == usize::MAX {
+            let text = text_at(col);
+            match (compact_empty && text.is_empty(), cells.last_mut()) {
+                (true, Some((previous, span, _))) if previous.is_empty() => *span += 1,
+                _ => cells.push((text, 1, 0)),
             }
+            col += 1;
+        } else {
             let region = &regions[index];
             if col == region.start.1 {
                 cells.push((region.text.clone(), region.end.1 - region.start.1 + 1, 0));
@@ -900,11 +1089,8 @@ fn spreadsheet_grid(
                 col += 1;
             }
         }
-        rows.push(cells);
     }
-
-    let headers = spreadsheet_headers(&regions, &rows);
-    (rows, headers)
+    cells
 }
 
 fn spreadsheet_cell_text(cell: Option<&calamine::Data>) -> String {
@@ -1204,6 +1390,95 @@ fn pptx_xml_to_text(xml: &str) -> anyhow::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn budget_book(sheet_data: &str, merges: &str) -> calamine::Xlsx<Cursor<Vec<u8>>> {
+        let worksheet = format!(
+            r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>{sheet_data}</sheetData>{merges}</worksheet>"#
+        );
+        let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        for (name, xml) in [
+            (
+                "[Content_Types].xml",
+                r#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/></Types>"#,
+            ),
+            (
+                "_rels/.rels",
+                r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>"#,
+            ),
+            (
+                "xl/workbook.xml",
+                r#"<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Budget" sheetId="1" r:id="rId1"/></sheets></workbook>"#,
+            ),
+            (
+                "xl/_rels/workbook.xml.rels",
+                r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/></Relationships>"#,
+            ),
+            ("xl/worksheets/sheet1.xml", &worksheet),
+        ] {
+            zip.start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(xml.as_bytes()).unwrap();
+        }
+        calamine::open_workbook_from_rs(Cursor::new(zip.finish().unwrap().into_inner())).unwrap()
+    }
+
+    #[test]
+    fn a_segment_budget_keeps_only_complete_rows() {
+        // Four source cells fit; two rows of three emitted segments do not.
+        let rows = r#"<row r="1"><c r="A1" t="inlineStr"><is><t>left</t></is></c><c r="C1" t="inlineStr"><is><t>right</t></is></c></row><row r="2"><c r="A2"><v>1</v></c><c r="C2"><v>2</v></c></row>"#;
+        let (_, rows_read, rows_total) =
+            xlsx_sheet(&mut budget_book(rows, ""), "Budget", 5).unwrap();
+        assert_eq!((rows_read, rows_total), (1, 2));
+    }
+
+    #[test]
+    fn dropping_a_row_reprojects_the_retained_title_and_merged_span() {
+        let title = r#"<row r="1"><c r="B1" t="inlineStr"><is><t>Title</t></is></c></row>"#;
+        let rest = r#"<row r="2"><c r="A2" t="inlineStr"><is><t xml:space="preserve"> </t></is></c><c r="C2" t="inlineStr"><is><t xml:space="preserve"> </t></is></c></row><row r="3"><c r="Z3" t="inlineStr"><is><t>note</t></is></c></row>"#;
+        let merges = r#"<mergeCells count="1"><mergeCell ref="B1:C1"/></mergeCells>"#;
+        // Four source cells fit, but the first two rows use 3 + 4 segments.
+        let (text, rows_read, rows_total) = xlsx_sheet(
+            &mut budget_book(&format!("{title}{rest}"), merges),
+            "Budget",
+            5,
+        )
+        .unwrap();
+        let (expected, _, _) = xlsx_sheet(&mut budget_book(title, merges), "Budget", 5).unwrap();
+        assert_eq!((rows_read, rows_total), (1, 3));
+        assert!(text.contains("Title"));
+        assert_eq!(text, expected);
+    }
+
+    #[test]
+    fn empty_runs_keep_the_physical_cell_and_merge_coordinates() {
+        let regions = [GridMerge {
+            start: (0, 2),
+            end: (0, 4),
+            text: "Merged".into(),
+        }];
+        let row = spreadsheet_row(
+            0,
+            10,
+            &regions,
+            &mut [usize::MAX; 10],
+            |col| match col {
+                0 => "Item".into(),
+                7 => "3".into(),
+                _ => String::new(),
+            },
+            true,
+        );
+        let expected = [
+            ("Item", 1),
+            ("", 1),
+            ("Merged", 3),
+            ("", 2),
+            ("3", 1),
+            ("", 2),
+        ]
+        .map(|(text, span)| (text.to_owned(), span, 0));
+        assert_eq!(row, expected);
+    }
 
     const DOC: &str = r#"<?xml version="1.0"?><w:document xmlns:w="x"><w:body>
 <w:p><w:r><w:t>Segment results</w:t></w:r></w:p>

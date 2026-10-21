@@ -53,6 +53,7 @@ enum Guard {
     MixedWithoutClue,
     Excluded,
     Repeated,
+    Markdown,
 }
 
 struct Case {
@@ -136,6 +137,10 @@ const CASES: &[Case] = &[
     Case {
         id: "repeated_mention_reuses_the_holder",
         check: Check::Guard(Guard::Repeated),
+    },
+    Case {
+        id: "markdown_clue_recalls_the_stored_spelling",
+        check: Check::Guard(Guard::Markdown),
     },
 ];
 
@@ -461,6 +466,7 @@ impl Fx {
         let shared = "Alex Lee submitted a report while Bob Chen from Finance approved it.";
         let conflicting = "Alex Lee from Platform Engineering submitted a report. Alex Lee from Finance submitted a report.";
         let text = match guard {
+            Markdown => "**Alex Lee** from Finance submitted a report.",
             Single | UngroundedQuote | MixedWithoutClue | Excluded => simple,
             Unrelated | CrossSentence => unrelated,
             SharedQuote | OverlappingQuotes => shared,
@@ -486,6 +492,16 @@ impl Fx {
             null
         ])];
         match guard {
+            Markdown => {
+                // Both the folded name and a legacy formatted spelling are exact
+                // candidates; limiting corroboration to one spelling loses the clue.
+                entities[0] = json!(["**Alex Lee**", "person", 1]);
+                statements[0][1] = json!("**Alex Lee**");
+                sqlx::query("UPDATE entities SET canonical_name='**Alex Lee**' WHERE id=$1")
+                    .bind(holders[1])
+                    .execute(&self.pool)
+                    .await?;
+            }
             Unrelated => {
                 entities.push(json!(["Finance", "department", 1]));
                 statements.push(json!([
@@ -584,8 +600,10 @@ impl Fx {
             .bind(self.chunks[2])
             .execute(&self.pool)
             .await?;
-        let expected =
-            holders[usize::from(matches!(guard, TypedToUntyped | UntypedToTyped | Repeated))];
+        let expected = holders[usize::from(matches!(
+            guard,
+            TypedToUntyped | UntypedToTyped | Repeated | Markdown
+        ))];
         if guard == Excluded {
             let result = utopia_store::resolution::resolve_mention(
                 &self.pool,
@@ -627,7 +645,7 @@ impl Fx {
             anyhow::ensure!(found.len() == 1, "each incoming source must have one owner");
             owners.extend(found);
         }
-        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM entities WHERE kb_id=$1 AND canonical_name='Alex Lee' AND merged_into IS NULL")
+        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM entities WHERE kb_id=$1 AND canonical_name IN ('Alex Lee','**Alex Lee**') AND merged_into IS NULL")
             .bind(self.kb).fetch_one(&self.pool).await?;
         let reviews: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM resolution_reviews WHERE kb_id=$1 AND status='pending'",

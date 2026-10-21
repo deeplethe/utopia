@@ -183,8 +183,24 @@ impl Fixture {
         token: Option<&str>,
         body: Vec<u8>,
     ) -> anyhow::Result<(StatusCode, Value)> {
-        let mut request = Request::post(format!("/api/v1/sources/{source}/statements"))
-            .header("Content-Type", "application/json");
+        self.send(&format!("/api/v1/sources/{source}/statements"), token, body)
+            .await
+    }
+
+    /// 推给 api 来源（`/ingest`），用它自己的密钥
+    async fn push_api(&self, body: &Value) -> anyhow::Result<(StatusCode, Value)> {
+        let path = format!("/api/v1/sources/{}/ingest", self.api_source);
+        self.send(&path, Some(&self.api_token), body.to_string().into_bytes())
+            .await
+    }
+
+    async fn send(
+        &self,
+        path: &str,
+        token: Option<&str>,
+        body: Vec<u8>,
+    ) -> anyhow::Result<(StatusCode, Value)> {
+        let mut request = Request::post(path).header("Content-Type", "application/json");
         if let Some(token) = token {
             request = request.header("Authorization", format!("Bearer {token}"));
         }
@@ -575,5 +591,148 @@ async fn the_same_payload_under_a_new_identity_is_a_second_observation() -> anyh
             "each observation keeps its own date"
         );
     }
+    f.cleanup().await
+}
+
+/// api 推送带了 `external_id`，身份就是这个 ID：另一个 ID 推来同样的字节不是把第一篇
+/// 改名过去（从前走「同内容出现在新路径 = 移动」，第一个 ID 就此消失），而是如实回一句
+/// 重复了谁，两个 ID 里已有的那篇原样留着
+#[tokio::test]
+async fn a_new_id_with_the_same_content_does_not_take_the_first_ids_document() -> anyhow::Result<()>
+{
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    let record = |id: &str| json!({ "filename": "record.txt", "content": "colour = blue", "external_id": id });
+    let (status, body) = f.push_api(&record("a")).await?;
+    assert_eq!(
+        (status, body["action"].as_str()),
+        (StatusCode::OK, Some("created")),
+        "{body}"
+    );
+    let first = documents::find_by_external_key(&f.pool, f.api_source, "api:a")
+        .await?
+        .expect("a is stored");
+
+    let (status, body) = f.push_api(&record("b")).await?;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body,
+        json!({ "action": "duplicate", "duplicate_of": first.id })
+    );
+    let kept = documents::find_by_external_key(&f.pool, f.api_source, "api:a").await?;
+    assert_eq!(kept.map(|d| d.id), Some(first.id), "a keeps its document");
+    f.cleanup().await
+}
+
+/// 同样的字节已经在库里别处（这里是一篇普通上传）：从前回 `unchanged`、什么也没建，
+/// 调用方以为它的 ID 已经落库
+#[tokio::test]
+async fn content_already_in_the_base_is_reported_as_a_duplicate() -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    crate::ingest_sources::ingest_upload(
+        &f.state,
+        f.kb,
+        "upload.txt",
+        "text/plain",
+        b"colour = green",
+        None,
+    )
+    .await?;
+    let upload: Uuid =
+        sqlx::query_scalar("SELECT id FROM documents WHERE kb_id = $1 AND source_id IS NULL")
+            .bind(f.kb)
+            .fetch_one(&f.pool)
+            .await?;
+
+    let push = json!({ "filename": "record.txt", "content": "colour = green", "external_id": "c" });
+    let (status, body) = f.push_api(&push).await?;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(
+        body,
+        json!({ "action": "duplicate", "duplicate_of": upload })
+    );
+    f.cleanup().await
+}
+
+/// 已有的 ID 改成另一篇文档的内容：从前撞上 `documents_kb_sha_idx`，推送以一条 SQL 错误
+/// 失败、来源被标成同步失败；现在回重复了谁，这个 ID 的文档保持原来的内容
+#[tokio::test]
+async fn an_update_to_another_documents_content_is_a_duplicate_not_a_failure() -> anyhow::Result<()>
+{
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    let push = |id: &str, content: &str| json!({ "filename": "record.txt", "content": content, "external_id": id });
+    f.push_api(&push("a", "colour = blue")).await?;
+    f.push_api(&push("b", "colour = red")).await?;
+    let a = documents::find_by_external_key(&f.pool, f.api_source, "api:a")
+        .await?
+        .expect("a is stored");
+
+    let (status, body) = f.push_api(&push("b", "colour = blue")).await?;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body, json!({ "action": "duplicate", "duplicate_of": a.id }));
+    let b = documents::find_by_external_key(&f.pool, f.api_source, "api:b")
+        .await?
+        .expect("b is still stored");
+    assert_ne!(b.sha256, a.sha256, "b keeps its own content");
+    f.cleanup().await
+}
+
+/// 拿 ID 当路径用的调用方这样改名：先墓碑旧 ID，再用同样的字节推新 ID。新 ID 接手那篇
+/// 被墓碑标记的文档（同一篇、历史还在），旧 ID 不再留着一篇「不在来源中」的孤本
+#[tokio::test]
+async fn a_new_id_with_a_tombstoned_ids_content_takes_over_its_document() -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    let record = |id: &str| json!({ "filename": "record.txt", "content": "colour = blue", "external_id": id });
+    f.push_api(&record("a")).await?;
+    let first = documents::find_by_external_key(&f.pool, f.api_source, "api:a")
+        .await?
+        .expect("a is stored");
+    f.push_api(&json!({ "filename": "record.txt", "external_id": "a", "deleted": true }))
+        .await?;
+
+    let (status, body) = f.push_api(&record("b")).await?;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body, json!({ "action": "moved" }));
+    let b = documents::find_by_external_key(&f.pool, f.api_source, "api:b")
+        .await?
+        .expect("b is stored");
+    assert_eq!((b.id, b.missing_since), (first.id, None));
+    let a = documents::find_by_external_key(&f.pool, f.api_source, "api:a").await?;
+    assert!(a.is_none(), "a is gone");
+    f.cleanup().await
+}
+
+/// 回收站里的 ID 推来另一篇文档的内容：先答重复，回收站里那篇不被恢复
+#[tokio::test]
+async fn a_trashed_id_pushed_with_another_documents_content_stays_in_the_trash(
+) -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    let push = |id: &str, content: &str| json!({ "filename": "record.txt", "content": content, "external_id": id });
+    f.push_api(&push("a", "colour = blue")).await?;
+    f.push_api(&push("b", "colour = red")).await?;
+    let a = documents::find_by_external_key(&f.pool, f.api_source, "api:a")
+        .await?
+        .expect("a is stored");
+    let b = documents::find_by_external_key(&f.pool, f.api_source, "api:b")
+        .await?
+        .expect("b is stored");
+    documents::delete(&f.pool, f.kb, a.id, None).await?;
+
+    let (status, body) = f.push_api(&push("a", "colour = red")).await?;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body, json!({ "action": "duplicate", "duplicate_of": b.id }));
+    let a = documents::find_by_external_key(&f.pool, f.api_source, "api:a")
+        .await?
+        .expect("a is still stored");
+    assert!(a.deleted_at.is_some(), "a stays in the trash");
     f.cleanup().await
 }

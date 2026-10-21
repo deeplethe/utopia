@@ -12,6 +12,7 @@ import {
   ROW_HOVER,
 } from "../ui";
 import { NextStep, nextStep, useReadiness } from "./NextStep";
+import { fetchMe } from "../authSession";
 
 const RESULT_PAGE = 10;
 
@@ -29,7 +30,7 @@ export function Search() {
   // 新查询换一批结果，从第一页看起
   useEffect(() => setPage(0), [query]);
 
-  const me = useQuery({ queryKey: ["me"], queryFn: api.me });
+  const me = useQuery({ queryKey: ["me"], queryFn: fetchMe });
   // 搜之前就该说清楚库里有没有东西可搜（#313）
   const readiness = useReadiness(kbId);
   const step = nextStep(readiness.data, {

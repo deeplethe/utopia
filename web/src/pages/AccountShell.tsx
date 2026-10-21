@@ -19,13 +19,14 @@ import {
 import { ServerDown } from "./ServerDown";
 import { HeaderActions } from "./HeaderActions";
 import { ADMIN_TABS } from "./Settings";
+import { fetchMe } from "../authSession";
 
 export function AccountShell() {
   const navigate = useNavigate();
   const loc = useLocation();
   const onAdmin = loc.pathname === "/admin";
   const adminTab = (loc.search as { tab?: string }).tab ?? "models";
-  const me = useQuery({ queryKey: ["me"], queryFn: api.me });
+  const me = useQuery({ queryKey: ["me"], queryFn: fetchMe });
   const health = useQuery({ queryKey: ["health"], queryFn: api.health });
   // 标题：`Utopia | Persona`——账户区整体一个名字，不逐页细分
   usePageTitle(S.app.name, S.account.titleTag);
