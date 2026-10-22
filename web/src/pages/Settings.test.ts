@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { modelCardStatus } from "./Settings";
+import { chatTestMessage, modelCardStatus } from "./Settings";
 
 describe("model card status", () => {
   it("prefers a fresh test result over a stale save confirmation", () => {
@@ -66,5 +66,24 @@ describe("model card status", () => {
     expect(
       modelCardStatus(null, null, { error: null, saved: false, dirty: false }),
     ).toEqual({ kind: "idle" });
+  });
+});
+
+describe("chat test message", () => {
+  it("gives each request shape its own line and names what refused it", () => {
+    const text = chatTestMessage({
+      ok: false,
+      reply: "OK",
+      error: "plain ok; tools: HTTP 400",
+      checks: { plain: { ok: true }, streaming: { ok: true }, tools: { ok: false, error: "tools are not supported" } },
+    });
+    const lines = text.split("\n");
+    expect(lines).toHaveLength(3);
+    expect(lines[2]).toContain("tools are not supported");
+    expect(lines[0]).not.toContain("refused");
+  });
+
+  it("falls back to one sentence when the server sends no checks", () => {
+    expect(chatTestMessage({ ok: false, error: "Not configured" })).toBe("Not configured");
   });
 });

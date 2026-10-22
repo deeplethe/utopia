@@ -449,6 +449,9 @@ pub struct LlmClient {
     /// 端点报过的上下文窗口（token），起初是 `u32::MAX`。同一个客户端（含它的克隆）此后
     /// 都按它算历史预算，只降不升；对话客户端按工作区留着，所以下一轮也记得（#964）
     context_window: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    /// 端点说过带工具的请求不收推理强度之后置位（#1353）：此后带工具的请求体都写
+    /// `reasoning_effort: "none"`，别的调用照旧按设置发。同一个客户端（含克隆）只吃一次拒绝
+    tools_without_effort: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// 建连多久算失败。
@@ -580,6 +583,7 @@ impl LlmClient {
             model: model.to_string(),
             reasoning_effort: None,
             context_window: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(u32::MAX)),
+            tools_without_effort: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             completion_ceiling: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(
                 MAX_COMPLETION_TOKENS,
             )),
@@ -875,8 +879,54 @@ impl LlmClient {
             if let Some(choice) = tool_choice {
                 body["tool_choice"] = choice.clone();
             }
+            if self
+                .tools_without_effort
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
+                body["reasoning_effort"] = json!("none");
+            }
         }
         body
+    }
+
+    /// 发一个带工具的请求。推理部署上，端点可能整个拒收带工具又带推理强度的请求体
+    /// （Azure：`Function tools with reasoning_effort are not supported`），而部署本身的默认
+    /// 强度就算数，不发这个字段也一样被拒——于是对话退回一步检索，治理的第二眼跑不了（#1353）。
+    /// 吃到这句 400 就记在客户端上，改发 `none` 重试一次；只动带工具的请求，抽取与对齐照旧
+    async fn post_tools(
+        &self,
+        messages: &[serde_json::Value],
+        tools: Option<&serde_json::Value>,
+        tool_choice: Option<&serde_json::Value>,
+        stream: bool,
+    ) -> anyhow::Result<reqwest::Response> {
+        use std::sync::atomic::Ordering;
+        loop {
+            let learned = self.tools_without_effort.load(Ordering::Relaxed);
+            let resp = self
+                .request("/chat/completions")
+                .json(&self.tools_body(messages, tools, tool_choice, stream))
+                .send()
+                .await
+                .map_err(Unreachable)?;
+            let status = resp.status();
+            if status.is_success() {
+                return Ok(resp);
+            }
+            let retry_after = retry_after_of(resp.headers());
+            let raw = resp.text().await.map_err(Unreachable)?;
+            let parsed = serde_json::from_str(&raw).unwrap_or_default();
+            if status == reqwest::StatusCode::BAD_REQUEST
+                && tools.is_some()
+                && !learned
+                && says_tools_refuse_effort(&err_detail(&parsed, &raw))
+            {
+                tracing::info!(model = %self.model, "端点不收带工具的推理强度，带工具的请求改发 none 并记住");
+                self.tools_without_effort.store(true, Ordering::Relaxed);
+                continue;
+            }
+            return Err(failure("LLM", status, retry_after, &parsed, &raw));
+        }
     }
 
     /// Exact serialized streaming request size, including model and protocol fields.
@@ -894,17 +944,7 @@ impl LlmClient {
         tools: Option<&serde_json::Value>,
         tool_choice: Option<&serde_json::Value>,
     ) -> anyhow::Result<AssistantTurn> {
-        let resp = self
-            .request("/chat/completions")
-            .json(&self.tools_body(messages, tools, tool_choice, false))
-            .send()
-            .await
-            .map_err(Unreachable)?;
-        let status = resp.status();
-        let retry_after = retry_after_of(resp.headers());
-        if !status.is_success() {
-            return Err(response_failure("LLM", status, retry_after, resp).await?);
-        }
+        let resp = self.post_tools(messages, tools, tool_choice, false).await?;
         let body: serde_json::Value = resp.json().await.map_err(Unreachable)?;
         let msg = &body["choices"][0]["message"];
         if msg.is_null() {
@@ -961,17 +1001,7 @@ impl LlmClient {
         tools: Option<&serde_json::Value>,
         tool_choice: Option<&serde_json::Value>,
     ) -> anyhow::Result<impl Stream<Item = anyhow::Result<ToolStreamItem>> + Send + use<>> {
-        let resp = self
-            .request("/chat/completions")
-            .json(&self.tools_body(messages, tools, tool_choice, true))
-            .send()
-            .await
-            .map_err(Unreachable)?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let retry_after = retry_after_of(resp.headers());
-            return Err(response_failure("LLM", status, retry_after, resp).await?);
-        }
+        let resp = self.post_tools(messages, tools, tool_choice, true).await?;
 
         let mut bytes = resp.bytes_stream();
         let stream = async_stream::try_stream! {
@@ -1266,6 +1296,13 @@ fn err_detail(body: &serde_json::Value, raw: &str) -> String {
             (!raw.is_empty()).then(|| raw.chars().take(MAX_ERROR_DETAIL_CHARS).collect())
         })
         .unwrap_or_else(|| "unknown error".to_string())
+}
+
+/// 端点说不说「带工具的请求不收推理强度」。只有措辞可认：Azure 给的 code 是笼统的
+/// `invalid_request_error`。两样都得提到——只说工具或只说推理强度的 400 是别的毛病
+fn says_tools_refuse_effort(detail: &str) -> bool {
+    let d = detail.to_lowercase();
+    d.contains("reasoning_effort") && (d.contains("tool") || d.contains("function"))
 }
 
 /// 响应体说不说这是余额问题。
@@ -1565,6 +1602,118 @@ mod tests {
             assert!(context_too_long(&err).is_none());
             assert!(rejected(&err).is_some());
         }
+    }
+
+    #[test]
+    fn a_400_about_tools_and_reasoning_effort_is_recognised_and_others_are_not() {
+        assert!(super::says_tools_refuse_effort(
+            "Function tools with reasoning_effort are not supported for gpt-x in /v1/chat/completions. Please use /v1/responses instead."
+        ));
+        assert!(!super::says_tools_refuse_effort(
+            "Unsupported value: 'reasoning_effort' does not support 'minimal'"
+        ));
+        assert!(!super::says_tools_refuse_effort(
+            "Invalid 'tools[0].function.name'"
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_tool_request_refused_for_its_reasoning_effort_retries_with_none_and_remembers() {
+        use wiremock::matchers::{body_partial_json, method};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        let ok = serde_json::json!({ "choices": [{ "message": { "role": "assistant", "content": "pong" }, "finish_reason": "stop" }] });
+        Mock::given(method("POST"))
+            .and(body_partial_json(
+                serde_json::json!({ "reasoning_effort": "none" }),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(ok.clone()))
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(wiremock::matchers::body_string_contains("\"tools\""))
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({ "error": {
+                "message": "Function tools with reasoning_effort are not supported for gpt-x in /v1/chat/completions.",
+                "type": "invalid_request_error" } })))
+            .with_priority(2)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(ok))
+            .with_priority(3)
+            .mount(&server)
+            .await;
+        let client =
+            LlmClient::new(&server.uri(), None, "m").with_reasoning_effort(Some("low".into()));
+        let tool = serde_json::json!([{ "type": "function", "function": { "name": "ping", "parameters": { "type": "object", "properties": {} } } }]);
+        let ask = [serde_json::json!({ "role": "user", "content": "ping" })];
+        assert_eq!(
+            client
+                .chat_tools(&ask, &tool)
+                .await
+                .unwrap()
+                .content
+                .as_deref(),
+            Some("pong")
+        );
+        assert_eq!(
+            client
+                .clone()
+                .chat_tools(&ask, &tool)
+                .await
+                .unwrap()
+                .content
+                .as_deref(),
+            Some("pong")
+        );
+        let plain = [ChatMessage {
+            role: "user".into(),
+            content: "hi".into(),
+        }];
+        client.chat(&plain).await.unwrap();
+        let sent: Vec<serde_json::Value> = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| serde_json::from_slice(&r.body).unwrap())
+            .collect();
+        let efforts: Vec<_> = sent
+            .iter()
+            .map(|b| (b.get("tools").is_some(), b["reasoning_effort"].clone()))
+            .collect();
+        assert_eq!(
+            efforts,
+            [
+                (true, serde_json::json!("low")),  // refused once
+                (true, serde_json::json!("none")), // retried
+                (true, serde_json::json!("none")), // remembered, also by a clone
+                (false, serde_json::json!("low")), // a call without tools keeps the setting
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn another_400_on_a_tool_request_is_not_retried() {
+        use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(
+                serde_json::json!({ "error": { "message": "Invalid 'tools[0].function.name'" } }),
+            ))
+            .mount(&server)
+            .await;
+        let client = LlmClient::new(&server.uri(), None, "m");
+        let tool = serde_json::json!([{ "type": "function", "function": { "name": "bad name" } }]);
+        assert!(client
+            .chat_tools(
+                &[serde_json::json!({ "role": "user", "content": "x" })],
+                &tool
+            )
+            .await
+            .is_err());
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
     }
 
     #[test]

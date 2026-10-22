@@ -236,7 +236,64 @@ pub async fn put_transcribe(
     Ok(Json(json!({ "ok": true, "requeued": requeued })))
 }
 
-/// 连通性测试：对话发一条最小消息；embedding 试算一条并返回维度；版面识别服务问一声健康。
+/// 对话模型按任务真正发出的三种请求各试一次（#1354）：普通一问；抽取那种流式、带完成上限、
+/// 温度 0 的一问；带一个工具的一问。只发普通一问的话，拒收 `max_tokens`、`temperature` 或工具的
+/// 端点照样「测试通过」，毛病要等到抽取任务成片失败、对话悄悄退回一步检索时才露出来。
+/// 普通一问就失败的，端点本身不通，后两问不再发，免得同一个错报三遍。每问只要一个词，
+/// 托管模型上花不了几个 token。后两问同时发，每一问都有 [`PROBE_LIMIT`] 的上限：接了连接却
+/// 不说话的端点，最多让人等两个上限，而不是三次五分钟的沉默超时
+async fn chat_checks(client: &utopia_llm::LlmClient) -> serde_json::Value {
+    let msg = [ChatMessage {
+        role: "user".into(),
+        content: "Reply with exactly one word: OK".into(),
+    }];
+    let reply = match limited(client.chat(&msg)).await {
+        Ok(reply) => reply.chars().take(50).collect::<String>(),
+        Err(e) => return json!({ "ok": false, "error": e.to_string() }),
+    };
+    let tool = json!([{ "type": "function", "function": {
+        "name": "ping", "description": "Answers pong.",
+        "parameters": { "type": "object", "properties": {} } } }]);
+    let ask = [json!({ "role": "user", "content": "Call the ping tool." })];
+    let (streaming, tools) = tokio::join!(
+        limited(async { client.chat_at_streaming(&msg, Some(0.0)).await.map(|_| ()) }),
+        limited(async { client.chat_tools(&ask, &tool).await.map(|_| ()) }),
+    );
+    let check = |r: &anyhow::Result<()>| match r {
+        Ok(()) => json!({ "ok": true }),
+        Err(e) => json!({ "ok": false, "error": e.to_string() }),
+    };
+    let failed: Vec<String> = [("streaming", &streaming), ("tools", &tools)]
+        .into_iter()
+        .filter_map(|(name, r)| r.as_ref().err().map(|e| format!("{name}: {e}")))
+        .collect();
+    let mut out = json!({
+        "ok": failed.is_empty(),
+        "reply": reply,
+        "checks": { "plain": { "ok": true }, "streaming": check(&streaming), "tools": check(&tools) },
+    });
+    if !failed.is_empty() {
+        out["error"] = json!(format!("plain ok; {}", failed.join("; ")));
+    }
+    out
+}
+
+/// 设置页测试里每一问的上限
+const PROBE_LIMIT: std::time::Duration = std::time::Duration::from_secs(45);
+
+async fn limited<T>(f: impl std::future::Future<Output = anyhow::Result<T>>) -> anyhow::Result<T> {
+    tokio::time::timeout(PROBE_LIMIT, f)
+        .await
+        .unwrap_or_else(|_| {
+            Err(anyhow::anyhow!(
+                "no answer within {} s",
+                PROBE_LIMIT.as_secs()
+            ))
+        })
+}
+
+/// 连通性测试：对话按任务的三种请求形状各试一次（见 [`chat_checks`]）；embedding 试算一条并
+/// 返回维度；版面识别服务问一声健康。
 pub async fn test(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
@@ -252,20 +309,9 @@ pub async fn test(
         ));
     };
 
-    let chat_result = match llm_util::chat_client(&s) {
+    let chat_result = match llm_util::chat_probe_client(&s) {
         None => json!({ "ok": false, "error": "Not configured" }),
-        Some(client) => {
-            let msg = [ChatMessage {
-                role: "user".into(),
-                content: "Reply with exactly one word: OK".into(),
-            }];
-            match client.chat(&msg).await {
-                Ok(reply) => {
-                    json!({ "ok": true, "reply": reply.chars().take(50).collect::<String>() })
-                }
-                Err(e) => json!({ "ok": false, "error": e.to_string() }),
-            }
-        }
+        Some(client) => chat_checks(&client).await,
     };
 
     let embed_result = match llm_util::embed_client(&s) {
@@ -299,4 +345,100 @@ pub async fn test(
         "ocr": ocr_result,
         "transcribe": transcribe_result,
     })))
+}
+
+#[cfg(test)]
+mod tests {
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, Request, ResponseTemplate};
+
+    /// 只认普通与流式、见到工具就 400 的端点；`down` 时什么都 500。收到的请求体由测试逐个查
+    async fn endpoint(down: bool) -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(move |r: &Request| {
+                let body: serde_json::Value = serde_json::from_slice(&r.body).unwrap();
+                if down {
+                    return ResponseTemplate::new(500).set_body_string("down");
+                }
+                if body.get("tools").is_some() {
+                    return ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                        "error": { "message": "tools are not supported by this deployment" } }));
+                }
+                if body["stream"] == true {
+                    let frame = serde_json::json!({ "choices": [{ "index": 0, "delta": { "content": "OK" }, "finish_reason": "stop" }] });
+                    return ResponseTemplate::new(200)
+                        .insert_header("content-type", "text/event-stream")
+                        .set_body_string(format!("data: {frame}\n\ndata: [DONE]\n\n"));
+                }
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "choices": [{ "message": { "role": "assistant", "content": "OK" }, "finish_reason": "stop" }] }))
+            })
+            .mount(&server)
+            .await;
+        server
+    }
+
+    async fn bodies(server: &MockServer) -> Vec<serde_json::Value> {
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| serde_json::from_slice(&r.body).unwrap())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn each_job_shape_is_sent_and_a_refused_one_is_named() {
+        let server = endpoint(false).await;
+        let out =
+            super::chat_checks(&utopia_llm::LlmClient::new(&server.uri(), None, "scripted")).await;
+        assert_eq!(out["ok"], false, "{out}");
+        assert_eq!(out["checks"]["plain"]["ok"], true);
+        assert_eq!(out["checks"]["streaming"]["ok"], true, "{out}");
+        assert_eq!(out["checks"]["tools"]["ok"], false);
+        let error = out["error"].as_str().unwrap();
+        assert!(error.starts_with("plain ok; tools: "), "{error}");
+        assert!(!error.contains("streaming:"), "{error}");
+
+        let sent = bodies(&server).await;
+        assert_eq!(sent.len(), 3, "{sent:?}");
+        let plain = &sent[0];
+        assert!(
+            plain["stream"] == false
+                && plain.get("tools").is_none()
+                && plain.get("max_tokens").is_none(),
+            "{plain}"
+        );
+        // 后两问同时发，到达的先后不定
+        let streamed = sent
+            .iter()
+            .find(|b| b["stream"] == true)
+            .expect("a streamed request");
+        assert_eq!(streamed["temperature"], 0.0, "{streamed}");
+        assert!(
+            streamed["max_tokens"].as_u64().is_some_and(|n| n > 0),
+            "the job's completion ceiling rides along: {streamed}"
+        );
+        let tooled = sent
+            .iter()
+            .find(|b| b.get("tools").is_some())
+            .expect("a request with a tool");
+        assert_eq!(tooled["tools"][0]["function"]["name"], "ping");
+    }
+
+    #[tokio::test]
+    async fn an_endpoint_that_is_down_is_reported_once() {
+        let server = endpoint(true).await;
+        let out =
+            super::chat_checks(&utopia_llm::LlmClient::new(&server.uri(), None, "scripted")).await;
+        assert_eq!(out["ok"], false);
+        assert!(out.get("checks").is_none(), "{out}");
+        assert_eq!(
+            bodies(&server).await.len(),
+            1,
+            "the streamed and tool shapes are not sent when the plain one fails"
+        );
+    }
 }

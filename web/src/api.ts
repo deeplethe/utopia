@@ -2755,7 +2755,13 @@ export const api = {
 
   testSettings: (workspaceId: string) =>
     request<{
-      chat: { ok: boolean; reply?: string; error?: string };
+      /** `ok` only when all three request shapes the jobs send pass; `checks` has each one (#1354) */
+      chat: {
+        ok: boolean;
+        reply?: string;
+        error?: string;
+        checks?: Record<"plain" | "streaming" | "tools", { ok: boolean; error?: string }>;
+      };
       embed: { ok: boolean; dim?: number; error?: string };
       ocr?: { ok: boolean; version?: string | null; error?: string };
       transcribe?: { ok: boolean; error?: string };
