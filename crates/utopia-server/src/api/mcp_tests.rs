@@ -193,7 +193,17 @@ impl Fixture {
             .await?;
         let dir = self.dir.clone();
         drop(self);
-        std::fs::remove_dir_all(dir)?;
+        // Tantivy can finish a background file operation after the state is dropped.
+        // Retry only that teardown race; persistent or unrelated IO errors still fail.
+        for attempt in 0..10 {
+            match std::fs::remove_dir_all(&dir) {
+                Ok(()) => break,
+                Err(e) if e.kind() == std::io::ErrorKind::DirectoryNotEmpty && attempt < 9 => {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
         Ok(())
     }
 }
