@@ -1,4 +1,5 @@
 import { ExpressionDraftLab } from "./pages/ExpressionDraftLab";
+import { Pentasio } from "./pages/pentasio/Pentasio";
 import { docSearch } from "./quotes";
 import {
   createRootRoute,
@@ -33,6 +34,13 @@ const loginRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/login",
   component: Login,
+});
+
+// Pentasio 客户仪表盘：独立顶层路由，不挂 Shell、不要求登录/后端
+const pentasioRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/pentasio",
+  component: Pentasio,
 });
 
 // 公共法务页：登录前可达
@@ -292,6 +300,7 @@ const legacyKbSettingsRoute = createRoute({
 
 const routeTree = rootRoute.addChildren([
   loginRoute,
+  pentasioRoute,
   privacyRoute,
   termsRoute,
   settingsRoute,

@@ -39,3 +39,6 @@ _*.txt
 /scripts/bench/corpora/contracts/edgar/
 /scripts/bench/corpora/contracts/cuad/
 /scripts/bench/corpora/contracts/lease-kb-*.json
+
+# Local developer credentials (devAuth.ts); never commit
+web/.env.local
