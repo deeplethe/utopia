@@ -55,6 +55,24 @@ export type ModelCardStatus =
   | { kind: "saved" }
   | { kind: "idle" };
 
+/** 对话卡的测试结论：三种请求形状各一行，被拒的那一行带上端点的原话，于是一眼看得出
+ *  是哪个参数不收（#1354）。旧服务端不回 `checks` 时退回一整句 */
+export function chatTestMessage(chat: {
+  ok: boolean;
+  reply?: string;
+  error?: string;
+  checks?: Record<"plain" | "streaming" | "tools", { ok: boolean; error?: string }>;
+}): string {
+  if (!chat.checks) return chat.ok ? S.settings.ok(chat.reply ?? "OK") : (chat.error ?? "");
+  return (["plain", "streaming", "tools"] as const)
+    .map((shape) => {
+      const c = chat.checks![shape];
+      const verdict = c.ok ? S.settings.chatShapeOk : S.settings.chatShapeRefused(c.error ?? "");
+      return `${S.settings.chatShapes[shape]}: ${verdict}`;
+    })
+    .join("\n");
+}
+
 export function modelCardStatus(
   test: ModelCardTest,
   testError: string | null,
@@ -1053,9 +1071,7 @@ export function Settings() {
     test.data
       ? {
           ok: test.data.chat.ok,
-          message: test.data.chat.ok
-            ? S.settings.ok(test.data.chat.reply ?? "OK")
-            : (test.data.chat.error ?? ""),
+          message: chatTestMessage(test.data.chat),
         }
       : null,
     testTransportError,
@@ -1121,7 +1137,7 @@ export function Settings() {
     ) : s.kind === "unsaved" ? (
       S.settings.unsaved
     ) : (
-      <span className={s.tone}>{s.text}</span>
+      <span className={`${s.tone} whitespace-pre-line`}>{s.text}</span>
     );
   /* 读取模型那两张卡存完多说一句：等着它的文件开始读了几份 */
   const readerNote = (s: ModelCardStatus, requeued: number | undefined) =>

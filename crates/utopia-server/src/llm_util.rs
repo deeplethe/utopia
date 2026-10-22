@@ -23,6 +23,25 @@ pub fn chat_client(s: &LlmSettings) -> Option<LlmClient> {
     )
 }
 
+/// 设置页「测试」用的对话客户端：设置与 [`chat_client`] 相同，超时短得多（#1354 评审）。
+/// 任务的客户端容得下五分钟的沉默，是因为推理模型先想再答；测试只问一个词，一个接了
+/// 连接却不说话的端点不该让人在设置页干等一刻钟
+pub fn chat_probe_client(s: &LlmSettings) -> Option<LlmClient> {
+    if !s.chat_ready() {
+        return None;
+    }
+    Some(
+        LlmClient::with_timeouts(
+            s.chat_base_url.as_deref()?,
+            s.chat_api_key.as_deref(),
+            s.chat_model.as_deref()?,
+            std::time::Duration::from_secs(10),
+            std::time::Duration::from_secs(30),
+        )
+        .with_reasoning_effort(s.chat_reasoning_effort.clone()),
+    )
+}
+
 /// 对话模型的设置：地址、密钥、模型、推理力度。任一项变了就是另一个客户端
 type ChatConfig = (
     Option<String>,
