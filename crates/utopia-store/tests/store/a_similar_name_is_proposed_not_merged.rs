@@ -661,8 +661,7 @@ async fn a_described_entity_is_not_paired_by_containment() -> anyhow::Result<()>
     run
 }
 
-/// A Latin name is contained only at word edges (#1104): `token` is not a short form of
-/// `SERVICE_TOKEN`. CJK keeps the substring match. Both directions, on names and on aliases
+/// Latin names match only at word edges (#1104). CJK keeps the substring match
 #[tokio::test]
 async fn a_latin_name_is_contained_only_at_word_edges() -> anyhow::Result<()> {
     let Some(url) = utopia_store::test_db::url() else {
@@ -683,7 +682,7 @@ async fn a_latin_name_is_contained_only_at_word_edges() -> anyhow::Result<()> {
                 &[],
             )
         };
-        // (stored name, alias of the stored entity, new name, paired)
+        // (stored, its alias, new, paired)
         for (stored, alias, new, want) in [
             ("SERVICE_TOKEN", None, "token", false),
             ("install_scheduled_task.ps1", None, "task", false),

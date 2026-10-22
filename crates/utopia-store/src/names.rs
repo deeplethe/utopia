@@ -277,18 +277,15 @@ fn digit_runs(name: &str) -> Vec<String> {
     runs
 }
 
-/// Characters that join into one Latin word: ASCII and accented Latin letters, combining accents,
-/// ASCII digits, `_`.
-///
-/// The ranges are written out because Postgres `\w`, `[[:alnum:]]` and `\y` follow the database
-/// locale, and a UTF-8 locale counts CJK characters as letters. CJK must keep the substring match.
+/// Latin word characters. The ranges are explicit: Postgres `\w` and `[[:alnum:]]` count CJK as
+/// letters in a UTF-8 locale.
 const LATIN_WORD: &[(char, char)] = &[
     ('0', '9'),
     ('A', 'Z'),
     ('_', '_'),
     ('a', 'z'),
     ('\u{C0}', '\u{D6}'),
-    // Combining accents: a decomposed `é` is still part of its word
+    // Combining accents, for a decomposed `é`
     ('\u{300}', '\u{36F}'),
     ('\u{D8}', '\u{F6}'),
     ('\u{F8}', '\u{24F}'),
@@ -299,18 +296,14 @@ fn is_latin_word(c: char) -> bool {
     LATIN_WORD.iter().any(|&(lo, hi)| (lo..=hi).contains(&c))
 }
 
-/// `shorter` occurs in `longer`, and at each edge of `shorter` that is a Latin word character,
-/// the character just beyond it in `longer` is not one (#1104).
-///
-/// `token` is not in `service_token`, `area` is not in `areascorecard`, `holmes` is in
-/// `sherlock holmes`. An edge in another script has no boundary, so a CJK short form still
-/// matches inside its full name. [`word_edges_pattern`] and `word_edges_sql` are the same rule in SQL.
+/// `shorter` is in `longer`, and no Latin edge of it touches a Latin word character (#1104).
+/// `token` is not in `service_token`. `holmes` is in `sherlock holmes`. CJK edges have no rule.
 pub fn contains_at_word_edges(longer: &str, shorter: &str) -> bool {
-    // An empty name is in every name, as `LIKE` and the regex say
+    // Same as SQL: an empty name is in every name
     let (Some(first), Some(last)) = (shorter.chars().next(), shorter.chars().last()) else {
         return true;
     };
-    // Every start, not `match_indices`: a failed match can overlap one that passes, as the regex sees
+    // Not `match_indices`: a match can overlap a failed one
     longer.char_indices().any(|(at, _)| {
         if !longer[at..].starts_with(shorter) {
             return false;
@@ -336,7 +329,7 @@ fn word_class() -> String {
         .collect()
 }
 
-/// A Postgres regex that matches where `name` occurs at word edges.
+/// The rule as a Postgres regex for `name`.
 pub fn word_edges_pattern(name: &str) -> String {
     let (Some(first), Some(last)) = (name.chars().next(), name.chars().last()) else {
         return String::new();
@@ -358,8 +351,7 @@ pub fn word_edges_pattern(name: &str) -> String {
     p
 }
 
-/// [`word_edges_pattern`] as an SQL expression, for a name that is stored in a column.
-/// `expr` is SQL text from the caller, never user input.
+/// The rule as SQL, for a name in a column. `expr` must be trusted SQL.
 pub(crate) fn word_edges_sql(expr: &str) -> String {
     let class = word_class();
     format!(
@@ -414,7 +406,7 @@ pub(crate) async fn other_names_many(
 mod tests {
     use super::{contains_at_word_edges, numbers_differ, word_edges_pattern, word_edges_sql};
 
-    /// (longer, shorter, contained). The Rust rule and both SQL forms must give the same answer
+    /// (longer, shorter, contained), for Rust and both SQL forms
     const WORD_EDGES: &[(&str, &str, bool)] = &[
         ("service_token", "token", false),
         ("install_scheduled_task.ps1", "task", false),

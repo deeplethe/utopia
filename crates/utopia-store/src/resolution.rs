@@ -877,7 +877,7 @@ async fn containment_reviews(
     .bind(MIN_CONTAIN_CHARS)
     .bind(CONTAIN_SCAN_LIMIT)
     .bind(like_escaped(&lower))
-    // A Latin edge of a name must be a word edge in the other name (#1104)
+    // Word edges for Latin names (#1104)
     .bind(crate::names::word_edges_pattern(&lower))
     .fetch_all(pool)
     .await?;
