@@ -300,6 +300,9 @@ async fn apply_open_extraction(
     touched_names: &mut HashSet<String>,
 ) -> anyhow::Result<()> {
     // ---- 东西：有名字的走身份消解，被描述的建成没有名字事实的实体 ----
+    // Object-only mentions and rejected quotes deliberately supply None, including
+    // to the old #331 tie/grey-zone paths: another subject's chunk is not their clue.
+    // With no owned clue, profile tiers and their ordinary review requests decide.
     let evidence = mention_evidence(extraction, &chunk.text);
     let mut response_claims: HashMap<String, Vec<Uuid>> = HashMap::new();
     let mut local: HashMap<String, Uuid> = HashMap::new();

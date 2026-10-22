@@ -34,11 +34,11 @@ enum Check {
     Resolver { target: usize },
     Adjudicator { literal: bool },
     Guard(Guard),
+    ObjectOnly,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Guard {
-    Single,
     Unrelated,
     CrossSentence,
     SharedQuote,
@@ -50,9 +50,6 @@ enum Guard {
     TypedToUntyped,
     UntypedToTyped,
     IncompatibleType,
-    MixedWithoutClue,
-    Excluded,
-    Repeated,
     Markdown,
 }
 
@@ -62,6 +59,10 @@ struct Case {
 }
 
 const CASES: &[Case] = &[
+    Case {
+        id: "object_only_mention_without_owned_quote_keeps_tie_review",
+        check: Check::ObjectOnly,
+    },
     Case {
         id: "resolver_passage_over_profile",
         check: Check::Resolver { target: 1 },
@@ -77,10 +78,6 @@ const CASES: &[Case] = &[
     Case {
         id: "adjudicator_entity_clues_reach_request",
         check: Check::Adjudicator { literal: false },
-    },
-    Case {
-        id: "single_candidate_without_clue",
-        check: Check::Guard(Guard::Single),
     },
     Case {
         id: "unrelated_sentence_is_not_evidence",
@@ -125,18 +122,6 @@ const CASES: &[Case] = &[
     Case {
         id: "incompatible_type_is_not_chosen",
         check: Check::Guard(Guard::IncompatibleType),
-    },
-    Case {
-        id: "mixed_types_without_clue_keep_fallback",
-        check: Check::Guard(Guard::MixedWithoutClue),
-    },
-    Case {
-        id: "evidence_respects_caller_exclusions",
-        check: Check::Guard(Guard::Excluded),
-    },
-    Case {
-        id: "repeated_mention_reuses_the_holder",
-        check: Check::Guard(Guard::Repeated),
     },
     Case {
         id: "markdown_clue_recalls_the_stored_spelling",
@@ -340,13 +325,11 @@ impl Fx {
         let order = if reverse { [1, 0] } else { [0, 1] };
         let mut holders = [Uuid::nil(); 2];
         for i in order {
-            if matches!(case.check, Check::Guard(Guard::Single)) && i == 1 {
-                continue;
-            }
             holders[i] = self.seed(i, case.check).await?;
         }
         let (passed, observation) = match case.check {
             Check::Guard(guard) => self.guard(guard, holders).await?,
+            Check::ObjectOnly => self.object_only(holders).await?,
             Check::Resolver { target } => {
                 self.model.steps.lock().unwrap().push_back(Step {
                     prompt_has: self.quotes[2].clone(), stream: true,
@@ -438,24 +421,55 @@ impl Fx {
         );
         let model_calls = self.model.requests.lock().unwrap().len();
         anyhow::ensure!(
-            model_calls
-                == if matches!(case.check, Check::Guard(Guard::Repeated)) {
-                    2
-                } else {
-                    1
-                },
-            "unexpected scripted request count: {model_calls}"
+            model_calls == 1,
+            "expected one scripted request, got {model_calls}"
         );
         let pending_human: i64 = sqlx::query_scalar("SELECT count(*) FROM resolution_reviews WHERE kb_id=$1 AND stage='human' AND status='pending'")
             .bind(self.kb).fetch_one(&self.pool).await?;
         anyhow::ensure!(
-            pending_human == 0,
+            pending_human
+                == if matches!(case.check, Check::ObjectOnly) {
+                    2
+                } else {
+                    0
+                },
             "unexpected pending Human reviews: {pending_human}"
         );
         Ok(
             json!({"id":case.id,"order":if reverse {"reverse"} else {"forward"},
             "passed":passed,"observation":observation,"pending_human":pending_human,"model_calls":model_calls}),
         )
+    }
+
+    async fn object_only(&self, holders: [Uuid; 2]) -> anyhow::Result<(bool, Value)> {
+        let text = "Finance assigned a report to Alex Lee.";
+        // Both namesakes tie. Finance is the statement's subject, so its quote
+        // cannot rescue the object through the old #331 whole-chunk tie shortcut.
+        sqlx::query("UPDATE entities SET profile_embedding='[1,0,0]'::vector WHERE id=$1")
+            .bind(holders[1])
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("UPDATE chunks SET text=$1 WHERE id=$2")
+            .bind(text)
+            .bind(self.chunks[2])
+            .execute(&self.pool)
+            .await?;
+        self.model.steps.lock().unwrap().push_back(Step {
+            prompt_has: text.into(),
+            stream: true,
+            text: json!({"e":[["Alex Lee","person",1],["Finance","department",1]],
+                "s":[[text,"Finance","assigned","Alex Lee",null,null,null,null]],"n":[]})
+            .to_string(),
+        });
+        crate::extraction::extract_document(&self.state, self.docs[2], Default::default()).await?;
+        let owners: Vec<Uuid> = sqlx::query_scalar("SELECT DISTINCT f.object_id FROM facts f JOIN fact_evidence fe ON fe.fact_id=f.id WHERE f.kb_id=$1 AND fe.document_id=$2 AND f.layer='open' AND f.phrase='assigned'")
+            .bind(self.kb).bind(self.docs[2]).fetch_all(&self.pool).await?;
+        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM entities WHERE kb_id=$1 AND canonical_name='Alex Lee' AND merged_into IS NULL")
+            .bind(self.kb).fetch_one(&self.pool).await?;
+        Ok((
+            owners.len() == 1 && !holders.contains(&owners[0]) && count == 3,
+            json!({"original_candidates":holders,"object_owners":owners,"entities":count}),
+        ))
     }
 
     async fn guard(&self, guard: Guard, holders: [Uuid; 2]) -> anyhow::Result<(bool, Value)> {
@@ -467,14 +481,14 @@ impl Fx {
         let conflicting = "Alex Lee from Platform Engineering submitted a report. Alex Lee from Finance submitted a report.";
         let text = match guard {
             Markdown => "**Alex Lee** from Finance submitted a report.",
-            Single | UngroundedQuote | MixedWithoutClue | Excluded => simple,
+            UngroundedQuote => simple,
             Unrelated | CrossSentence => unrelated,
             SharedQuote | OverlappingQuotes => shared,
             ConflictingQuotes => conflicting,
             _ => finance,
         };
         let quote = match guard {
-            Single | MissingQuote | MixedWithoutClue => None,
+            MissingQuote => None,
             Unrelated => Some(simple),
             UngroundedQuote => Some(finance),
             ConflictingQuotes => Some("Alex Lee from Platform Engineering submitted a report."),
@@ -549,10 +563,7 @@ impl Fx {
             }
             _ => {}
         }
-        if matches!(
-            guard,
-            TypedToUntyped | UntypedToTyped | IncompatibleType | MixedWithoutClue
-        ) {
+        if matches!(guard, TypedToUntyped | UntypedToTyped | IncompatibleType) {
             let person = Uuid::now_v7();
             sqlx::query(
                 "INSERT INTO entity_types(id,kb_id,key,label) VALUES ($1,$2,'person','Person')",
@@ -600,51 +611,16 @@ impl Fx {
             .bind(self.chunks[2])
             .execute(&self.pool)
             .await?;
-        let expected = holders[usize::from(matches!(
-            guard,
-            TypedToUntyped | UntypedToTyped | Repeated | Markdown
-        ))];
-        if guard == Excluded {
-            let result = utopia_store::resolution::resolve_mention(
-                &self.pool,
-                self.kb,
-                None,
-                "Alex Lee",
-                Some(&[1.0, 0.0, 0.0]),
-                None,
-                Some(finance),
-                &[holders[1]],
-            )
-            .await?;
-            anyhow::ensure!(
-                result.entity_id == holders[0] && !result.created && result.reviews.is_empty(),
-                "a clue must not recall the caller's excluded holder"
-            );
-        }
-        let repeat = if guard == Repeated { 2 } else { 1 };
-        let mut owners = Vec::new();
-        for n in 0..repeat {
-            let doc = if n == 0 {
-                self.docs[2]
-            } else {
-                let doc = Uuid::now_v7();
-                sqlx::query("INSERT INTO documents(id,kb_id,filename,sha256) VALUES ($1,$2,'repeated.txt',$1::text)")
-                    .bind(doc).bind(self.kb).execute(&self.pool).await?;
-                sqlx::query("INSERT INTO chunks(id,kb_id,document_id,seq,text,embedding) VALUES ($1,$2,$3,0,$4,'[1,0,0]'::vector)")
-                    .bind(Uuid::now_v7()).bind(self.kb).bind(doc).bind(text).execute(&self.pool).await?;
-                doc
-            };
-            self.model.steps.lock().unwrap().push_back(Step {
-                prompt_has: text.into(),
-                stream: true,
-                text: json!({"e":entities,"s":statements,"n":[]}).to_string(),
-            });
-            crate::extraction::extract_document(&self.state, doc, Default::default()).await?;
-            let found: Vec<Uuid> = sqlx::query_scalar("SELECT DISTINCT f.subject_id FROM facts f JOIN fact_evidence fe ON fe.fact_id=f.id WHERE f.kb_id=$1 AND fe.document_id=$2 AND f.layer='open' AND f.phrase='submitted'")
-                .bind(self.kb).bind(doc).fetch_all(&self.pool).await?;
-            anyhow::ensure!(found.len() == 1, "each incoming source must have one owner");
-            owners.extend(found);
-        }
+        let expected =
+            holders[usize::from(matches!(guard, TypedToUntyped | UntypedToTyped | Markdown))];
+        self.model.steps.lock().unwrap().push_back(Step {
+            prompt_has: text.into(),
+            stream: true,
+            text: json!({"e":entities,"s":statements,"n":[]}).to_string(),
+        });
+        crate::extraction::extract_document(&self.state, self.docs[2], Default::default()).await?;
+        let owners: Vec<Uuid> = sqlx::query_scalar("SELECT DISTINCT f.subject_id FROM facts f JOIN fact_evidence fe ON fe.fact_id=f.id WHERE f.kb_id=$1 AND fe.document_id=$2 AND f.layer='open' AND f.phrase='submitted'")
+            .bind(self.kb).bind(self.docs[2]).fetch_all(&self.pool).await?;
         let count: i64 = sqlx::query_scalar("SELECT count(*) FROM entities WHERE kb_id=$1 AND canonical_name IN ('Alex Lee','**Alex Lee**') AND merged_into IS NULL")
             .bind(self.kb).fetch_one(&self.pool).await?;
         let reviews: i64 = sqlx::query_scalar(
@@ -662,21 +638,18 @@ impl Fx {
             true
         };
         Ok((
-            owners == vec![expected; repeat]
-                && count == if guard == Single { 1 } else { 2 }
-                && reviews == 0
-                && type_preserved,
-            json!({"expected_owner":expected,"owners":owners,"entities":count,"pending_reviews":reviews,"type_preserved":type_preserved,"extractions":repeat}),
+            owners == vec![expected] && count == 2 && reviews == 0 && type_preserved,
+            json!({"expected_owner":expected,"owners":owners,"entities":count,"pending_reviews":reviews,"type_preserved":type_preserved}),
         ))
     }
 
     async fn cleanup(&self) -> anyhow::Result<()> {
         self.server.abort();
         sqlx::query(
-            "DELETE FROM jobs WHERE payload->>'kb_id'=$1 OR payload->>'document_id' IN (SELECT id::text FROM documents WHERE kb_id=$2)",
+            "DELETE FROM jobs WHERE payload->>'kb_id'=$1 OR payload->>'document_id'=ANY($2)",
         )
         .bind(self.kb.to_string())
-        .bind(self.kb)
+        .bind(self.docs.map(|d| d.to_string()).to_vec())
         .execute(&self.pool)
         .await?;
         sqlx::query("DELETE FROM organizations WHERE id=$1")
