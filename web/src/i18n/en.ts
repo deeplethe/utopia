@@ -593,6 +593,7 @@ export const en = {
       phrase_is_value: "Kept, but the phrase is the value itself",
       phrase_is_subject: "Kept, but the phrase is the subject's own name",
       object_is_value: "Kept, with the object read as a value",
+      attr_datatype: "Kept as an open statement, but the value cannot be read as the attribute's datatype",
     } as Record<string, string>,
     // 来源级重抽：不危险，只是费时费钱——轻确认，文案直说成本与保留项
     reExtractSource: "Re-extract",

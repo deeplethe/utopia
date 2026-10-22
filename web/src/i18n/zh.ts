@@ -534,6 +534,7 @@ export const zh: Strings = {
       phrase_is_value: "已保留，但短语就是那个值",
       phrase_is_subject: "已保留，但短语就是主语的名字",
       object_is_value: "已保留，宾语按值记下",
+      attr_datatype: "已保留为开放陈述，但值按属性声明的类型读不出来",
     },
     reExtractSource: "重新抽取",
     reExtractTitle: "重新抽取这个来源？",

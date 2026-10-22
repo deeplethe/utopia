@@ -47,7 +47,13 @@ retype, including "no type", out of every automatic path [0009, 0001]. Same-name
 across types and untyped [0009]. Type resolution (candidates from class descriptions and from the
 classes of context neighbours, interleaved and never scored together; a class inside the current
 subtree applied on its own, a cross-axis class sent to a person, each pair acknowledged once) runs
-from the ontology page; extraction no longer enqueues it [0001, 0016, #736].
+from the ontology page; extraction no longer enqueues it [0001, 0016, #736]. A kind-word binding
+is projected onto its entities when it is decided, and again at the end of every extraction and
+the start of every kind-word alignment run (`type_bindings::apply_bound`): extraction reads the
+binding table once per document, so a word bound while a document was still extracting left that
+document's later entities untyped, and an untyped subject admits no property with a declared
+domain. On a four-document test the table document's six attribute statements were lost this way
+(2026-10-22).
 
 **A class's member list can name what its members lack** [#1269]. The instance list
 (`GET /kbs/{id}/ontology/entity-types/{type_id}/entities`) takes `missing_predicate`, a property key
@@ -86,7 +92,12 @@ shortlist is part of the decision's basis, so a changed list re-asks. The candid
 properties are described once per batch and each item names only its keys. A signature the votes disagree on is `undecided` for the alignment queue of #725; one with no
 fitting property is `none`, its statements stay in the open graph and it counts toward the
 workbench's suggestions. Bindings live in `phrase_bindings`. A binding to a state property also
-says what a statement dated at a single moment marks (`marks`: start, end or none). The aligner asks
+says what a statement dated at a single moment marks (`marks`: start, end or none); with `none` or
+no value the statement is materialised over the period its date names, `valid_to` at the bucket's
+end with `end_after_period` set, so "2023年营业收入58亿元" is a row that holds during 2023 [0053
+revision 2026-10-22]. An attribute of datatype `text` with a declared domain is also a candidate for a signature whose
+object is a named thing (法定代表人 → 陈国华), forward only; its typed row carries the object's
+name as the value and no link [0044 revision 2026-10-22]. The aligner asks
 it once, with the binding: the value is written when both votes give the same one, and a binding
 without one records the ask (`marks_asked_at`) and waits in the alignment queue, as a person's
 binding without one does. A binding made before the question is asked once, and that question only
@@ -187,7 +198,11 @@ invalidated, rows that are due and missing are added, rows whose binding is unch
 id, evidence and recorded time. Several statements that produce the same triple give one row: the row is written through
 the typed graph's own gate (the dedup, time refinement and closing rules of `insert_fact`), and
 `typed_fact_sources` lists every statement behind it, so a row is retired only when none of its
-sources holds [#753]. On the 25-document batch the 36 bound signatures give 184 typed rows.
+sources holds [#753]. On the 25-document batch the 36 bound signatures give 184 typed rows. A
+bound value the attribute's datatype cannot read (「超过2000人」as a number, a currency that does
+not convert) stays an open statement and is counted in `extraction_drops` as `attr_datatype`,
+keyed by the property and rewritten as a set on every recompute, so the row retires once the value
+reads; before 2026-10-22 this skip was silent.
 
 **Argument order is enforced, participation is guided.** A declared domain or range shapes
 candidates and never discards a fact; argument order is the key's encoding convention, so a fact

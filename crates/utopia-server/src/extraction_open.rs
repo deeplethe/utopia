@@ -1171,6 +1171,12 @@ pub(crate) async fn run_open(
         serde_json::json!({ "document_id": document_id }),
     )
     .await?;
+    // 这篇开抽时还没绑上、抽到一半才绑上的类别词：它的类补到这篇后半建的实体上
+    // （`bound_types` 是开抽时读的一份，判定落下时的投影看不见之后建的实体）
+    let caught_up = utopia_store::type_bindings::apply_bound(pool, kb_id).await?;
+    if caught_up > 0 {
+        tracing::info!(%document_id, entities = caught_up, "抽取途中绑上的类补到了后建的实体上");
+    }
     // 新出现的类别词绑到类（0044 对齐第一片）：库级，同库排着就不重复
     utopia_store::jobs::enqueue_unless_queued(
         pool,
