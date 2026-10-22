@@ -1094,7 +1094,7 @@ async fn resolve_type_drift(
     keys: &[String],
     context: Option<&[f32]>,
     exclude: &[Uuid],
-    // false = never attach to a concept fallback (identity mentions create in their own class)
+    // false = 不归并到概念兜底：身份名按自己声明的类新建，不能被兜底吞掉
     may_attach: bool,
 ) -> AppResult<Resolution> {
     // 这一侧也可能还没判出类型（0009），那时没有 key 可查

@@ -40,6 +40,7 @@ One name fact can carry evidence from both an identity source and a prose docume
 
 - **On:** the update that sets the flag also deletes the stored vectors of name facts that now have identity evidence, in the same transaction. Leaving them in place and skipping them would put an evidence join into every `nearest` query, which is the per-mention cost #1296 measured.
 - **Off:** nothing is deleted. Those name facts become pending again, and the next extraction in the base backfills their vectors through `pending`, as it does for any name whose vector is missing. Recall for them returns from then on. Pairs that were never proposed while the flag was on are not proposed in retrospect.
+
 **A NULL-typed holder keeps its class for now.** A typed mention that attaches to a holder with `type_id IS NULL` does not upgrade the holder's class, as the type-drift path does. PR 2 decides that.
 
 ## Not doing
