@@ -277,15 +277,14 @@ fn digit_runs(name: &str) -> Vec<String> {
     runs
 }
 
-/// Latin word characters. The ranges are explicit: Postgres `\w` and `[[:alnum:]]` count CJK as
-/// letters in a UTF-8 locale.
+/// 拉丁词字符。范围逐一列出：UTF-8 locale 下 Postgres 的 `\w` 与 `[[:alnum:]]` 把汉字也算作字母。
 const LATIN_WORD: &[(char, char)] = &[
     ('0', '9'),
     ('A', 'Z'),
     ('_', '_'),
     ('a', 'z'),
     ('\u{C0}', '\u{D6}'),
-    // Combining accents, for a decomposed `é`
+    // 组合附加符，用于分解写法的 `é`
     ('\u{300}', '\u{36F}'),
     ('\u{D8}', '\u{F6}'),
     ('\u{F8}', '\u{24F}'),
@@ -296,14 +295,14 @@ fn is_latin_word(c: char) -> bool {
     LATIN_WORD.iter().any(|&(lo, hi)| (lo..=hi).contains(&c))
 }
 
-/// `shorter` is in `longer`, and no Latin edge of it touches a Latin word character (#1104).
-/// `token` is not in `service_token`. `holmes` is in `sherlock holmes`. CJK edges have no rule.
+/// `shorter` 在 `longer` 里，且它以拉丁字符开头或结尾时，那一侧不挨着拉丁词字符（#1104）。
+/// `token` 不在 `service_token` 里，`holmes` 在 `sherlock holmes` 里；汉字边不设规则。
 pub fn contains_at_word_edges(longer: &str, shorter: &str) -> bool {
-    // Same as SQL: an empty name is in every name
+    // 与 SQL 一致：空名字在任何名字里
     let (Some(first), Some(last)) = (shorter.chars().next(), shorter.chars().last()) else {
         return true;
     };
-    // Not `match_indices`: a match can overlap a failed one
+    // 不用 `match_indices`：一处命中可能与前一处没过边界检查的命中重叠
     longer.char_indices().any(|(at, _)| {
         if !longer[at..].starts_with(shorter) {
             return false;
@@ -329,7 +328,7 @@ fn word_class() -> String {
         .collect()
 }
 
-/// The rule as a Postgres regex for `name`.
+/// 同一条规则，写成给 `name` 用的 Postgres 正则。
 pub fn word_edges_pattern(name: &str) -> String {
     let (Some(first), Some(last)) = (name.chars().next(), name.chars().last()) else {
         return String::new();
@@ -351,7 +350,7 @@ pub fn word_edges_pattern(name: &str) -> String {
     p
 }
 
-/// The rule as SQL, for a name in a column. `expr` must be trusted SQL.
+/// 同一条规则，写成 SQL，给某一列里的名字。`expr` 必须是可信的 SQL。
 pub(crate) fn word_edges_sql(expr: &str) -> String {
     let class = word_class();
     format!(
@@ -406,7 +405,7 @@ pub(crate) async fn other_names_many(
 mod tests {
     use super::{contains_at_word_edges, numbers_differ, word_edges_pattern, word_edges_sql};
 
-    /// (longer, shorter, contained), for Rust and both SQL forms
+    /// (longer, shorter, 是否包含)，Rust 与两种 SQL 写法共用
     const WORD_EDGES: &[(&str, &str, bool)] = &[
         ("service_token", "token", false),
         ("install_scheduled_task.ps1", "task", false),

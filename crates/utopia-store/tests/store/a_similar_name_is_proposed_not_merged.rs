@@ -661,7 +661,7 @@ async fn a_described_entity_is_not_paired_by_containment() -> anyhow::Result<()>
     run
 }
 
-/// Latin names match only at word edges (#1104). CJK keeps the substring match
+/// 拉丁名字只在词边界上算包含（#1104）；汉字照旧按子串匹配
 #[tokio::test]
 async fn a_latin_name_is_contained_only_at_word_edges() -> anyhow::Result<()> {
     let Some(url) = utopia_store::test_db::url() else {
@@ -682,7 +682,7 @@ async fn a_latin_name_is_contained_only_at_word_edges() -> anyhow::Result<()> {
                 &[],
             )
         };
-        // (stored, its alias, new, paired)
+        // (库里的名字, 它的别名, 新名字, 是否排成一对)
         for (stored, alias, new, want) in [
             ("SERVICE_TOKEN", None, "token", false),
             ("install_scheduled_task.ps1", None, "task", false),

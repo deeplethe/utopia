@@ -877,7 +877,7 @@ async fn containment_reviews(
     .bind(MIN_CONTAIN_CHARS)
     .bind(CONTAIN_SCAN_LIMIT)
     .bind(like_escaped(&lower))
-    // Word edges for Latin names (#1104)
+    // 只靠 LIKE，`token` 会匹配到 `service_token`：拉丁名字须落在词边界上才算包含（#1104）
     .bind(crate::names::word_edges_pattern(&lower))
     .fetch_all(pool)
     .await?;
