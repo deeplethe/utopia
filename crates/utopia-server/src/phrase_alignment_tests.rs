@@ -16,8 +16,19 @@ struct Model {
     release: Arc<tokio::sync::Notify>,
     /// 嵌入端点被叫了几次：短名单该不该嵌签名（#1097）看的是这个数
     embeds: Arc<std::sync::atomic::AtomicUsize>,
+    /// Every endpoint answers with the empty-balance 429 (#1360)
+    broke: Arc<std::sync::atomic::AtomicBool>,
 }
-async fn reply(State(m): State<Model>, Json(body): Json<Value>) -> impl IntoResponse {
+fn empty_balance() -> axum::response::Response {
+    let body = json!({"error": {"message": "You exceeded your current quota.",
+        "type": "insufficient_quota", "code": "credit_balance_exhausted"}});
+    (axum::http::StatusCode::TOO_MANY_REQUESTS, Json(body)).into_response()
+}
+async fn reply(State(m): State<Model>, Json(body): Json<Value>) -> axum::response::Response {
+    if m.broke.load(std::sync::atomic::Ordering::SeqCst) {
+        m.requests.lock().unwrap().push(body);
+        return empty_balance();
+    }
     let n = {
         let mut seen = m.requests.lock().unwrap();
         seen.push(body);
@@ -39,12 +50,16 @@ async fn reply(State(m): State<Model>, Json(body): Json<Value>) -> impl IntoResp
         [("content-type", "text/event-stream")],
         format!("data: {frame}\n\ndata: [DONE]\n\n"),
     )
+        .into_response()
 }
 
 /// 脚本化的嵌入端点：每段文字一个由字节算出的四维向量。只要求确定、条数对得上——
 /// 这里测的是「向量有没有」，不是近不近
-async fn embed(State(m): State<Model>, Json(body): Json<Value>) -> impl IntoResponse {
+async fn embed(State(m): State<Model>, Json(body): Json<Value>) -> axum::response::Response {
     m.embeds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    if m.broke.load(std::sync::atomic::Ordering::SeqCst) {
+        return empty_balance();
+    }
     let data: Vec<Value> = body["input"]
         .as_array()
         .cloned()
@@ -66,7 +81,7 @@ async fn embed(State(m): State<Model>, Json(body): Json<Value>) -> impl IntoResp
             json!({ "embedding": v })
         })
         .collect();
-    Json(json!({ "data": data }))
+    Json(json!({ "data": data })).into_response()
 }
 
 struct Fx {
@@ -134,6 +149,7 @@ impl Fx {
             entered: Arc::new(tokio::sync::Notify::new()),
             release: Arc::new(tokio::sync::Notify::new()),
             embeds: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            broke: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let endpoint = format!("http://{}", listener.local_addr()?);
@@ -1518,4 +1534,40 @@ async fn a_base_with_no_properties_queues_propose_ontology_once_twenty_signature
     .await;
     f.cleanup().await?;
     run
+}
+
+/// An empty balance ends the run with an error that keeps its `OutOfCredit` type, so
+/// `alerting::hopeless` sees it; no follow-up `align_phrases` job is queued (#1360).
+#[tokio::test]
+async fn an_empty_balance_fails_the_run_once_instead_of_requeueing() -> anyhow::Result<()> {
+    for embeddings in [false, true] {
+        let Some(f) = Fx::new().await? else {
+            return Ok(());
+        };
+        let run = async {
+            if embeddings {
+                f.enable_embeddings().await?;
+            }
+            f.model
+                .broke
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            let Err(err) = f.run().await else {
+                anyhow::bail!("run succeeded with no balance (embeddings={embeddings})");
+            };
+            anyhow::ensure!(
+                utopia_llm::out_of_credit(&err).is_some(),
+                "lost the OutOfCredit type (embeddings={embeddings}): {err:#}"
+            );
+            assert!(crate::alerting::hopeless(&err));
+            assert!(
+                !f.requeued().await?,
+                "no follow-up job while the balance is empty"
+            );
+            anyhow::Ok(())
+        }
+        .await;
+        f.cleanup().await?;
+        run?;
+    }
+    Ok(())
 }

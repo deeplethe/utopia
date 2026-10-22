@@ -294,6 +294,7 @@ async fn align_types_locked(
                     .await
                 {
                     Ok(r) => r,
+                    Err(e) if utopia_llm::out_of_credit(&e).is_some() => return Err(e),
                     Err(e) => {
                         tracing::warn!(%kb_id, error = %e, "类别词对齐调用失败，这一批留到下次");
                         failed += 1;

@@ -500,6 +500,7 @@ async fn shortlist(
                     tracing::warn!(%kb_id, sent = batch.len(), got = v.len(), "签名向量数量对不上，这一批不开短名单");
                     continue;
                 }
+                Err(e) if utopia_llm::out_of_credit(&e).is_some() => return Err(e),
                 Err(e) => {
                     tracing::warn!(%kb_id, error = %e, "签名向量没算出来，这一批不开短名单");
                     continue;
@@ -600,6 +601,7 @@ async fn shortlist_kind_words(
             let _permit = llm_util::acquire_embed(state, settings).await;
             match client.embed(&texts).await {
                 Ok(v) if v.len() == batch.len() => v,
+                Err(e) if utopia_llm::out_of_credit(&e).is_some() => return Err(e),
                 Ok(_) | Err(_) => {
                     tracing::warn!(%kb_id, "类别词向量没算出来，这一批看全部候选");
                     continue;
@@ -960,6 +962,7 @@ async fn align_phrases_locked(
                     .await
                 {
                     Ok(r) => r,
+                    Err(e) if utopia_llm::out_of_credit(&e).is_some() => return Err(e),
                     Err(e) => {
                         tracing::warn!(%kb_id, error = %e, "短语对齐调用失败，这一批留到下次");
                         failed += 1;
