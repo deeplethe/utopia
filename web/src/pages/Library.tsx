@@ -16,12 +16,14 @@ import { api, type Doc, type ExtractionDrop, type SourceView } from "../api";
 import { S } from "../i18n";
 import {
   CREATABLE_SOURCE_KINDS,
+  hasSyncFields,
   type CreatableSourceKind,
 } from "../sourceKinds";
 import { useKb, useKbId } from "../kb";
 import { toast } from "../toast";
 import { copyAndSay } from "../clipboard";
 import { pushEndpoint } from "../pushEndpoint";
+import { githubRepoConfig, globList } from "./githubRepoConfig";
 import {
   Button,
   Checkbox,
@@ -1382,11 +1384,6 @@ function SourceModal({
 
   const create = useMutation({
     mutationFn: () => {
-      // 留空就不发，后端按默认的 markdown 规则筛
-      const globs = (key: string, value: string) => {
-        const list = value.split(",").map((g) => g.trim()).filter(Boolean);
-        return list.length ? { [key]: list } : {};
-      };
       const config =
         kind === "url"
           ? { urls: urls.split("\n").map((u) => u.trim()).filter(Boolean) }
@@ -1403,7 +1400,7 @@ function SourceModal({
                     ...(authHeader.trim() ? { auth_header: authHeader.trim() } : {}),
                     ...(kind === "github_issues"
                       ? includePrs ? { include_pull_requests: true } : {}
-                      : { ...globs("include", includeGlobs), ...globs("exclude", excludeGlobs) }),
+                      : { include: globList(includeGlobs), exclude: globList(excludeGlobs) }),
                   }
                 : kind === "jira_issues"
                   ? {
@@ -1481,7 +1478,7 @@ function SourceModal({
               ? davUrl.trim()
             : kind === "s3" || kind === "azure_blob" || kind === "gcs"
             ? s3Bucket.trim()
-            : true);
+            : hasSyncFields(kind, { repo, jiraUrl, jiraProject }));
 
   // 注意用 div 而非 label：label 会把 :hover/click 转发给内部第一个可标记控件
   //（button 也算），导致图标网格/日程选择器悬停时第一个按钮常亮
@@ -1893,6 +1890,8 @@ function SourceEditModal({
   const [authHeader, setAuthHeader] = useState("");
   const [repo, setRepo] = useState(cfg.repo ?? "");
   const [includePrs, setIncludePrs] = useState(Boolean(cfg.include_pull_requests));
+  const [includeGlobs, setIncludeGlobs] = useState((cfg.include ?? []).join(", "));
+  const [excludeGlobs, setExcludeGlobs] = useState((cfg.exclude ?? []).join(", "));
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [schedule, setSchedule] = useState<ScheduleValue>({
     sync_interval_minutes: source.sync_interval_minutes,
@@ -1911,7 +1910,11 @@ function SourceEditModal({
     // 换仓库或改收不收 PR，两者都会换掉这个来源里文档的集合
     (kind === "github_issues" &&
       (repo.trim() !== (cfg.repo ?? "") ||
-        includePrs !== Boolean(cfg.include_pull_requests)));
+        includePrs !== Boolean(cfg.include_pull_requests))) ||
+    (kind === "github_repo" &&
+      (repo.trim() !== (cfg.repo ?? "") ||
+        String(globList(includeGlobs) ?? "") !== String(cfg.include ?? "") ||
+        String(globList(excludeGlobs) ?? "") !== String(cfg.exclude ?? "")));
 
   const save = useMutation({
     mutationFn: () => {
@@ -1933,7 +1936,14 @@ function SourceEditModal({
                     ...(authHeader.trim() ? { auth_header: authHeader.trim() } : {}),
                     include_pull_requests: includePrs,
                   }
-                : undefined;
+                : kind === "github_repo"
+                  ? githubRepoConfig(cfg, {
+                      repo,
+                      authHeader,
+                      include: includeGlobs,
+                      exclude: excludeGlobs,
+                    })
+                  : undefined;
       return api.updateSource(kbId, source.id, {
         name: name.trim(),
         ...(kind === "custom" && icon ? { icon } : {}),
@@ -1952,7 +1962,8 @@ function SourceEditModal({
         ? feedUrl.trim()
         : kind === "custom"
           ? endpoint.trim()
-          : true);
+          : // Jira 的配置这里改不了：挡住它只会让人连名字都改不成
+            kind === "jira_issues" || hasSyncFields(kind, { repo }));
 
   // div 而非 label：label 会把 :hover/click 转发给第一个可标记控件
   const field = (label: string, node: React.ReactNode) => (
@@ -2053,7 +2064,7 @@ function SourceEditModal({
               </p>
             </>
           )}
-          {kind === "github_issues" && (
+          {(kind === "github_issues" || kind === "github_repo") && (
             <>
               {field(
                 S.library.repoField,
@@ -2072,12 +2083,33 @@ function SourceEditModal({
                   onChange={(e) => setAuthHeader(e.target.value)}
                 />,
               )}
-              <Checkbox
-                className="mb-4"
-                checked={includePrs}
-                onChange={(v) => setIncludePrs(v)}
-                label={S.library.includePullRequests}
-              />
+              {kind === "github_issues" ? (
+                <Checkbox
+                  className="mb-4"
+                  checked={includePrs}
+                  onChange={(v) => setIncludePrs(v)}
+                  label={S.library.includePullRequests}
+                />
+              ) : (
+                <>
+                  {field(
+                    S.library.includeGlobsField,
+                    <Input className="w-full font-mono"
+                      placeholder="**/*.md, **/*.markdown, **/*.mdx"
+                      value={includeGlobs}
+                      onChange={(e) => setIncludeGlobs(e.target.value)}
+                    />,
+                  )}
+                  {field(
+                    S.library.excludeGlobsField,
+                    <Input className="w-full font-mono"
+                      placeholder="**/.*/**, **/node_modules/**, **/vendor/**"
+                      value={excludeGlobs}
+                      onChange={(e) => setExcludeGlobs(e.target.value)}
+                    />,
+                  )}
+                </>
+              )}
             </>
           )}
           {kind === "custom" && (

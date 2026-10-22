@@ -20,7 +20,7 @@ async fn a_later_sync_is_claimed_before_an_earlier_extraction() -> anyhow::Resul
     .fetch_all(&pool)
     .await?;
 
-    let claimed = claim_one(&pool).await?.map(|job| job.kind);
+    let claimed = claim_one(&pool, false).await?.map(|job| job.kind);
     sqlx::query("DELETE FROM jobs WHERE id = ANY($1)")
         .bind(&ids)
         .execute(&pool)

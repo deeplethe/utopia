@@ -693,8 +693,8 @@ export const zh: Strings = {
     notionQueryField: "搜索词（可选——留空则取全部已分享页面）",
     tokenField: "GitHub 令牌（可选，不再显示）",
     includePullRequests: "把 PR 也当工单收进来",
-    includeGlobsField: "包含的 glob（逗号分隔，可选）",
-    excludeGlobsField: "排除的 glob（逗号分隔，可选）",
+    includeGlobsField: "包含的 glob（逗号分隔，可选；填了就替换默认值）",
+    excludeGlobsField: "排除的 glob（逗号分隔，可选；填了就替换默认值）",
     interval: "同步计划",
     intervalManual: "仅手动",
     intervalEvery: (m: number) =>
@@ -1057,7 +1057,8 @@ export const zh: Strings = {
       openRegHint: "关闭后注册表单不再开放，只有管理员能在此创建账户。",
       workers: "后台工作线程",
       workersHint:
-        "同时运行的任务数的外层上限（1–256），作用是防止工作无限堆积。" +
+        "最多同时运行多少个模型任务（抽取、消解，1–256），另有两个名额保留给同步这类入库任务：" +
+        "它们不调模型，所以不必排在模型任务后面。这是防止工作无限堆积的外层上限；" +
         "真正的节流是下面的按模型上限，所以这个数留得比它们之和宽裕些。即时生效。",
       workersApply: "应用",
       modelConcurrency: "模型并发",

@@ -108,19 +108,43 @@ pub async fn content(
     if document.purged_at.is_some() {
         return Ok(gone(PURGED_MESSAGE));
     }
+    let Some(retained) = read_retained(&state, id, query.version, |_| true).await? else {
+        return Ok(gone(PURGED_MESSAGE));
+    };
+    let headers = content_headers(&retained.document, &retained.version, retained.bytes.len())?;
+    Ok((StatusCode::OK, headers, retained.bytes).into_response())
+}
 
-    // Hold the row lock through the blob read. Replacement and purge otherwise
-    // can move or delete the selected blob after the ledger says we may serve it.
+/// One retained original with the ledger row and document row that named it.
+struct Retained {
+    document: Document,
+    version: utopia_store::documents::DocumentVersion,
+    bytes: Vec<u8>,
+}
+
+/// Read a retained original, `None` when the document has been purged or the
+/// locked row is not one `serves` accepts.
+///
+/// Hold the row lock through the blob read. Replacement and purge otherwise
+/// can move or delete the selected blob after the ledger says we may serve it.
+/// A caller's own conditions on the row go in `serves`, so they are judged on
+/// the row the lock holds rather than on one read before it.
+async fn read_retained(
+    state: &AppState,
+    id: Uuid,
+    requested: Option<i32>,
+    serves: impl FnOnce(&Document) -> bool,
+) -> ApiResult<Option<Retained>> {
     let mut tx = state.pool.begin().await?;
     let document: Document =
         sqlx::query_as("SELECT * FROM documents WHERE id = $1 FOR NO KEY UPDATE")
             .bind(id)
             .fetch_one(&mut *tx)
             .await?;
-    if document.purged_at.is_some() {
-        return Ok(gone(PURGED_MESSAGE));
+    if document.purged_at.is_some() || !serves(&document) {
+        return Ok(None);
     }
-    let version: utopia_store::documents::DocumentVersion = match query.version {
+    let version: utopia_store::documents::DocumentVersion = match requested {
         Some(requested) => sqlx::query_as(
             "SELECT version, sha256, size_bytes, ingested_at
                FROM document_versions WHERE document_id = $1 AND version = $2",
@@ -161,8 +185,11 @@ pub async fn content(
         )
         .into());
     }
-    let headers = content_headers(&document, &version, bytes.len())?;
-    Ok((StatusCode::OK, headers, bytes).into_response())
+    Ok(Some(Retained {
+        document,
+        version,
+        bytes,
+    }))
 }
 
 /// Name the exact retained versions the content route can address.
@@ -178,6 +205,64 @@ pub async fn versions(
     }
     let versions = utopia_store::documents::versions(&state.pool, id).await?;
     Ok((StatusCode::OK, Json(json!({ "versions": versions }))).into_response())
+}
+
+#[derive(Deserialize)]
+pub struct ExternalIdQuery {
+    pub external_id: String,
+}
+
+/// Read a pushed document back by the identity its source pushed it under (#1276).
+///
+/// The reader is the person, as on the content route; a source's push key is no
+/// credential here, so a leaked key stays push-only (0052). A document in the
+/// trash, a tombstoned identity and one never pushed are all 404, and purge
+/// erases the identity, so a purged one is 404 too.
+pub async fn by_external_id(
+    State(state): State<AppState>,
+    reader: SessionOrToken,
+    Path((kb_id, source_id)): Path<(Uuid, Uuid)>,
+    Query(query): Query<ExternalIdQuery>,
+) -> ApiResult<Response> {
+    require_reader_kb(&state, &reader, kb_id).await?;
+    let source = super::sources_routes::source_in_kb(&state, kb_id, source_id).await?;
+    if !super::sources_routes::is_push_kind(&source.kind) {
+        return Err(AppError::NotFound.into());
+    }
+    let external_id = query.external_id.trim();
+    let key = super::sources_routes::pushed_key(&source, external_id);
+    let found = utopia_store::documents::find_by_external_key(&state.pool, source.id, &key)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let live_under_key = |document: &Document| {
+        document.source_id == Some(source.id)
+            && document.external_key.as_deref() == Some(key.as_str())
+            && document.deleted_at.is_none()
+            && document.missing_since.is_none()
+    };
+    let Retained {
+        document,
+        version,
+        bytes,
+    } = read_retained(&state, found.id, None, live_under_key)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    let versions = utopia_store::documents::versions(&state.pool, document.id).await?;
+    let body = json!({
+        "id": document.id,
+        "external_id": external_id,
+        "filename": document.filename,
+        "mime": document.mime,
+        "sha256": document.sha256,
+        "size_bytes": document.size_bytes,
+        "status": document.status,
+        "doc_time": document.doc_time,
+        "updated_at": document.updated_at,
+        "version": version.version,
+        "content": String::from_utf8_lossy(&bytes),
+        "versions": versions,
+    });
+    Ok((StatusCode::OK, Json(body)).into_response())
 }
 
 /// 批量上传（multipart，可多文件）。重复内容（同 KB 同 sha256）跳过。
