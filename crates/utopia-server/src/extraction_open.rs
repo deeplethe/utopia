@@ -45,6 +45,41 @@ struct ChunkParsed {
     name_vecs: HashMap<String, Vec<f32>>,
 }
 
+/// Identity clues belong to the statement's subject, not to every name in the chunk.
+/// Keep only grounded, single-sentence quotes with one subject owner. Overlapping
+/// quotes assigned to different subjects cannot tell us whose department was named.
+fn mention_evidence(
+    extraction: &utopia_extract::open::OpenExtraction,
+    text: &str,
+) -> HashMap<String, String> {
+    let quotes: Vec<_> = extraction
+        .statements
+        .iter()
+        .filter_map(|s| {
+            let quote = s.quote.as_deref()?.trim();
+            Some((name_key(&s.subject), quote, locate(text, quote)?))
+        })
+        .collect();
+    let mut evidence = HashMap::<String, String>::new();
+    for (subject, quote, (start, end)) in &quotes {
+        // Conservative about abbreviations too: a missed clue falls back to the
+        // existing resolver; joining separate sentences can attach to the wrong person.
+        let body = quote.trim_end_matches(['.', '!', '?', '。', '！', '？', '"', '”', '’']);
+        if body.contains(['.', '!', '?', '。', '！', '？', ';', '；'])
+            || !span_in_quote(subject, quote)
+            || quotes.iter().any(|(other, _, (a, b))| {
+                other != subject && ((a < end && start < b) || span_in_quote(other, quote))
+            })
+        {
+            continue;
+        }
+        let entry = evidence.entry(subject.clone()).or_default();
+        entry.push_str(quote);
+        entry.push('\n');
+    }
+    evidence
+}
+
 /// 回复为什么是半截的：端点撞上了 token 上限（#760），或护栏看见它在复读、停了读（#1301）。
 /// 两种都当半截处理，丢弃行要说清是哪一种——复读的去查上限，是找错了地方
 #[derive(Debug, Clone, Copy)]
@@ -265,6 +300,10 @@ async fn apply_open_extraction(
     touched_names: &mut HashSet<String>,
 ) -> anyhow::Result<()> {
     // ---- 东西：有名字的走身份消解，被描述的建成没有名字事实的实体 ----
+    // Object-only mentions and rejected quotes deliberately supply None, including
+    // to the old #331 tie/grey-zone paths: another subject's chunk is not their clue.
+    // With no owned clue, profile tiers and their ordinary review requests decide.
+    let evidence = mention_evidence(extraction, &chunk.text);
     let mut response_claims: HashMap<String, Vec<Uuid>> = HashMap::new();
     let mut local: HashMap<String, Uuid> = HashMap::new();
     // 被描述的东西：先记下名字和类别词，等陈述指到它再建（见 `place`）
@@ -290,7 +329,7 @@ async fn apply_open_extraction(
                 name,
                 ctx,
                 name_vecs.get(&key).map(Vec::as_slice),
-                Some(&chunk.text),
+                evidence.get(&key).map(String::as_str),
                 &mut response_claims,
                 handled_by_name,
                 ambiguous_bare_cache,
