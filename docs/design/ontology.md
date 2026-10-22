@@ -36,7 +36,14 @@ the person ticks one in the creation dialog [0008, 0009]. Five packs ship inside
 of about twenty rows, additive and without undo [0008]. An OWL file (Turtle or RDF/XML) is stored
 verbatim in the blob store and projected into the tables by a re-runnable derivation that reports
 what it did not project; a dry run precedes every import; individuals are never imported as facts
-[0001]. The rest is typed on the ontology page or adopted from a proposal. The self-check of [0002]
+[0001]. A **scenario pack** [0073] is the top-down start the standard packs are not: a small
+vocabulary written for one kind of corpus (企业档案, 合同链, 人事档案 ship first), with definitions
+written for the aligner, datatypes and units already right, and the competency questions that
+corpus is read for. It is one JSON file embedded in the binary, bilingual, installed at creation
+beside the standard packs through the editor's own calls (`scenario_packs::install`): its elements
+are the base's own, without IRIs; a key that already exists is skipped and reported; its questions
+are created accepted with the creating person as author; `embed_ontology` is queued. The rest is
+typed on the ontology page or adopted from a proposal. The self-check of [0002]
 runs after an import: eight defect kinds (a relation both symmetric and asymmetric, a subclass cycle,
 an inverse that does not point back) are shown before any fact-level check, and a base without axioms
 reports zero.

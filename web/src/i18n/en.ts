@@ -1310,6 +1310,14 @@ export const en = {
       packsPick: "Search packs…",
       packsNone: "None — the ontology grows out of the documents",
       packsCount: (c: number, p: number) => `${c} classes · ${p} properties`,
+      scenariosLabel: "Scenario packs",
+      scenariosHint:
+        "Classes, properties and the questions to answer for one kind of corpus; " +
+        "installed as this base's own ontology. Optional.",
+      scenariosPick: "Search scenarios…",
+      scenariosNone: "None — build the ontology by hand later",
+      scenariosCount: (c: number, p: number, q: number) =>
+        `${c} classes · ${p} properties · ${q} questions`,
       name: "Name",
       description: "Description",
       visibility: "Visibility",
