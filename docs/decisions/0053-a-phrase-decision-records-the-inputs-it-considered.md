@@ -1,6 +1,6 @@
 # 0053 · A phrase decision records the inputs it considered
 
-- **Status**: Implemented 2026-09-23 (#878, migration 0072) · revised 2026-09-26 (migration 0092) · revised 2026-09-27 (#975, migration 0098) · revised 2026-10-17 (#1295, migration 0114) · revised 2026-10-22 (a single date with `none` or no value names a period) · open: the backfill and printing the named period (#994 cut 1), time resolution's ends (cut 2), recomputing a period row when a person later sets `start` or `end`
+- **Status**: Implemented 2026-09-23 (#878, migration 0072) · revised 2026-09-26 (migration 0092) · revised 2026-09-27 (#975, migration 0098) · revised 2026-10-17 (#1295, migration 0114) · revised 2026-10-22 (a single date on an attribute with `none` or no value names a period) · open: the backfill and printing the named period (#994 cut 1), time resolution's ends (cut 2), recomputing a period row when a person later sets `start` or `end`
 - **Written**: 2026-09-23
 - **Related**: [0044](0044-the-ontology-is-a-view-over-what-documents-say.md) decision 3; [0051](0051-a-human-phrase-decision-carries-its-materialization-work.md); #807, #795, #801 (withdrawn), #773, #754, #966, #994
 
@@ -395,16 +395,20 @@ nothing, because `none` was excluded too. The same run showed the value is not s
 signature was answered `start` in one run and `none` in the next, and the row computed under
 `start` was retired.
 
-**With `none` or no value, a single date is read as the period it names.** A statement whose two
-ends are equal at precision P, bound to a state property whose binding marks neither end, is
-written as holding from the date through the end of its bucket: `valid_from = t`, `valid_to =
+**With `none` or no value, a single date on an attribute is read as the period it names.** A
+statement whose two ends are equal at precision P, bound to a state *attribute* whose binding marks
+neither end, is written as holding from the date through the end of its bucket: `valid_from = t`, `valid_to =
 bucket_end(t, P)` with `end_after_period` set, the encoding #994 already uses for "left in 2024",
 so the reader prints the period the document wrote. "2023年营业收入58亿元" becomes a row that
 holds during 2023 and no longer; "成立于2015年3月，注册资本为5000万元", whose date the model
 attached to both statements, becomes a registered-capital row that held during March 2015, which
 the sentence does say. The row claims nothing beyond the sentence: that the state held at that
 period. `start` and `end` are unchanged. An implied row from a rule, which has no `marks`, takes
-the same reading. The invariant that a state holds at no moment is kept: the row's end is after its
+the same reading when the rule concludes an attribute. A single date on a *relation* with `none`
+or no value still computes no row: a dated value is a measurement for its period, while "joined on
+2023-06-01" read as a one-day employment would close the open row that starts the same day at the
+next day (the write gate closes a same-start open row when an observation brings an end), which is
+an ending the document never stated. The invariant that a state holds at no moment is kept: the row's end is after its
 start by construction, and step 0 of the recompute still retires rows written with equal ends.
 
 - The binding still records that it was asked and is still listed in the alignment queue until a
@@ -412,9 +416,10 @@ start by construction, and step 0 of the recompute still retires rows written wi
 - A row computed under `none` is not recomputed when a person later sets `start` or `end`: the
   recompute keys a source on its binding's property and direction, not on `marks`, as it did
   before this revision for `start` ↔ `end`. Open; the queue item shows the current reading.
-- Regression coverage: a statement dated at a single year bound with `none` computes a row from
-  that year with `end_after_period`; the same statement bound with no value computes the same row;
-  one bound with `start` computes an open row from that date, as before.
+- Regression coverage: a value statement dated at a single year bound to an attribute with `none`
+  computes a row from that year with `end_after_period`; the same statement bound with no value
+  computes the same row. The relation cases of the 2026-09-27 revision (`none` or no value computes
+  no row, a rule reads a start date but not a single date) stand unchanged.
 
 ## Status history
 

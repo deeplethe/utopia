@@ -93,9 +93,9 @@ properties are described once per batch and each item names only its keys. A sig
 fitting property is `none`, its statements stay in the open graph and it counts toward the
 workbench's suggestions. Bindings live in `phrase_bindings`. A binding to a state property also
 says what a statement dated at a single moment marks (`marks`: start, end or none); with `none` or
-no value the statement is materialised over the period its date names, `valid_to` at the bucket's
-end with `end_after_period` set, so "2023年营业收入58亿元" is a row that holds during 2023 [0053
-revision 2026-10-22]. An attribute of datatype `text` with a declared domain is also a candidate for a signature whose
+no value a statement bound to an attribute is materialised over the period its date names,
+`valid_to` at the bucket's end with `end_after_period` set, so "2023年营业收入58亿元" is a row that
+holds during 2023; on a relation it still computes no row [0053 revision 2026-10-22]. An attribute of datatype `text` with a declared domain is also a candidate for a signature whose
 object is a named thing (法定代表人 → 陈国华), forward only; its typed row carries the object's
 name as the value and no link [0044 revision 2026-10-22]. The aligner asks
 it once, with the binding: the value is written when both votes give the same one, and a binding

@@ -297,8 +297,9 @@ async fn materialize_in_tx(
         let reverse = d.direction == "reverse";
         // 一刻的陈述在状态属性下按绑定说的读（#966、0053 修订 2026-10-22）：开始写成从那一刻
         // 起，结束写成到那一刻为止（走 `insert_fact_on`「某天结束了」那条路，关上开放的那段），
-        // 都不是或没说按那个日期命名的时段读。读不出时段的（没有精度的锚点）不写
+        // 都不是或没说：属性按那个日期命名的时段读，关系不写（见 `span_of`）
         let Some(validity) = span_of(
+            d.kind == "attribute",
             d.temporal.as_deref() == Some("state"),
             d.marks.as_deref(),
             d.valid_from,
@@ -525,6 +526,8 @@ struct Implied {
     confidence: f32,
     /// 结论属性的时间语义：一刻的陈述落到状态属性上按时段读（规则没有 marks）
     temporal: String,
+    /// 结论是属性还是关系：一刻的陈述只在属性上读成时段
+    kind: String,
     datatype: Option<String>,
     unit: Option<String>,
 }
@@ -543,7 +546,7 @@ async fn imply_in_tx(
                 CASE WHEN r.reading IS NULL THEN s.object_id ELSE pr.entity_id END AS object_id,
                 CASE WHEN r.reading IS NULL THEN s.object_value ELSE pr.value END AS object_value,
                 s.valid_from, s.valid_from_precision, s.valid_from_grade, s.valid_to, s.valid_to_precision,
-                s.attested_from, s.confidence, rt.temporal, {SHAPE}
+                s.attested_from, s.confidence, rt.temporal, rt.kind, {SHAPE}
            FROM implication_rules r
            JOIN relation_types rt ON rt.id = r.conclude_property_id
            JOIN facts s ON s.kb_id = r.kb_id AND s.layer = 'open' AND s.invalidated_at IS NULL
@@ -575,7 +578,7 @@ async fn imply_in_tx(
                 pr.entity_id AS object_id, pr.value AS object_value,
                 NULL::timestamptz AS valid_from, NULL::text AS valid_from_precision, NULL::text AS valid_from_grade,
                 NULL::timestamptz AS valid_to, NULL::text AS valid_to_precision,
-                NULL::timestamptz AS attested_from, 0.9::real AS confidence, rt.temporal, {SHAPE}
+                NULL::timestamptz AS attested_from, 0.9::real AS confidence, rt.temporal, rt.kind, {SHAPE}
            FROM implication_rules r
            JOIN relation_types rt ON rt.id = r.conclude_property_id
            JOIN entities e ON e.kb_id = r.kb_id AND e.merged_into IS NULL AND {KIND} = r.phrase
@@ -594,9 +597,10 @@ async fn imply_in_tx(
 
     let mut implied = 0u64;
     for d in by_statement.iter().chain(by_entity.iter()) {
-        // 规则没有 marks（#966）：一刻的陈述蕴含一条状态属性时按那个日期命名的时段读
-        // （0053 修订 2026-10-22，同物化）
+        // 规则没有 marks（#966）：一刻的陈述蕴含一条状态属性时，结论是属性的按那个日期命名
+        // 的时段读，是关系的不算隐含行（0053 修订 2026-10-22，同物化）
         let Some(validity) = span_of(
+            d.kind == "attribute",
             d.temporal == "state",
             None,
             d.valid_from,
@@ -678,11 +682,15 @@ async fn imply_in_tx(
 }
 
 /// 一条陈述落成类型化行时的区间。起止不同的照抄；起止同值的一刻落到状态属性上按绑定说的读
-/// （#966）：`start` 从那一刻起，`end` 到那一刻为止（走「某天结束了」那条路），`none` 或没说
-/// 按那个日期命名的时段读（0053 修订 2026-10-22）：起点是它，终点是桶的尽头，标上
-/// `end_after_period`，读的人印得出原文写的 2023。没有精度的一刻不是桶，读不出时段，返回 None
+/// （#966）：`start` 从那一刻起，`end` 到那一刻为止（走「某天结束了」那条路）。`none` 或没说：
+/// 落到**属性**上按那个日期命名的时段读（0053 修订 2026-10-22）——「2023年营业收入58亿元」是
+/// 2023 这一年的一个量，起点是它，终点是桶的尽头，标上 `end_after_period`，读的人印得出原文
+/// 写的 2023；落到关系上照旧不算行——「joined on 2023-06-01」读成一天的任职会把同一天起的
+/// 开放行关在次日（写入口「同起点、这次带了终点、那行还开着就关上」），那是一条错的结束。
+/// 没有精度的一刻不是桶，读不出时段，也返回 None
 #[allow(clippy::too_many_arguments)]
 fn span_of<'a>(
+    attribute: bool,
     state: bool,
     marks: Option<&str>,
     from: Option<chrono::DateTime<chrono::Utc>>,
@@ -722,6 +730,9 @@ fn span_of<'a>(
             end_after_period: false,
         },
         (true, _) => {
+            if !attribute {
+                return None;
+            }
             let start = from?;
             let end = crate::graph::bucket_end(start, from_precision);
             if end <= start {
