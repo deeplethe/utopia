@@ -1,6 +1,6 @@
 # 0013 · A source hands over its history
 
-- **Status**: Implemented for GitHub, Jira and Notion (#134, #135, #213) · open: Feishu, Confluence
+- **Status**: Implemented for GitHub, Jira and Notion (#134, #135, #213) · open: Feishu, Confluence, decision 7 (#1327)
 - **Written**: 2026-08-31 · condensed into English 2026-09-03
 - **Related**: the bitemporal ground of [0001](0001-ontology-import-and-governance.md); the same judgment on the corpus side in `scripts/bench/fetch-wiki-history.mjs` (#122); [0012](0012-the-ontology-is-a-contract-not-a-suggestion.md) is the other end of the line — this record is about how things come in, that one about the rules they land by; the grant layer added afterwards (#142, `data_source_grants`) decides who may mount a source: provenance visible, destination governed
 
@@ -83,6 +83,61 @@ Wikipedia; there revisions have to be sampled, an issue tracker hands the events
    render in UTC (local conversion shows a UTC-5 reader the previous day); `recorded_at` is a
    real instant and renders in the viewer's timezone. The difference is intentional.
 
+7. **Three trackers share one ticket document, not one fetch.** *Added 2026-10-22 (#1327).*
+   Decision 1 already made the document the shared part, but each connector carries its own
+   `render()`, and the shape has drifted in small ways: GitHub opens with "Opened by", Jira with
+   "Reported by"; #691 changed the timestamps twice, with two comments saying the same thing. A third
+   copy for GitLab triples that. So a pure `ticket::render(&Ticket)` owns the document: the
+   heading, the dated sentences, `## Description`, a `## History` sorted by time, `## Comments`.
+   Each connector maps its payload into `Ticket` and keeps its own fetch: three pulls with `since`
+   for GitHub, one JQL call for Jira, and for GitLab a list per kind plus, per ticket, its notes and
+   its `resource_state_events`, `resource_label_events` and `resource_milestone_events`. Still no
+   provider trait: the fetch strategies are as different as the dead end says, and they stay in
+   their own modules.
+
+   `Ticket` holds what the two renderers write today, in the order each writes it, and nothing
+   that would let `render` reword it:
+
+   - `heading`: the title line after `# ` (`#12 Fix it`, `KAFKA-1 Summary`, `!7 Fix it`);
+   - `sentences`: the dated and plain sentences under the heading, each already worded and in the
+     connector's own order (GitHub: opened, state, closed, labels, assignees; Jira: reported,
+     type, state, priority, assignee, resolved, labels);
+   - `description`: the body under `## Description`, or none;
+   - `history`: `(time, text)` pairs written as `- <time> — <text>` under `## History`, sorted by
+     time with a stable sort, so GitHub's already ordered events and Jira's sorted lines come out
+     as they do today;
+   - `comments`: `(author, time or none, body)` written as `### <author> on <time>` under
+     `## Comments`, skipping an empty body, with `?` for a missing time as Jira writes it.
+
+   **GitLab reads like GitHub and Jira, by update time.** Each kind is listed with
+   `updated_after`, `order_by=updated_at` and `sort=asc`, and a run stops only at a timestamp
+   boundary, as [0072](0072-a-source-checkpoint-ends-at-a-timestamp-boundary.md) decides for the
+   other two. **Merge requests are opt-in**, as pull requests are for GitHub
+   (`include_pull_requests`): `include_merge_requests` defaults to false, and only issues are read
+   without it.
+
+   Two constraints come with it.
+
+   - **The move keeps today's text byte for byte.** Rendering is the document's identity:
+     a ticket whose text changes gets a new version on its next sync, so changing the wording
+     for GitHub or Jira while moving them would re-version every ticket in every base. The PR that
+     introduces `Ticket` moves GitHub and Jira onto it and proves with the existing fixtures that
+     both render exactly what they render today; per-connector wording ("Opened by" / "Reported
+     by") stays a field of `Ticket` rather than being unified. Unifying it, if ever, is a separate
+     decision that accepts the re-versioning.
+   - **GitLab history comes from resource events, not system notes.** GitLab records state,
+     label and milestone changes as structured resource events and also writes human-readable
+     system notes for many of them. Reading both would put each change in the history twice. The
+     connector takes the resource events for `## History` and only non-system notes for
+     `## Comments`. A merge request is a ticket with `!<iid>` in its heading and "Merged on"
+     beside "Closed on"; timestamps carry milliseconds and are cut to the second (decision 6).
+     On gitlab.com the notes and events endpoints answer `401` without a token even for a public
+     project (checked 2026-10-22), so the fixture is recorded with a token from the public test
+     project in #1327, and the source says that a token is required for history.
+
+   The order is two PRs: `Ticket` with GitHub and Jira moved onto it, byte for byte, then
+   `gitlab_issues` on it.
+
 ## Dead ends
 
 - **An `issues` + provider abstraction.** The second vendor was connected to find out whether
@@ -91,6 +146,10 @@ Wikipedia; there revisions have to be sampled, an issue tracker hands the events
   document, history in the body — already lives in the identical document shape and needs no
   trait; a forced interface would push the real differences into a pile of `match`.
   Reconsider when a third source lands in one of the two existing shapes.
+
+  *Revised 2026-10-22 (#1327):* the third source is GitLab, and it lands in GitHub's shape:
+  `updated_after` works like `since`, and the history is fetched per ticket. Reconsidered, the
+  fetch stays apart and the document becomes shared; decision 7 says how.
 
 ## The same judgment elsewhere
 

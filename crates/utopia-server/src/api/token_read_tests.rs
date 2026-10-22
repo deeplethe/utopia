@@ -1,5 +1,5 @@
-//! 个人令牌读图（0014 决定 7）：搜实体、实体详情、认知历史、事实证据、图总览、邻域六条读路由
-//! 收任何一枚活着的令牌。角色照旧是上限，`kb_ids` 排除了的库答 404；改实体仍只认会话。
+//! 个人令牌读图（0014 决定 7）：搜实体、实体详情、认知历史、事实证据、图总览、邻域、本体、
+//! 某类的实例这些读路由收任何一枚活着的令牌。角色照旧是上限，`kb_ids` 排除了的库答 404；改实体仍只认会话。
 use crate::state::AppState;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -15,6 +15,7 @@ struct Fixture {
     /// 令牌够不着的另一个库
     other_kb: Uuid,
     reader: Uuid,
+    person: Uuid,
     entity: Uuid,
     fact: Uuid,
     _dir: tempfile::TempDir,
@@ -68,6 +69,7 @@ impl Fixture {
             kb,
             other_kb,
             reader,
+            person,
             entity,
             fact,
             _dir: dir,
@@ -81,8 +83,8 @@ impl Fixture {
             .1
     }
 
-    fn read_paths(&self) -> [String; 6] {
-        let (kb, entity, fact) = (self.kb, self.entity, self.fact);
+    fn read_paths(&self) -> [String; 8] {
+        let (kb, person, entity, fact) = (self.kb, self.person, self.entity, self.fact);
         [
             format!("/kbs/{kb}/entities?q=Zhang"),
             format!("/kbs/{kb}/entities/{entity}"),
@@ -90,6 +92,8 @@ impl Fixture {
             format!("/kbs/{kb}/facts/{fact}/evidence"),
             format!("/kbs/{kb}/graph/overview"),
             format!("/kbs/{kb}/graph/neighborhood?entity={entity}"),
+            format!("/kbs/{kb}/ontology"),
+            format!("/kbs/{kb}/ontology/entity-types/{person}/entities"),
         ]
     }
 
