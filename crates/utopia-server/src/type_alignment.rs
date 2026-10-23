@@ -43,6 +43,8 @@ type Vote = Option<String>;
 ///
 /// 检索报错也退回整表，同短语那边：候选算在判定的指纹里，报错这一轮判的词恢复以后
 /// 指纹对不上、再问一轮。不退回的话，嵌入端点一直坏着时新来的词就永远没有类
+///
+/// 例外是余额用完：不退回整表，原样返回这个错，让这一轮失败一次并报警，而不是接着问、接着排队。
 async fn candidates_for(
     state: &AppState,
     kb_id: Uuid,
@@ -63,6 +65,7 @@ async fn candidates_for(
     .await
     {
         Ok(nearest) => nearest,
+        Err(e) if utopia_llm::out_of_credit(&e).is_some() => return Err(e),
         Err(e) => {
             tracing::warn!(%kb_id, error = %e, "类别词对齐检索候选类失败，退回整表");
             Vec::new()
@@ -294,6 +297,8 @@ async fn align_types_locked(
                     .await
                 {
                     Ok(r) => r,
+                    // 欠费让整轮失败一次、告警响起，不按 failed 记了再排（同短语对齐，#1360）
+                    Err(e) if utopia_llm::out_of_credit(&e).is_some() => return Err(e),
                     Err(e) => {
                         tracing::warn!(%kb_id, error = %e, "类别词对齐调用失败，这一批留到下次");
                         failed += 1;

@@ -153,6 +153,8 @@ Content-Type: application/json
 
 Any other key is refused with `422`, so a mistaken `predicate` or `class` field cannot pass as a typed fact: the contract has no slot for one. A `subject`, or the entity of an `n` row, that is not listed in `e` is refused the same way, rather than dropped later in silence. A body over 64 KiB or with more than 200 statements is refused too.
 
+If every name your system pushes is already unique, such as `owner/repo:src/a.ts#parseDate`, set `{"names": "identity"}` in the source's config. A name from that source attaches to the entity with the same name (ignoring case, in the same class or none) and is created when there is none, whatever the surrounding text. It gets no name vector, so it queues no near-name pairs. A name that exists only under another class is created in this source's class, and still queues the type-drift review unless the two classes are declared disjoint.
+
 Two things to know before wiring a system to it:
 
 - **Send events, not state.** A row that *is* the current state of a system belongs on a mounted database, read at query time. Pushing it here copies state into the ledger and the two drift.

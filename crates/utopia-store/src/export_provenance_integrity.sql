@@ -339,7 +339,7 @@ SELECT edge, kind, COUNT(*) AS rows FROM (
     SELECT 'regression.property', 'cross_kb', p.kb_id IS DISTINCT FROM c.kb_id
       FROM ontology_regression_cases c
       LEFT JOIN relation_types p ON p.id = c.expected_property_id
-     WHERE c.kb_id = $1
+     WHERE c.kb_id = $1 AND c.expected_property_id IS NOT NULL
     UNION ALL
     -- @edge phrase_readings.entity_id -> entities.id
     -- 读数缓存：答出的实体喂给蕴含——别库的实体等于把别库语义读进本库

@@ -55,7 +55,7 @@ By domain; the domains are the files of [../design/](../design/README.md). **Sta
 | | Record | Status | Overtaken |
 |---|---|---|---|
 | 0041 | [A name is a claim about an entity](0041-a-name-is-a-claim-about-an-entity.md) | In progress |  |
-| 0071 | [A source may declare its names identities](0071-a-source-may-declare-its-names-identities.md) | Proposed |  |
+| 0071 | [A source may declare its names identities](0071-a-source-may-declare-its-names-identities.md) | In progress |  |
 
 ### [time](../design/time.md)
 

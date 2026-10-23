@@ -259,10 +259,6 @@ async fn chat_checks(client: &utopia_llm::LlmClient) -> serde_json::Value {
         limited(async { client.chat_at_streaming(&msg, Some(0.0)).await.map(|_| ()) }),
         limited(async { client.chat_tools(&ask, &tool).await.map(|_| ()) }),
     );
-    let check = |r: &anyhow::Result<()>| match r {
-        Ok(()) => json!({ "ok": true }),
-        Err(e) => json!({ "ok": false, "error": e.to_string() }),
-    };
     let failed: Vec<String> = [("streaming", &streaming), ("tools", &tools)]
         .into_iter()
         .filter_map(|(name, r)| r.as_ref().err().map(|e| format!("{name}: {e}")))
@@ -282,14 +278,48 @@ async fn chat_checks(client: &utopia_llm::LlmClient) -> serde_json::Value {
 const PROBE_LIMIT: std::time::Duration = std::time::Duration::from_secs(45);
 
 async fn limited<T>(f: impl std::future::Future<Output = anyhow::Result<T>>) -> anyhow::Result<T> {
-    tokio::time::timeout(PROBE_LIMIT, f)
+    limited_for(PROBE_LIMIT, f).await
+}
+
+async fn limited_for<T>(
+    limit: std::time::Duration,
+    f: impl std::future::Future<Output = anyhow::Result<T>>,
+) -> anyhow::Result<T> {
+    tokio::time::timeout(limit, f)
         .await
-        .unwrap_or_else(|_| {
-            Err(anyhow::anyhow!(
-                "no answer within {} s",
-                PROBE_LIMIT.as_secs()
-            ))
+        .unwrap_or_else(|_| Err(TimedOut(limit).into()))
+}
+
+/// 一问没在上限里答完。与被拒分开报（#1363 评审）：被拒说的是端点不收这个形状，超时说的是
+/// 它没说话，读的人该去查的东西不一样
+#[derive(Debug)]
+struct TimedOut(std::time::Duration);
+
+impl std::fmt::Display for TimedOut {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "no answer within {} s", self.0.as_secs())
+    }
+}
+
+impl std::error::Error for TimedOut {}
+
+/// 没答完：撞上探测上限，或者更早撞上探测客户端自己的读超时（`chat_probe_client` 是 30 s，比上限短）
+fn timed_out(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<TimedOut>().is_some()
+        || e.chain().any(|c| {
+            c.downcast_ref::<utopia_llm::Unreachable>()
+                .is_some_and(|u| u.0.is_timeout())
         })
+}
+
+fn check(r: &anyhow::Result<()>) -> serde_json::Value {
+    match r {
+        Ok(()) => json!({ "ok": true }),
+        Err(e) if timed_out(e) => {
+            json!({ "ok": false, "timed_out": true, "error": e.to_string() })
+        }
+        Err(e) => json!({ "ok": false, "error": e.to_string() }),
+    }
 }
 
 /// 连通性测试：对话按任务的三种请求形状各试一次（见 [`chat_checks`]）；embedding 试算一条并
@@ -426,6 +456,49 @@ mod tests {
             .find(|b| b.get("tools").is_some())
             .expect("a request with a tool");
         assert_eq!(tooled["tools"][0]["function"]["name"], "ping");
+    }
+
+    #[tokio::test]
+    async fn a_probe_that_runs_out_of_time_reads_as_timed_out_not_refused() {
+        let slow = async {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            anyhow::Ok(())
+        };
+        let r = super::limited_for(std::time::Duration::from_millis(20), slow).await;
+        let c = super::check(&r);
+        assert_eq!(c["timed_out"], true, "{c}");
+        assert!(
+            c["error"].as_str().unwrap().starts_with("no answer within"),
+            "{c}"
+        );
+        let refused = super::check(&Err(anyhow::anyhow!("HTTP 400")));
+        assert!(refused.get("timed_out").is_none(), "{refused}");
+    }
+
+    #[tokio::test]
+    async fn a_read_timeout_before_the_limit_reads_as_timed_out() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_delay(std::time::Duration::from_secs(2)))
+            .mount(&server)
+            .await;
+        let client = utopia_llm::LlmClient::with_timeouts(
+            &server.uri(),
+            None,
+            "m",
+            std::time::Duration::from_secs(1),
+            std::time::Duration::from_millis(100),
+        );
+        let msg = [utopia_llm::ChatMessage {
+            role: "user".into(),
+            content: "x".into(),
+        }];
+        let r = super::limited_for(std::time::Duration::from_secs(10), async {
+            client.chat(&msg).await.map(|_| ())
+        })
+        .await;
+        let c = super::check(&r);
+        assert_eq!(c["timed_out"], true, "{c}");
     }
 
     #[tokio::test]

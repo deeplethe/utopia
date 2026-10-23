@@ -229,12 +229,12 @@ export interface SourceView {
     repo?: string;
     /** github_issues：PR 在 GitHub 模型里也是工单，默认不收 */
     include_pull_requests?: boolean;
-    /** github_repo：给了就整列替换默认的 glob（markdown；隐藏目录、node_modules、vendor） */
+    /** github_repo / gitlab_repo：给了就整列替换默认的 glob（markdown；隐藏目录、node_modules、vendor） */
     include?: string[];
     exclude?: string[];
     /** jira_issues：站点地址，如 https://issues.apache.org/jira */
     base_url?: string;
-    /** jira_issues：项目 key，如 KAFKA */
+    /** jira_issues：项目 key，如 KAFKA；gitlab_repo：项目路径，如 group/subgroup/name */
     project?: string;
     /** false = 这个来源下的文档只检索、不抽取（schema 文档，0035 决定 7）；缺省抽取 */
     extract?: boolean;
@@ -1196,8 +1196,9 @@ export interface OntologyRegressionCase {
   id: string;
   kb_id: string;
   statement_id: string;
-  expected_property_id: string;
-  expected_direction: "forward" | "reverse";
+  expected_binding: "bound" | "none";
+  expected_property_id: string | null;
+  expected_direction: "forward" | "reverse" | null;
   created_by: string | null;
   created_at: string;
   origin: "adoption" | "person";
@@ -1205,6 +1206,7 @@ export interface OntologyRegressionCase {
   last_result: {
     passed: boolean;
     human_bound: boolean;
+    conflict?: "human_binding" | null;
     actual_property_id: string | null;
     actual_direction: "forward" | "reverse" | null;
     status: "bound" | "none" | "undecided";
@@ -1216,8 +1218,8 @@ export interface OntologyRegressionCase {
   object_id: string | null;
   object_label: string | null;
   object_value: Record<string, unknown> | null;
-  expected_property_label: string;
-  expected_property_key: string;
+  expected_property_label: string | null;
+  expected_property_key: string | null;
   actual_property_label: string | null;
   actual_property_key: string | null;
   created_by_label: string | null;
@@ -2268,11 +2270,15 @@ export const api = {
     ),
   addOntologyRegression: (
     kbId: string,
-    body: {
-      statement_id: string;
+    body: { statement_id: string } & ({
+      expected_binding?: "bound";
       relation_type_id: string;
       direction: "forward" | "reverse";
-    },
+    } | {
+      expected_binding: "none";
+      relation_type_id?: null;
+      direction?: null;
+    }),
   ) =>
     request<{ id: string }>(`/api/v1/kbs/${kbId}/ontology/regressions`, {
       method: "POST",
@@ -2760,7 +2766,7 @@ export const api = {
         ok: boolean;
         reply?: string;
         error?: string;
-        checks?: Record<"plain" | "streaming" | "tools", { ok: boolean; error?: string }>;
+        checks?: Record<"plain" | "streaming" | "tools", { ok: boolean; timed_out?: boolean; error?: string }>;
       };
       embed: { ok: boolean; dim?: number; error?: string };
       ocr?: { ok: boolean; version?: string | null; error?: string };
