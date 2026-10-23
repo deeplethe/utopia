@@ -272,6 +272,8 @@ pub enum SourceKind {
     Rss,
     GithubIssues,
     GithubRepo,
+    /// gitlab.com 项目默认分支的文件（#1327）；自建 GitLab 没有验证过
+    GitlabRepo,
     JiraIssues,
     S3,
     AzureBlob,

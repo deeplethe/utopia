@@ -61,6 +61,10 @@ async fn a_viewer_never_sees_a_credential() -> anyhow::Result<()> {
                 serde_json::json!({ "repo": "o/r", "auth_header": "Bearer r" }),
             ),
             (
+                "gitlab_repo",
+                serde_json::json!({ "project": "g/p", "auth_header": "Bearer l" }),
+            ),
+            (
                 "jira_issues",
                 serde_json::json!({ "base_url": "https://j.test", "project": "P", "auth_header": "Basic j" }),
             ),

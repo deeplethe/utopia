@@ -582,6 +582,7 @@ export const zh: Strings = {
       custom: "自定义",
       github_issues: "GitHub 工单",
       github_repo: "GitHub 仓库文件",
+      gitlab_repo: "GitLab 项目文件",
       jira_issues: "Jira 工单",
       s3: "S3 / MinIO",
       azure_blob: "Azure Blob",
@@ -603,6 +604,9 @@ export const zh: Strings = {
       github_repo:
         "读取一个仓库默认分支上的 markdown 文件。每个文件成为一篇文档，" +
         "日期取最后一次改动它的提交；没变的文件不会重抓。",
+      gitlab_repo:
+        "读取一个 gitlab.com 项目默认分支上的 markdown 文件，做法与 GitHub 仓库文件相同。" +
+        "私有项目要一个带 read_api 的令牌。自建 GitLab 没有验证过。",
       s3:
         "从 S3 桶里读文档，或者任何说同一套协议的东西（MinIO、Ceph、R2）。" +
         "**端点留空就是 AWS**，填了就是自建。每个对象成为一篇文档，" +
@@ -676,6 +680,7 @@ export const zh: Strings = {
     rssHydrationCounts: (c: { pending: number; queued: number; retrying: number; complete: number; terminal: number }) =>
       `待处理 ${c.pending} · 排队 ${c.queued} · 重试 ${c.retrying} · 完成 ${c.complete} · 终止 ${c.terminal}`,
     repoField: "仓库（owner/name）",
+    gitlabProjectField: "项目（group/name，可带子组）",
     jiraUrlField: "Jira 地址",
     jiraProjectField: "项目 key",
     s3BucketField: "桶名",
@@ -694,6 +699,7 @@ export const zh: Strings = {
     notionTokenField: "内部集成令牌",
     notionQueryField: "搜索词（可选——留空则取全部已分享页面）",
     tokenField: "GitHub 令牌（可选，不再显示）",
+    gitlabTokenField: "带 read_api 的 GitLab 令牌（可选，不再显示）",
     includePullRequests: "把 PR 也当工单收进来",
     includeGlobsField: "包含的 glob（逗号分隔，可选；填了就替换默认值）",
     excludeGlobsField: "排除的 glob（逗号分隔，可选；填了就替换默认值）",

@@ -884,7 +884,7 @@ async fn containment_reviews(
     // 本体声明了跟这个类互斥的那些类（含继承），一次取出，逐行比 id
     let disjoint = declared_disjoint_from(pool, kb_id, type_id).await?;
     // 第三列可空：未分类实体也要参与包含关系扫描（0009）
-    let rows: Vec<ContainRow> = sqlx::query_as(
+    let rows: Vec<ContainRow> = sqlx::query_as(&format!(
         "SELECT e.id, e.canonical_name, t.key, e.type_id, e.profile_embedding
          FROM entities e LEFT JOIN entity_types t ON t.id = e.type_id
          WHERE e.id IN (
@@ -899,20 +899,25 @@ async fn containment_reviews(
                                         WHERE nr.kb_id = $1 AND nr.builtin AND nr.key = 'known_as')
                 AND nf.invalidated_at IS NULL
                 AND char_length(nf.object_value->>'value') >= $4
-                AND (lower(nf.object_value->>'value') LIKE '%' || $6 || '%'
-                     OR $3 LIKE '%' || replace(replace(replace(lower(nf.object_value->>'value'), '\\', '\\\\'), '%', '\\%'), '_', '\\_') || '%'))
+                AND ((lower(nf.object_value->>'value') LIKE '%' || $6 || '%'
+                      AND lower(nf.object_value->>'value') ~ $7)
+                     OR ($3 LIKE '%' || replace(replace(replace(lower(nf.object_value->>'value'), '\\', '\\\\'), '%', '\\%'), '_', '\\_') || '%'
+                      AND $3 ~ {name_edges})))
            AND e.kb_id = $1 AND e.merged_into IS NULL
            AND e.id <> $2
            AND lower(e.canonical_name) <> $3
          ORDER BY char_length(e.canonical_name)
          LIMIT $5",
-    )
+        name_edges = crate::names::word_edges_sql("lower(nf.object_value->>'value')"),
+    ))
     .bind(kb_id)
     .bind(new_id)
     .bind(&lower)
     .bind(MIN_CONTAIN_CHARS)
     .bind(CONTAIN_SCAN_LIMIT)
     .bind(like_escaped(&lower))
+    // 只靠 LIKE，`token` 会匹配到 `service_token`：拉丁名字须落在词边界上才算包含（#1104）
+    .bind(crate::names::word_edges_pattern(&lower))
     .fetch_all(pool)
     .await?;
 

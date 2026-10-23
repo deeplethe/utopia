@@ -643,6 +643,7 @@ export const en = {
       custom: "Custom",
       github_issues: "GitHub issues",
       github_repo: "GitHub repository files",
+      gitlab_repo: "GitLab project files",
       jira_issues: "Jira issues",
       s3: "S3 / MinIO",
       azure_blob: "Azure Blob",
@@ -665,6 +666,10 @@ export const en = {
       github_repo:
         "Reads markdown files off a repository's default branch. Each file becomes one " +
         "document dated by its last commit; unchanged files are not fetched again.",
+      gitlab_repo:
+        "Reads markdown files off a gitlab.com project's default branch, the same way as " +
+        "GitHub repository files. A private project needs a token with read_api. " +
+        "Self-managed GitLab has not been verified.",
       s3:
         "Reads documents out of an S3 bucket, or anything speaking the same protocol " +
         "(MinIO, Ceph, R2). **Leave the endpoint empty for AWS**; fill it in for a " +
@@ -743,6 +748,7 @@ export const en = {
     rssHydrationCounts: (c: { pending: number; queued: number; retrying: number; complete: number; terminal: number }) =>
       `pending ${c.pending} · queued ${c.queued} · retrying ${c.retrying} · complete ${c.complete} · terminal ${c.terminal}`,
     repoField: "Repository (owner/name)",
+    gitlabProjectField: "Project (group/name, subgroups allowed)",
     jiraUrlField: "Jira site URL",
     jiraProjectField: "Project key",
     s3BucketField: "Bucket",
@@ -761,6 +767,7 @@ export const en = {
     notionTokenField: "Internal integration token",
     notionQueryField: "Search term (optional — empty takes every shared page)",
     tokenField: "GitHub token (optional, never shown again)",
+    gitlabTokenField: "GitLab token with read_api (optional, never shown again)",
     includePullRequests: "Treat pull requests as tickets too",
     includeGlobsField: "Include globs (comma-separated, optional; replaces the default)",
     excludeGlobsField: "Exclude globs (comma-separated, optional; replaces the default)",
