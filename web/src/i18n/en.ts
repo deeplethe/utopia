@@ -651,6 +651,7 @@ export const en = {
       gcs: "Google Cloud Storage",
       webdav: "WebDAV",
       notion: "Notion",
+      google_drive: "Google Drive",
     },
     sourceKindHints: {
       folder: "Holds the files you upload: add, drag in and remove them here.",
@@ -689,6 +690,10 @@ export const en = {
         "Syncs the pages a Notion integration can see — share a page with the integration " +
         "and it appears here. Dated by when the page was last edited, which is the page's " +
         "own clock rather than ours.",
+      google_drive:
+        "Syncs the folders you choose from your Google Drive, shared drives included. " +
+        "**You connect with your own Google account**, read-only; Docs, Sheets and Slides " +
+        "arrive as Word, Excel and PowerPoint files. Dated by each file's last modification.",
       api: "External systems push JSON documents here, authenticated with this source's own token.",
       statements:
         "Your system pushes statements already in the extraction contract; no model reads them. Send events, not the state of a table.",

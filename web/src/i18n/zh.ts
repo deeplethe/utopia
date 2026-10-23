@@ -590,6 +590,7 @@ export const zh: Strings = {
       gcs: "Google Cloud Storage",
       webdav: "WebDAV",
       notion: "Notion",
+      google_drive: "Google Drive",
     },
     sourceKindHints: {
       folder: "可在文件夹中管理上传的文件：上传、拖入、删除都在这里。",
@@ -624,6 +625,10 @@ export const zh: Strings = {
       notion:
         "同步一个 Notion 集成能看见的页面——把页面分享给集成，它就会出现在这里。" +
         "日期取页面最后一次编辑的时刻，那是页面自己的时钟，不是我们抓它的时刻。",
+      google_drive:
+        "同步你在 Google Drive 里选的文件夹，共享云端硬盘也算。" +
+        "**用你自己的 Google 账号连接**，只读；Docs、Sheets、Slides 以 Word、Excel、PowerPoint " +
+        "文件进来。日期取每个文件最后一次修改的时刻。",
       api: "外部系统把 JSON 文档推送到这里，用这个来源自己的令牌认证。",
       statements:
         "外部系统把已经是抽取契约形状的陈述推送到这里，不经模型；发事件，别发整张表的状态。",

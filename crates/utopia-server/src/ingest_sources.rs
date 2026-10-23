@@ -7,8 +7,9 @@
 use crate::state::AppState;
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
-use utopia_core::models::Source;
 use utopia_core::models::SourceKind;
+use utopia_core::models::{Role, Source};
+use utopia_core::AppError;
 use uuid::Uuid;
 
 #[cfg(test)]
@@ -91,6 +92,7 @@ pub async fn sync_source(state: &AppState, source_id: Uuid) -> anyhow::Result<()
         }
         Some(SourceKind::Webdav) => sync_webdav(state, &source).await,
         Some(SourceKind::Notion) => sync_notion(state, &source).await,
+        Some(SourceKind::GoogleDrive) => sync_google_drive(state, &source).await,
         // 被动容器：folder / api / memory / upload 没有拉取语义
         Some(
             SourceKind::Folder
@@ -1520,6 +1522,172 @@ async fn sync_notion(state: &AppState, source: &Source) -> anyhow::Result<SyncSt
                 .join("; ")
         );
     }
+    Ok(stats)
+}
+
+/// Google Drive 同步：走遍选中的文件夹，把读得出来的文件摄进来（0074）。
+///
+/// `doc_time` 取 `modifiedTime`，理由同 Notion：那是内容最后一次改动的时刻。
+/// 标记没变、文档还在的文件连下载都省了，见 `google_drive` 的模块注释。
+///
+/// **对账只在遍历完整时做**：列表到了上限、或有选中的文件夹打不开时，没看见的东西
+/// 不等于没了，只把这一轮看见的摘掉 missing 标记。下载到了上限不影响对账：列表是全的。
+///
+/// 没走完的这一轮（列表到顶、下载到顶、有打不开或读不出的）都报失败并说明缘由，
+/// 不报成功——「同步成功」下面不能藏着没进来的东西
+async fn sync_google_drive(state: &AppState, source: &Source) -> anyhow::Result<SyncStats> {
+    use crate::google_drive;
+
+    let refresh = source.config["refresh_token"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "google_drive source is not connected: connect a Google account in its settings"
+            )
+        })?;
+    // 读的是连上的那个人的 Drive：他离开了这个库、被降成只读、或账号停用了，
+    // 这份授权就不再替库读东西，等库里的人重连
+    let connector = match google_drive::connected_by(&source.config) {
+        Some(id) => utopia_store::accounts::find_user_by_id(&state.pool, id).await?,
+        None => None,
+    };
+    let access = match connector {
+        Some(user) => {
+            utopia_store::access::require_kb(&state.pool, &user, source.kb_id, Role::Editor).await
+        }
+        None => Err(AppError::NotFound),
+    };
+    let still_editor = match access {
+        Ok(_) => true,
+        Err(AppError::NotFound | AppError::Forbidden) => false,
+        Err(e) => return Err(e.into()),
+    };
+    anyhow::ensure!(
+        still_editor,
+        "the person who connected this Google Drive is no longer an editor of this knowledge base: reconnect it in the source settings"
+    );
+    let cfg = google_drive::oauth_config().ok_or_else(|| {
+        anyhow::anyhow!(
+            "Google Drive is not configured on this server (UTOPIA_GOOGLE_DRIVE_CLIENT_ID)"
+        )
+    })?;
+    let folders = google_drive::selected_folders(&source.config);
+    if folders.is_empty() {
+        anyhow::bail!("google_drive source has no folders selected");
+    }
+
+    let drive = google_drive::Drive::connect(&cfg, refresh).await?;
+    let listing = drive.walk(&folders).await?;
+
+    let known = google_drive::markers(&state.pool, source.id).await?;
+    let mut stats = SyncStats::default();
+    let mut seen_keys = Vec::with_capacity(listing.files.len());
+    let mut seen_ids = Vec::with_capacity(listing.files.len());
+    let mut unread: Vec<String> = Vec::new();
+    let mut downloads = 0usize;
+    let mut deferred = 0usize;
+    for f in &listing.files {
+        let key = f.external_key();
+        seen_keys.push(key.clone());
+        seen_ids.push(f.id.clone());
+        let marker = f.marker();
+        if known.get(&f.id) == Some(&marker) {
+            let live = utopia_store::documents::find_by_external_key(&state.pool, source.id, &key)
+                .await?
+                .is_some_and(|d| d.deleted_at.is_none());
+            if live {
+                continue;
+            }
+        }
+        if downloads == google_drive::MAX_DOWNLOADS_PER_SYNC {
+            deferred += 1;
+            continue;
+        }
+        downloads += 1;
+        // 读不出来的文件跳过，库里已有的原样留着，其余照常同步——同 Notion
+        let content = match drive.content(f).await {
+            Ok(c) => c,
+            Err(error) => {
+                tracing::warn!(id = %f.id, error = %format!("{error:#}"), "google drive file could not be read, leaving the stored document as it is");
+                unread.push(format!("{}: {error:#}", f.name));
+                continue;
+            }
+        };
+        let action = ingest_item(
+            state,
+            source.kb_id,
+            source.id,
+            &key,
+            &content.filename,
+            content.mime,
+            &content.bytes,
+            f.modified,
+        )
+        .await?;
+        google_drive::remember(&state.pool, source.id, &f.id, &marker).await?;
+        stats.absorb(action);
+    }
+
+    if listing.truncated || !listing.unreachable.is_empty() {
+        utopia_store::documents::clear_missing_keys(&state.pool, source.id, &seen_keys).await?;
+    } else {
+        utopia_store::documents::reconcile_missing(&state.pool, source.id, &seen_keys).await?;
+        google_drive::forget_others(&state.pool, source.id, &seen_ids).await?;
+    }
+
+    let mut gaps: Vec<String> = Vec::new();
+    if !listing.unreachable.is_empty() {
+        gaps.push(format!(
+            "{} selected folder(s) could not be opened (deleted, or no longer shared with the connected account): {}",
+            listing.unreachable.len(),
+            listing.unreachable.join(", ")
+        ));
+    }
+    if !unread.is_empty() {
+        gaps.push(format!(
+            "{} could not be read and keep their stored content: {}",
+            unread.len(),
+            unread
+                .iter()
+                .take(3)
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join("; ")
+        ));
+    }
+    if !listing.broken_shortcuts.is_empty() {
+        gaps.push(format!(
+            "{} shortcut(s) point to files the connected account cannot open: {}",
+            listing.broken_shortcuts.len(),
+            listing
+                .broken_shortcuts
+                .iter()
+                .take(3)
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join("; ")
+        ));
+    }
+    if listing.truncated {
+        gaps.push(
+            "the folders go deeper or hold more files than one walk lists, so the rest were not looked at"
+                .into(),
+        );
+    }
+    if deferred > 0 {
+        gaps.push(format!(
+            "{deferred} more file(s) wait for the next sync (at most {} downloads per run)",
+            google_drive::MAX_DOWNLOADS_PER_SYNC
+        ));
+    }
+    anyhow::ensure!(
+        gaps.is_empty(),
+        "{} file(s) synced; {}",
+        stats.total(),
+        gaps.join("; ")
+    );
     Ok(stats)
 }
 
