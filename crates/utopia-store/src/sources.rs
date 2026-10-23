@@ -21,20 +21,60 @@ pub fn creatable_kinds() -> Vec<&'static str> {
 
 /// 校验并规范化标准 5 段 cron 表达式（内部用 cron crate 的 6 段：补秒位）。
 pub fn validate_cron(expr: &str) -> AppResult<String> {
-    let normalized = expr.split_whitespace().collect::<Vec<_>>().join(" ");
-    let fields = normalized.split(' ').count();
-    if fields != 5 {
+    let mut fields: Vec<String> = expr.split_whitespace().map(str::to_string).collect();
+    if fields.len() != 5 {
         return Err(AppError::invalid_detail(
             "bad_cron_fields",
             "Cron expression must have 5 fields (minute hour day month weekday)",
-            format!("got {fields}"),
+            format!("got {}", fields.len()),
         ));
     }
+    if let Some(names) = weekday_names(&fields[4]) {
+        fields[4] = names;
+    }
+    let normalized = fields.join(" ");
     use std::str::FromStr;
     cron::Schedule::from_str(&format!("0 {normalized}")).map_err(|e| {
         AppError::invalid_detail("bad_cron", "Invalid cron expression", e.to_string())
     })?;
     Ok(normalized)
+}
+
+/// 星期那一段的数字按标准 cron 读（0–7，0 与 7 都是周日），存成名字。
+///
+/// cron crate 的数字星期是 Quartz 那一套，1 是周日：照 Advanced 旁边链着的 crontab.guru
+/// 写 `1-5`，同步落在周日到周四，`0` 则被当成越界拒掉。名字两边读法一样，存下来的
+/// 表达式也就没有歧义。没有数字、或读不懂的写法原样交给 cron crate 去校验
+fn weekday_names(field: &str) -> Option<String> {
+    if !field.bytes().any(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let mut days = [false; 7];
+    for part in field.split(',') {
+        let (range, step) = match part.split_once('/') {
+            Some((range, step)) => (range, step.parse::<usize>().ok().filter(|s| *s > 0)?),
+            None => (part, 1),
+        };
+        let (from, to) = match range.split_once('-') {
+            _ if range == "*" => (0, 6),
+            Some((from, to)) => (from.parse().ok()?, to.parse().ok()?),
+            None => {
+                let day = range.parse().ok()?;
+                (day, day)
+            }
+        };
+        if from > to || to > 7 {
+            return None;
+        }
+        for day in (from..=to).step_by(step) {
+            days[day % 7] = true;
+        }
+    }
+    let names = [1, 2, 3, 4, 5, 6, 0]
+        .into_iter()
+        .filter(|d| days[*d])
+        .map(|d| ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][d]);
+    Some(names.collect::<Vec<_>>().join(","))
 }
 
 pub const RSS_CONTENT_MODE_KEY: &str = "content_mode";
@@ -515,6 +555,17 @@ mod tests {
         assert!(validate_cron("9 * * *").is_err()); // 4 段
         assert!(validate_cron("99 9 * * *").is_err()); // 分钟越界
         assert!(validate_cron("0 0 0 0 0 0").is_err()); // 6 段
+    }
+
+    #[test]
+    fn cron_weekday_numbers_read_as_standard_cron() {
+        // crontab.guru 的 1-5 是周一到周五；cron crate 的数字星期却从周日 = 1 数起
+        assert_eq!(
+            validate_cron("0 9 * * 1-5").unwrap(),
+            "0 9 * * Mon,Tue,Wed,Thu,Fri"
+        );
+        assert_eq!(validate_cron("0 9 * * 0").unwrap(), "0 9 * * Sun");
+        assert_eq!(validate_cron("0 9 * * 5-7").unwrap(), "0 9 * * Fri,Sat,Sun");
     }
 
     #[test]
