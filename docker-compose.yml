@@ -2,6 +2,9 @@ services:
   db:
     # 拉不动 Docker Hub 时可用 UTOPIA_DB_IMAGE 覆盖为任何带 pgvector 的 PG16+ 镜像
     image: ${UTOPIA_DB_IMAGE:-pgvector/pgvector:pg16}
+    # Parallel queries on larger bases can exhaust Docker's default 64 MiB /dev/shm.
+    # This raises the limit; memory is allocated only as it is used.
+    shm_size: 1g
     environment:
       POSTGRES_USER: utopia
       POSTGRES_PASSWORD: ${UTOPIA_DB_PASSWORD:-utopia}
