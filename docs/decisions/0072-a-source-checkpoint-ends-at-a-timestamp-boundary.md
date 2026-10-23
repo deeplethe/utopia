@@ -1,6 +1,19 @@
 # A source checkpoint ends at a timestamp boundary
 
-Proposed 2026-10-19 (#1212, #1213); open: implementation and regression coverage.
+In progress 2026-10-22 (#1212, #1213): GitHub/Jira timestamp checkpoints implemented;
+Custom batch progression and recovery remain in #1246.
+
+GitHub/Jira store their watermark in `sources.sync_checkpoint`, initially NULL even
+when successful audit rows exist. Progress and the successful run commit together.
+Readers verify the selected timestamp prefix with a second pass before ingestion;
+changed identities or timestamps fail the run without advancing progress. This adds
+listing requests but does not extend the selected window. It detects observed page
+movement, not an atomic snapshot guarantee from either provider. Comment/event
+histories that exceed GitHub's detail-page limit fail instead of replacing a
+document with truncated history.
+Explicit rate-limit responses wait and retry the current request (up to three
+retries), preserving the in-memory position. Invalid or over-one-day wait hints
+fail the run instead of retrying before the provider permits it.
 
 ## Context
 

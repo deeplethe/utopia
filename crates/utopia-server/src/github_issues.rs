@@ -40,11 +40,13 @@
 use crate::time_text;
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
+use std::collections::BTreeMap;
+use std::time::Duration;
 
-/// 一次同步最多取多少页（每页 100）。GitHub 的分页没有天然终点，
-/// 一个活跃仓库能翻很久；这里沿用单端点的分页预算。
+/// 列表预算可在完整时间组边界延长；单张工单的详情仍须在上限内完整读取。
 const MAX_PAGES: u32 = 10;
 const PER_PAGE: u32 = 100;
+const MAX_RATE_LIMIT_RETRIES: u32 = 3;
 
 #[derive(Debug, Deserialize)]
 pub struct Issue {
@@ -217,16 +219,39 @@ pub(crate) async fn get_checked(
     auth: Option<&str>,
     accept: Option<&str>,
 ) -> anyhow::Result<reqwest::Response> {
-    let mut req = http.get(url);
-    if let Some(a) = auth {
-        req = req.header(reqwest::header::AUTHORIZATION, a);
-    }
-    if let Some(a) = accept {
-        req = req.header(reqwest::header::ACCEPT, a);
-    }
-    let resp = req.send().await?;
-    let status = resp.status();
-    if !status.is_success() {
+    let mut retries = 0;
+    loop {
+        let mut req = http.get(url.clone());
+        if let Some(a) = auth {
+            req = req.header(reqwest::header::AUTHORIZATION, a);
+        }
+        if let Some(a) = accept {
+            req = req.header(reqwest::header::ACCEPT, a);
+        }
+        let resp = req.send().await?;
+        let status = resp.status();
+        if status.is_success() {
+            return Ok(resp);
+        }
+        if matches!(
+            status,
+            reqwest::StatusCode::FORBIDDEN | reqwest::StatusCode::TOO_MANY_REQUESTS
+        ) && retries < MAX_RATE_LIMIT_RETRIES
+        {
+            if let Some(delay) = rate_limit_delay(resp.headers(), Utc::now()) {
+                // 等待留在当前请求内，否则超大时间组会在每次重试时重新耗尽前缀的配额。
+                let delay = delay.max(Duration::from_secs(1 << retries));
+                retries += 1;
+                tracing::info!(
+                    retries,
+                    wait_seconds = delay.as_secs(),
+                    "GitHub rate limited; waiting before retry"
+                );
+                drop(resp);
+                tokio::time::sleep(delay).await;
+                continue;
+            }
+        }
         // 限流说清楚是限流：未认证时每小时 60 次，一个中等仓库一次同步就能吃光。
         // 报成通用 HTTP 错会让人去查网络，而正确的动作是配一个令牌
         let remaining = resp
@@ -241,10 +266,163 @@ pub(crate) async fn get_checked(
         }
         anyhow::bail!("HTTP {status} from GitHub");
     }
-    Ok(resp)
 }
 
-/// 分页取一个端点，直到空页或触顶。
+fn rate_limit_delay(headers: &reqwest::header::HeaderMap, now: DateTime<Utc>) -> Option<Duration> {
+    let retry_after = headers
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| {
+            value
+                .trim()
+                .parse::<u64>()
+                .ok()
+                .map(Duration::from_secs)
+                .or_else(|| {
+                    DateTime::parse_from_rfc2822(value)
+                        .ok()
+                        .map(|at| at.signed_duration_since(now).to_std().unwrap_or_default())
+                })
+        });
+    let delay = retry_after.or_else(|| {
+        if headers.get("x-ratelimit-remaining")?.to_str().ok()? != "0" {
+            return None;
+        }
+        let reset = headers
+            .get("x-ratelimit-reset")?
+            .to_str()
+            .ok()?
+            .parse::<i64>()
+            .ok()?;
+        let reset = DateTime::from_timestamp(reset, 0)?;
+        Some(
+            reset
+                .signed_duration_since(now)
+                .to_std()
+                .unwrap_or_default(),
+        )
+    })?;
+    // 离谱的响应头不能挂住 worker；拒绝本次重试，而不是早于服务端允许的时间重发。
+    (delay <= Duration::from_secs(24 * 60 * 60)).then_some(delay)
+}
+
+pub struct IssueWindow {
+    pub issues: Vec<Issue>,
+    pub checkpoint: Option<DateTime<Utc>>,
+}
+
+/// offset 分页不是快照；复读同一前缀，变化时让调用者保留旧 checkpoint 后重试。
+pub async fn fetch_window(
+    http: &reqwest::Client,
+    base: &str,
+    since: Option<DateTime<Utc>>,
+    item_limit: usize,
+    include_prs: bool,
+    auth: Option<&str>,
+) -> anyhow::Result<IssueWindow> {
+    let (window, positions) =
+        fetch_window_pass(http, base, since, item_limit, include_prs, auth, None).await?;
+    if let Some(checkpoint) = window
+        .checkpoint
+        .filter(|checkpoint| Some(*checkpoint) != since)
+    {
+        let (verified, verified_positions) = fetch_window_pass(
+            http,
+            base,
+            since,
+            item_limit,
+            include_prs,
+            auth,
+            Some(checkpoint),
+        )
+        .await?;
+        anyhow::ensure!(
+            verified.checkpoint == Some(checkpoint) && positions == verified_positions,
+            "GitHub issues changed during pagination; retry the previous checkpoint"
+        );
+    }
+    Ok(window)
+}
+
+async fn fetch_window_pass(
+    http: &reqwest::Client,
+    base: &str,
+    since: Option<DateTime<Utc>>,
+    item_limit: usize,
+    include_prs: bool,
+    auth: Option<&str>,
+    through: Option<DateTime<Utc>>,
+) -> anyhow::Result<(IssueWindow, BTreeMap<i64, DateTime<Utc>>)> {
+    let mut query = vec![
+        ("state", "all".to_owned()),
+        ("sort", "updated".to_owned()),
+        ("direction", "asc".to_owned()),
+    ];
+    if let Some(since) = since {
+        query.push(("since", since.to_rfc3339()));
+    }
+    let mut window = IssueWindow {
+        issues: Vec::new(),
+        checkpoint: since,
+    };
+    let mut positions = BTreeMap::new();
+    let mut previous_time = None;
+    let mut stop_after = through;
+    let mut listing_pages = 0;
+    let mut page = 1;
+    loop {
+        let mut url = reqwest::Url::parse(base)?;
+        {
+            let mut parameters = url.query_pairs_mut();
+            for (key, value) in &query {
+                parameters.append_pair(key, value);
+            }
+            parameters.append_pair("per_page", &PER_PAGE.to_string());
+            parameters.append_pair("page", &page.to_string());
+        }
+        let batch: Vec<Issue> = get_checked(http, url, auth, None).await?.json().await?;
+        let count = batch.len();
+        let mut page_counted = false;
+        for issue in batch {
+            let updated = issue.updated_at;
+            anyhow::ensure!(
+                previous_time.is_none_or(|previous| updated >= previous),
+                "GitHub issues are not ordered by update time; retry the previous checkpoint"
+            );
+            previous_time = Some(updated);
+            if stop_after.is_some_and(|boundary| updated > boundary) {
+                return Ok((window, positions));
+            }
+            // 已消费条目和排除的 PR 也能移动页边界，必须参加复读核对。
+            anyhow::ensure!(
+                positions.insert(issue.number, updated).is_none(),
+                "GitHub issue repeated during pagination; retry the previous checkpoint"
+            );
+            if since.is_some_and(|checkpoint| updated <= checkpoint) {
+                continue;
+            }
+            if !page_counted {
+                listing_pages += 1;
+                page_counted = true;
+            }
+            window.checkpoint = Some(updated);
+            if include_prs || issue.pull_request.is_none() {
+                window.issues.push(issue);
+            }
+            if through.is_none()
+                && (window.issues.len() >= item_limit || listing_pages >= MAX_PAGES)
+            {
+                stop_after = Some(updated);
+            }
+        }
+        if count < PER_PAGE as usize {
+            return Ok((window, positions));
+        }
+        page += 1;
+    }
+}
+
+/// 详情不能用截断的评论或事件覆盖已有完整正文；第十一页只探测是否溢出。
 pub async fn fetch_all<T: for<'de> Deserialize<'de>>(
     http: &reqwest::Client,
     base: &str,
@@ -252,7 +430,7 @@ pub async fn fetch_all<T: for<'de> Deserialize<'de>>(
     auth: Option<&str>,
 ) -> anyhow::Result<Vec<T>> {
     let mut out = Vec::new();
-    for page in 1..=MAX_PAGES {
+    for page in 1..=MAX_PAGES + 1 {
         // 自己拼 query：这套 reqwest 特性组合里没有 RequestBuilder::query，
         // 而 sync_custom 本来也是这么拼的
         let mut url = reqwest::Url::parse(base)?;
@@ -267,6 +445,13 @@ pub async fn fetch_all<T: for<'de> Deserialize<'de>>(
         let resp = get_checked(http, url, auth, None).await?;
         let batch: Vec<T> = resp.json().await?;
         let n = batch.len();
+        if page > MAX_PAGES {
+            anyhow::ensure!(
+                n == 0,
+                "GitHub discussion exceeds the ten-page limit; refusing a truncated document"
+            );
+            break;
+        }
         out.extend(batch);
         if n < PER_PAGE as usize {
             break;
@@ -278,6 +463,270 @@ pub async fn fetch_all<T: for<'de> Deserialize<'de>>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::{json, Value};
+    use std::sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Arc,
+    };
+    use wiremock::{matchers::method, Mock, MockServer, Request, ResponseTemplate};
+
+    fn listing_row(number: i64, updated: &str) -> Value {
+        json!({
+            "number": number, "title": format!("Issue {number}"), "state": "open",
+            "created_at": "2026-01-01T00:00:00Z", "updated_at": updated,
+        })
+    }
+
+    fn requested_page(request: &Request) -> usize {
+        request
+            .url
+            .query_pairs()
+            .find(|(key, _)| key == "page")
+            .unwrap()
+            .1
+            .parse()
+            .unwrap()
+    }
+
+    #[test]
+    fn rate_limit_headers_supply_a_bounded_wait_without_guessing() {
+        let now: DateTime<Utc> = "2026-01-02T00:00:00Z".parse().unwrap();
+        let mut headers = reqwest::header::HeaderMap::new();
+        for (value, expected) in [
+            ("2", Some(2)),
+            ("0", Some(0)),
+            ("-1", None),
+            ("broken", None),
+            ("86401", None),
+        ] {
+            headers.insert(reqwest::header::RETRY_AFTER, value.parse().unwrap());
+            assert_eq!(
+                rate_limit_delay(&headers, now),
+                expected.map(Duration::from_secs)
+            );
+        }
+        headers.insert(
+            reqwest::header::RETRY_AFTER,
+            (now + chrono::Duration::seconds(3))
+                .to_rfc2822()
+                .parse()
+                .unwrap(),
+        );
+        assert_eq!(
+            rate_limit_delay(&headers, now),
+            Some(Duration::from_secs(3))
+        );
+        headers.remove(reqwest::header::RETRY_AFTER);
+        headers.insert("x-ratelimit-remaining", "0".parse().unwrap());
+        headers.insert(
+            "x-ratelimit-reset",
+            (now.timestamp() + 60).to_string().parse().unwrap(),
+        );
+        assert_eq!(
+            rate_limit_delay(&headers, now),
+            Some(Duration::from_secs(60))
+        );
+        headers.insert("x-ratelimit-remaining", "1".parse().unwrap());
+        assert_eq!(rate_limit_delay(&headers, now), None);
+    }
+
+    #[tokio::test]
+    async fn a_rate_limited_request_waits_and_preserves_its_url_and_headers() {
+        let server = MockServer::start().await;
+        let http = reqwest::Client::builder().no_proxy().build().unwrap();
+        for status in [403, 429] {
+            server.reset().await;
+            let attempts = AtomicUsize::new(0);
+            Mock::given(method("GET"))
+                .respond_with(move |_: &Request| {
+                    if attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+                        ResponseTemplate::new(status).insert_header("Retry-After", "0")
+                    } else {
+                        ResponseTemplate::new(200)
+                    }
+                })
+                .mount(&server)
+                .await;
+            let url = reqwest::Url::parse(&format!("{}/resource?page=2", server.uri())).unwrap();
+            let started = std::time::Instant::now();
+            get_checked(
+                &http,
+                url.clone(),
+                Some("Bearer fixture"),
+                Some("application/vnd.github.raw+json"),
+            )
+            .await
+            .unwrap();
+            assert!(started.elapsed() >= Duration::from_secs(1));
+            let requests = server.received_requests().await.unwrap();
+            assert_eq!(requests.len(), 2);
+            for request in &requests {
+                // wiremock 为 origin-form URI 补 localhost；实际目标主机保留在 Host 头中。
+                assert_eq!(request.url.path(), url.path());
+                assert_eq!(request.url.query(), url.query());
+                assert_eq!(
+                    request.headers.get("host").unwrap().to_str().unwrap(),
+                    server.address().to_string()
+                );
+                assert_eq!(
+                    request.headers.get("authorization").unwrap(),
+                    "Bearer fixture"
+                );
+                assert_eq!(
+                    request.headers.get("accept").unwrap(),
+                    "application/vnd.github.raw+json"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn persistent_rate_limits_stop_after_a_bounded_number_of_requests() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "0"))
+            .mount(&server)
+            .await;
+        let http = reqwest::Client::builder().no_proxy().build().unwrap();
+        assert!(
+            get_checked(&http, server.uri().parse().unwrap(), None, None)
+                .await
+                .is_err()
+        );
+        assert_eq!(server.received_requests().await.unwrap().len(), 4);
+    }
+
+    #[tokio::test]
+    async fn an_empty_window_retains_the_previous_checkpoint_without_verification() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+            .mount(&server)
+            .await;
+        let http = reqwest::Client::builder().no_proxy().build().unwrap();
+        let since = Some("2026-01-02T00:00:00Z".parse().unwrap());
+        let window = fetch_window(&http, &server.uri(), since, 200, false, None)
+            .await
+            .unwrap();
+        assert!(window.issues.is_empty());
+        assert_eq!(window.checkpoint, since);
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_large_timestamp_group_finishes_and_the_next_run_passes_its_old_pages() {
+        let server = MockServer::start().await;
+        let group_time = "2026-01-02T00:00:00Z";
+        let later_time = "2026-01-03T00:00:00Z";
+        let mut rows: Vec<_> = (1..=1001)
+            .map(|number| listing_row(number, group_time))
+            .collect();
+        rows.push(listing_row(1002, later_time));
+        Mock::given(method("GET"))
+            .respond_with(move |request: &Request| {
+                let page = requested_page(request);
+                let rows: Vec<_> = rows
+                    .iter()
+                    .skip((page - 1) * 100)
+                    .take(100)
+                    .cloned()
+                    .collect();
+                ResponseTemplate::new(200).set_body_json(rows)
+            })
+            .mount(&server)
+            .await;
+        let http = reqwest::Client::builder().no_proxy().build().unwrap();
+        for limit in [200, usize::MAX] {
+            let first = fetch_window(&http, &server.uri(), None, limit, false, None)
+                .await
+                .unwrap();
+            assert_eq!(first.issues.len(), 1001);
+            assert_eq!(first.checkpoint, Some(group_time.parse().unwrap()));
+        }
+        // 模拟端点仍返回 inclusive 下界；十页旧记录不应耗尽新一轮的任一预算。
+        let next = fetch_window(
+            &http,
+            &server.uri(),
+            Some(group_time.parse().unwrap()),
+            200,
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(next.issues.len(), 1);
+        assert_eq!(next.issues[0].number, 1002);
+        assert_eq!(next.checkpoint, Some(later_time.parse().unwrap()));
+        let requests = server.received_requests().await.unwrap();
+        assert!(requests.iter().all(|request| {
+            request
+                .url
+                .query_pairs()
+                .any(|(key, value)| key == "sort" && value == "updated")
+                && request
+                    .url
+                    .query_pairs()
+                    .any(|(key, value)| key == "direction" && value == "asc")
+        }));
+        assert!(requests.iter().any(|request| requested_page(request) == 11));
+    }
+
+    #[tokio::test]
+    async fn an_update_that_moves_a_read_issue_to_the_tail_rejects_the_window() {
+        let server = MockServer::start().await;
+        let moved = Arc::new(AtomicBool::new(false));
+        Mock::given(method("GET"))
+            .respond_with(move |request: &Request| {
+                let page = requested_page(request);
+                if page == 2 {
+                    moved.store(true, Ordering::SeqCst);
+                }
+                let mut rows: Vec<_> = (1..=201)
+                    .map(|number| listing_row(number, "2026-01-02T00:00:00Z"))
+                    .collect();
+                if moved.load(Ordering::SeqCst) {
+                    rows.remove(0);
+                    rows.push(listing_row(1, "2026-01-03T00:00:00Z"));
+                }
+                let rows: Vec<_> = rows.into_iter().skip((page - 1) * 100).take(100).collect();
+                ResponseTemplate::new(200).set_body_json(rows)
+            })
+            .mount(&server)
+            .await;
+        let http = reqwest::Client::builder().no_proxy().build().unwrap();
+        let result = fetch_window(&http, &server.uri(), None, 200, false, None).await;
+        assert!(result
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("changed during pagination"));
+    }
+
+    #[tokio::test]
+    async fn a_discussion_must_not_be_returned_with_an_unread_eleventh_page() {
+        let server = MockServer::start().await;
+        for count in [1001, 1000] {
+            server.reset().await;
+            Mock::given(method("GET"))
+                .respond_with(move |request: &Request| {
+                    let page = requested_page(request);
+                    let rows: Vec<_> = (0..count).skip((page - 1) * 100).take(100).collect();
+                    ResponseTemplate::new(200).set_body_json(rows)
+                })
+                .mount(&server)
+                .await;
+            let http = reqwest::Client::builder().no_proxy().build().unwrap();
+            let result = fetch_all::<u32>(&http, &server.uri(), &[], None).await;
+            if count == 1001 {
+                assert!(result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("truncated document"));
+            } else {
+                assert_eq!(result.unwrap().len(), 1000);
+            }
+        }
+    }
 
     fn issue(json: serde_json::Value) -> Issue {
         serde_json::from_value(json).unwrap()

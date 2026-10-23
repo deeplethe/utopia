@@ -23,6 +23,15 @@ per ticket; timestamps are written to the second [0013]. A GitHub repository fil
 keyed by its path and dated by the last commit that touched it; a file whose blob SHA has not
 changed is not fetched again, and identical files at several paths go in once [#1303].
 
+**Ticket checkpoints.** GitHub/Jira read by ascending update time and stop only after
+a whole timestamp group, even when that exceeds 200 items or ten listing pages.
+Already consumed timestamps use neither budget. Their private source checkpoint is
+committed with the successful run, independent of retained audit history; empty or
+failed runs do not advance it. Upgrades start these two readers from NULL and reuse
+document/version/job deduplication. A second listing pass checks the selected prefix
+for page movement; neither API provides a snapshot. GitHub refuses truncated
+comment/event history. Custom batch progression is separate work in #1246 [0072].
+
 **Statements.** A `statements` source takes the open extraction contract itself (`e`, `s`, `n`) on `POST /sources/{id}/statements`, with the `api` push's identity, versions, tombstones and run history; the payload is the document and its single chunk, and extraction parses the chunk instead of prompting a model, then runs the unchanged path, so a pushed statement is an open statement with the item as its evidence (null offsets) and reaches the typed graph only through alignment. The contract has no slot for a property or a class and unknown keys are refused; a second push under the same identity marks the earlier statements stale rather than closing them; tables belong on a mount, not here [0054].
 
 **RSS.** Observations are not documents: one table with baseline, candidate and no_source rows;
