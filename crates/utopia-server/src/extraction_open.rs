@@ -1246,6 +1246,10 @@ pub(crate) async fn run_open(
         state.emit_review(kb_id);
     }
 
+    // 身份来源（0071 决定 5）：散文先写下的名字向量，这篇给了它身份证据，删掉
+    if identity {
+        utopia_store::name_vectors::drop_for_document(pool, document_id).await?;
+    }
     // 名字向量：这篇新写的名字事实，向量补上（0041 决定 3 通道 2）。算不出来只记日志——
     // 文档已经抽完了，不能因为召回的辅助数据没算而把它标成 failed
     if let (Some(settings), Some(client)) = (settings, &embed) {

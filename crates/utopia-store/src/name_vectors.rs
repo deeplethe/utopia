@@ -25,11 +25,28 @@ pub const TOP_K: usize = 8;
 /// 0.4 上下的余弦——所以这条线比画像的 `SIM_ATTACH` 高。同样是待测量的临时值
 pub const SIM_FLOOR: f32 = 0.60;
 
+/// 名字事实 `$fact` 有身份来源的证据（0071 决定 4、5）：这样的名字不留向量
+macro_rules! has_identity_evidence {
+    ($fact:literal) => {
+        concat!(
+            "EXISTS (SELECT 1 FROM fact_evidence fe
+                       JOIN documents d ON d.id = fe.document_id
+                       JOIN sources s ON s.id = d.source_id
+                      WHERE fe.fact_id = ",
+            $fact,
+            " AND s.kind = 'statements' AND s.config->>'names' = 'identity')"
+        )
+    };
+}
+
 /// `known_as` 的 id 用子查询取，不要改回 JOIN：子查询先算出一个值，`predicate_id = 它` 才成了
 /// `facts_live_predicate_idx`（0115）的索引条件，扫描只碰这个库的名字事实，且仍按 id 走，
 /// `ORDER BY ... LIMIT` 不用排序。写成 JOIN，规划器沿 `facts_kb_id_key` 把整个库按 id 读一遍，
 /// 谓词只能逐行筛（#1296：20 万条事实的库上读 20 万行，这样读 2 万行）
-const PENDING_SQL: &str = "SELECT f.id, f.subject_id, f.object_value->>'value'
+///
+/// 有身份来源证据的名字不补向量，哪怕散文也提到它（0071 决定 4、5）
+const PENDING_SQL: &str = concat!(
+    "SELECT f.id, f.subject_id, f.object_value->>'value'
        FROM facts f
        LEFT JOIN name_vectors v ON v.fact_id = f.id
       WHERE f.kb_id = $1
@@ -37,10 +54,15 @@ const PENDING_SQL: &str = "SELECT f.id, f.subject_id, f.object_value->>'value'
                                WHERE nr.kb_id = $1 AND nr.builtin AND nr.key = $2)
         AND f.invalidated_at IS NULL AND f.object_value IS NOT NULL
         AND v.fact_id IS NULL
+        AND NOT ",
+    has_identity_evidence!("f.id"),
+    "
       ORDER BY f.id
-      LIMIT $3";
+      LIMIT $3"
+);
 
-/// 还没有向量的名字事实：现行的、`known_as` 上的、`name_vectors` 里没有它的。
+/// 还没有向量的名字事实：现行的、`known_as` 上的、`name_vectors` 里没有它的、
+/// 没有身份来源证据的。
 /// 按写入先后取（`facts.id` 是 uuid v7，按它排即按写入排；这张表没有 created_at——
 /// 端到端跑出来的：按一个不存在的列排，补向量每篇都静默失败），一次取一批
 pub async fn pending(
@@ -57,19 +79,50 @@ pub async fn pending(
     Ok(rows)
 }
 
+/// 来源刚开了身份名（0071 决定 6）：删掉有它文档证据的名字向量，与改配置同一个事务
+pub async fn drop_for_source(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    source_id: Uuid,
+) -> AppResult<()> {
+    sqlx::query(
+        "DELETE FROM name_vectors v
+          USING fact_evidence fe JOIN documents d ON d.id = fe.document_id
+          WHERE fe.fact_id = v.fact_id AND d.source_id = $1",
+    )
+    .bind(source_id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// 身份来源的文档抽完（0071 决定 5）：散文先写下的名字向量，这篇给了它身份证据就删
+pub async fn drop_for_document(pool: &PgPool, document_id: Uuid) -> AppResult<()> {
+    sqlx::query(
+        "DELETE FROM name_vectors v USING fact_evidence fe
+          WHERE fe.fact_id = v.fact_id AND fe.document_id = $1",
+    )
+    .bind(document_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 /// 写一批名字向量：`(fact_id, entity_id, embedding)`。同一条事实重写就覆盖（换了模型
-/// 重算）。第一次写下这个维度的向量，索引就该排上了（0035）
+/// 重算）。第一次写下这个维度的向量，索引就该排上了（0035）。
+/// 写的时候再查一次身份证据：补向量算到一半，来源开了身份名或身份文档抽完删过一轮，
+/// 这里不能把它写回去
 pub async fn set(pool: &PgPool, kb_id: Uuid, items: &[(Uuid, Uuid, Vec<f32>)]) -> AppResult<()> {
     if items.is_empty() {
         return Ok(());
     }
     let mut tx = pool.begin().await?;
     for (fact_id, entity_id, emb) in items {
-        sqlx::query(
+        sqlx::query(concat!(
             "INSERT INTO name_vectors (fact_id, kb_id, entity_id, embedding)
-             VALUES ($1, $2, $3, $4)
-             ON CONFLICT (fact_id) DO UPDATE SET embedding = EXCLUDED.embedding",
-        )
+                 SELECT $1::uuid, $2::uuid, $3::uuid, $4::vector WHERE NOT ",
+            has_identity_evidence!("$1"),
+            " ON CONFLICT (fact_id) DO UPDATE SET embedding = EXCLUDED.embedding"
+        ))
         .bind(fact_id)
         .bind(kb_id)
         .bind(entity_id)
