@@ -87,18 +87,22 @@ push documents in.
 
 7. **A token reads the graph** (added 2026-10-16, #1262). A service that mirrors into a base reads the
    base back to check what landed, and a session JWT is the wrong credential for a backend
-   (decision 6). Six reads now also take any live token, acting as its owner: searching a base's
+   (decision 6). Eight reads now also take any live token, acting as its owner: searching a base's
    entities (`GET /kbs/{id}/entities`), an entity's detail (`GET /kbs/{id}/entities/{eid}`), its
    record-axis history (`…/history`), a fact's evidence (`GET /kbs/{id}/facts/{fid}/evidence`),
-   the graph overview (`GET /kbs/{id}/graph/overview`) and an entity's neighbourhood
-   (`GET /kbs/{id}/graph/neighborhood`). Search finds the entity by name; the detail gives its
-   facts, names and derivations; the history says when we changed our mind; the evidence ties a
-   fact to its sentence; the overview gives the most connected entities with the base's totals,
-   so a client sees the shape of what it pushed; the neighbourhood gives the entities around one,
-   so it can follow what a statement touches, and one started from another base's entity comes
-   back empty. Read is the lowest scope, so any token qualifies; the owner's role is still the
-   ceiling and Viewer suffices; a token whose `kb_ids` exclude the base gets 404, as for document
-   content (0052). Changing an entity on the same path (`PATCH`) still takes a session.
+   the graph overview (`GET /kbs/{id}/graph/overview`), an entity's neighbourhood
+   (`GET /kbs/{id}/graph/neighborhood`), the ontology (`GET /kbs/{id}/ontology`) and a class's
+   instances (`GET /kbs/{id}/ontology/entity-types/{tid}/entities`). Search finds the entity by
+   name; the detail gives its facts, names and derivations; the history says when we changed our
+   mind; the evidence ties a fact to its sentence; the overview gives the most connected entities
+   with the base's totals, so a client sees the shape of what it pushed; the neighbourhood gives
+   the entities around one, so it can follow what a statement touches, and one started from
+   another base's entity comes back empty; the ontology turns a class key into the type id the
+   instances read takes; the instances list that class's members, or only those lacking a
+   relation, and a class id from another base gives an empty page. Read is the lowest scope, so
+   any token qualifies; the owner's role is still the ceiling and Viewer suffices; a token whose
+   `kb_ids` exclude the base gets 404, as for document content (0052). Changing an entity
+   (`PATCH`) or the ontology on the same paths still takes a session.
 
    Reading a pushed document back by the `external_id` it was pushed under
    (`GET /kbs/{id}/sources/{sid}/documents/by-external-id`, added 2026-10-19, #1276) takes a
@@ -133,7 +137,8 @@ push documents in.
   token now creates `api` sources too.
 - 2026-10-16: decision 7 opens four graph reads to any token; decision 6's "only these routes
   and document content" now also counts them. 2026-10-19: the graph overview and neighbourhood
-  join them, and so does reading a pushed document back by its `external_id` (#1276).
+  join them, and so does reading a pushed document back by its `external_id` (#1276). The
+  ontology and a class's instances follow (#1265).
 
 ## Open questions
 

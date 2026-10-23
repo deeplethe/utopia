@@ -33,6 +33,24 @@ const EMPLOYEES: [&str; 2] = ["E17", "F42"];
 enum Check {
     Resolver { target: usize },
     Adjudicator { literal: bool },
+    Guard(Guard),
+    ObjectOnly,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Guard {
+    Unrelated,
+    CrossSentence,
+    SharedQuote,
+    OverlappingQuotes,
+    SharedDepartment,
+    ConflictingQuotes,
+    MissingQuote,
+    UngroundedQuote,
+    TypedToUntyped,
+    UntypedToTyped,
+    IncompatibleType,
+    Markdown,
 }
 
 struct Case {
@@ -40,7 +58,11 @@ struct Case {
     check: Check,
 }
 
-const CASES: [Case; 4] = [
+const CASES: &[Case] = &[
+    Case {
+        id: "object_only_mention_without_owned_quote_keeps_tie_review",
+        check: Check::ObjectOnly,
+    },
     Case {
         id: "resolver_passage_over_profile",
         check: Check::Resolver { target: 1 },
@@ -57,14 +79,59 @@ const CASES: [Case; 4] = [
         id: "adjudicator_entity_clues_reach_request",
         check: Check::Adjudicator { literal: false },
     },
+    Case {
+        id: "unrelated_sentence_is_not_evidence",
+        check: Check::Guard(Guard::Unrelated),
+    },
+    Case {
+        id: "cross_sentence_quote_is_not_evidence",
+        check: Check::Guard(Guard::CrossSentence),
+    },
+    Case {
+        id: "two_subjects_share_a_quote",
+        check: Check::Guard(Guard::SharedQuote),
+    },
+    Case {
+        id: "two_subjects_have_overlapping_quotes",
+        check: Check::Guard(Guard::OverlappingQuotes),
+    },
+    Case {
+        id: "shared_department_is_not_unique",
+        check: Check::Guard(Guard::SharedDepartment),
+    },
+    Case {
+        id: "conflicting_quotes_do_not_choose",
+        check: Check::Guard(Guard::ConflictingQuotes),
+    },
+    Case {
+        id: "missing_quote_does_not_choose",
+        check: Check::Guard(Guard::MissingQuote),
+    },
+    Case {
+        id: "ungrounded_quote_does_not_choose",
+        check: Check::Guard(Guard::UngroundedQuote),
+    },
+    Case {
+        id: "typed_mention_can_choose_untyped_namesake",
+        check: Check::Guard(Guard::TypedToUntyped),
+    },
+    Case {
+        id: "untyped_mention_can_choose_typed_namesake",
+        check: Check::Guard(Guard::UntypedToTyped),
+    },
+    Case {
+        id: "incompatible_type_is_not_chosen",
+        check: Check::Guard(Guard::IncompatibleType),
+    },
+    Case {
+        id: "markdown_clue_recalls_the_stored_spelling",
+        check: Check::Guard(Guard::Markdown),
+    },
 ];
 
 // #1136: a listed case MUST fail today; every other case MUST pass. A fix removes
 // the corresponding names with its code change, so success cannot silently go stale.
-const KNOWN_FAILURES: [(&str, &str); 2] = [
-    ("resolver_passage_over_profile", "forward"),
-    ("resolver_passage_over_profile", "reverse"),
-];
+const KNOWN_FAILURES: [(&str, &str); 0] = [];
 
 struct Step {
     prompt_has: String,
@@ -261,6 +328,8 @@ impl Fx {
             holders[i] = self.seed(i, case.check).await?;
         }
         let (passed, observation) = match case.check {
+            Check::Guard(guard) => self.guard(guard, holders).await?,
+            Check::ObjectOnly => self.object_only(holders).await?,
             Check::Resolver { target } => {
                 self.model.steps.lock().unwrap().push_back(Step {
                     prompt_has: self.quotes[2].clone(), stream: true,
@@ -353,18 +422,225 @@ impl Fx {
         let model_calls = self.model.requests.lock().unwrap().len();
         anyhow::ensure!(
             model_calls == 1,
-            "expected exactly one scripted request, got {model_calls}"
+            "expected one scripted request, got {model_calls}"
         );
         let pending_human: i64 = sqlx::query_scalar("SELECT count(*) FROM resolution_reviews WHERE kb_id=$1 AND stage='human' AND status='pending'")
             .bind(self.kb).fetch_one(&self.pool).await?;
         anyhow::ensure!(
-            pending_human == 0,
+            pending_human
+                == if matches!(case.check, Check::ObjectOnly) {
+                    2
+                } else {
+                    0
+                },
             "unexpected pending Human reviews: {pending_human}"
         );
         Ok(
             json!({"id":case.id,"order":if reverse {"reverse"} else {"forward"},
             "passed":passed,"observation":observation,"pending_human":pending_human,"model_calls":model_calls}),
         )
+    }
+
+    async fn object_only(&self, holders: [Uuid; 2]) -> anyhow::Result<(bool, Value)> {
+        let text = "Finance assigned a report to Alex Lee.";
+        // Both namesakes tie. Finance is the statement's subject, so its quote
+        // cannot rescue the object through the old #331 whole-chunk tie shortcut.
+        sqlx::query("UPDATE entities SET profile_embedding='[1,0,0]'::vector WHERE id=$1")
+            .bind(holders[1])
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("UPDATE chunks SET text=$1 WHERE id=$2")
+            .bind(text)
+            .bind(self.chunks[2])
+            .execute(&self.pool)
+            .await?;
+        self.model.steps.lock().unwrap().push_back(Step {
+            prompt_has: text.into(),
+            stream: true,
+            text: json!({"e":[["Alex Lee","person",1],["Finance","department",1]],
+                "s":[[text,"Finance","assigned","Alex Lee",null,null,null,null]],"n":[]})
+            .to_string(),
+        });
+        crate::extraction::extract_document(&self.state, self.docs[2], Default::default()).await?;
+        let owners: Vec<Uuid> = sqlx::query_scalar("SELECT DISTINCT f.object_id FROM facts f JOIN fact_evidence fe ON fe.fact_id=f.id WHERE f.kb_id=$1 AND fe.document_id=$2 AND f.layer='open' AND f.phrase='assigned'")
+            .bind(self.kb).bind(self.docs[2]).fetch_all(&self.pool).await?;
+        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM entities WHERE kb_id=$1 AND canonical_name='Alex Lee' AND merged_into IS NULL")
+            .bind(self.kb).fetch_one(&self.pool).await?;
+        Ok((
+            owners.len() == 1 && !holders.contains(&owners[0]) && count == 3,
+            json!({"original_candidates":holders,"object_owners":owners,"entities":count}),
+        ))
+    }
+
+    async fn guard(&self, guard: Guard, holders: [Uuid; 2]) -> anyhow::Result<(bool, Value)> {
+        use Guard::*;
+        let simple = "Alex Lee submitted a report.";
+        let finance = "Alex Lee from Finance submitted a report.";
+        let unrelated = "Alex Lee submitted a report. Finance reviewed the annual budget.";
+        let shared = "Alex Lee submitted a report while Bob Chen from Finance approved it.";
+        let conflicting = "Alex Lee from Platform Engineering submitted a report. Alex Lee from Finance submitted a report.";
+        let text = match guard {
+            Markdown => "**Alex Lee** from Finance submitted a report.",
+            UngroundedQuote => simple,
+            Unrelated | CrossSentence => unrelated,
+            SharedQuote | OverlappingQuotes => shared,
+            ConflictingQuotes => conflicting,
+            _ => finance,
+        };
+        let quote = match guard {
+            MissingQuote => None,
+            Unrelated => Some(simple),
+            UngroundedQuote => Some(finance),
+            ConflictingQuotes => Some("Alex Lee from Platform Engineering submitted a report."),
+            _ => Some(text),
+        };
+        let mut entities = vec![json!(["Alex Lee", "person", 1])];
+        let mut statements = vec![json!([
+            quote,
+            "Alex Lee",
+            "submitted",
+            null,
+            "a report",
+            null,
+            null,
+            null
+        ])];
+        match guard {
+            Markdown => {
+                // Both the folded name and a legacy formatted spelling are exact
+                // candidates; limiting corroboration to one spelling loses the clue.
+                entities[0] = json!(["**Alex Lee**", "person", 1]);
+                statements[0][1] = json!("**Alex Lee**");
+                sqlx::query("UPDATE entities SET canonical_name='**Alex Lee**' WHERE id=$1")
+                    .bind(holders[1])
+                    .execute(&self.pool)
+                    .await?;
+            }
+            Unrelated => {
+                entities.push(json!(["Finance", "department", 1]));
+                statements.push(json!([
+                    "Finance reviewed the annual budget.",
+                    "Finance",
+                    "reviewed",
+                    null,
+                    "the annual budget",
+                    null,
+                    null,
+                    null
+                ]));
+            }
+            SharedQuote | OverlappingQuotes => {
+                entities.push(json!(["Bob Chen", "person", 1]));
+                let other_quote = if guard == SharedQuote {
+                    shared
+                } else {
+                    "Bob Chen from Finance approved it."
+                };
+                statements.push(json!([
+                    other_quote,
+                    "Bob Chen",
+                    "approved",
+                    null,
+                    "it",
+                    null,
+                    null,
+                    null
+                ]));
+            }
+            ConflictingQuotes => statements.push(json!([
+                finance,
+                "Alex Lee",
+                "submitted",
+                null,
+                "a report",
+                null,
+                null,
+                null
+            ])),
+            SharedDepartment => {
+                sqlx::query("UPDATE facts SET object_id=$1 WHERE kb_id=$2 AND subject_id=$3 AND layer='open'")
+                    .bind(self.departments[1]).bind(self.kb).bind(holders[0]).execute(&self.pool).await?;
+            }
+            _ => {}
+        }
+        if matches!(guard, TypedToUntyped | UntypedToTyped | IncompatibleType) {
+            let person = Uuid::now_v7();
+            sqlx::query(
+                "INSERT INTO entity_types(id,kb_id,key,label) VALUES ($1,$2,'person','Person')",
+            )
+            .bind(person)
+            .bind(self.kb)
+            .execute(&self.pool)
+            .await?;
+            let typed_holder = if guard == UntypedToTyped {
+                holders[1]
+            } else {
+                holders[0]
+            };
+            sqlx::query("UPDATE entities SET type_id=$1 WHERE id=$2")
+                .bind(person)
+                .bind(typed_holder)
+                .execute(&self.pool)
+                .await?;
+            if guard != UntypedToTyped {
+                utopia_store::type_bindings::decide(
+                    &self.pool,
+                    self.kb,
+                    "person",
+                    &[],
+                    Some(person),
+                    "bound",
+                    &json!({}),
+                    "person",
+                )
+                .await?;
+            }
+            if guard == IncompatibleType {
+                let organization = Uuid::now_v7();
+                sqlx::query("INSERT INTO entity_types(id,kb_id,key,label) VALUES ($1,$2,'organization','Organization')")
+                    .bind(organization).bind(self.kb).execute(&self.pool).await?;
+                sqlx::query("UPDATE entities SET type_id=$1 WHERE id=$2")
+                    .bind(organization)
+                    .bind(holders[1])
+                    .execute(&self.pool)
+                    .await?;
+            }
+        }
+        sqlx::query("UPDATE chunks SET text=$1 WHERE id=$2")
+            .bind(text)
+            .bind(self.chunks[2])
+            .execute(&self.pool)
+            .await?;
+        let expected =
+            holders[usize::from(matches!(guard, TypedToUntyped | UntypedToTyped | Markdown))];
+        self.model.steps.lock().unwrap().push_back(Step {
+            prompt_has: text.into(),
+            stream: true,
+            text: json!({"e":entities,"s":statements,"n":[]}).to_string(),
+        });
+        crate::extraction::extract_document(&self.state, self.docs[2], Default::default()).await?;
+        let owners: Vec<Uuid> = sqlx::query_scalar("SELECT DISTINCT f.subject_id FROM facts f JOIN fact_evidence fe ON fe.fact_id=f.id WHERE f.kb_id=$1 AND fe.document_id=$2 AND f.layer='open' AND f.phrase='submitted'")
+            .bind(self.kb).bind(self.docs[2]).fetch_all(&self.pool).await?;
+        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM entities WHERE kb_id=$1 AND canonical_name IN ('Alex Lee','**Alex Lee**') AND merged_into IS NULL")
+            .bind(self.kb).fetch_one(&self.pool).await?;
+        let reviews: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM resolution_reviews WHERE kb_id=$1 AND status='pending'",
+        )
+        .bind(self.kb)
+        .fetch_one(&self.pool)
+        .await?;
+        let type_preserved = if guard == TypedToUntyped {
+            sqlx::query_scalar::<_, bool>("SELECT type_id IS NULL FROM entities WHERE id=$1")
+                .bind(expected)
+                .fetch_one(&self.pool)
+                .await?
+        } else {
+            true
+        };
+        Ok((
+            owners == vec![expected] && count == 2 && reviews == 0 && type_preserved,
+            json!({"expected_owner":expected,"owners":owners,"entities":count,"pending_reviews":reviews,"type_preserved":type_preserved}),
+        ))
     }
 
     async fn cleanup(&self) -> anyhow::Result<()> {
@@ -394,7 +670,7 @@ async fn scripted_namesake_cases_have_only_the_named_known_failures() -> anyhow:
     let mut mismatches = Vec::new();
     let mut seen = Vec::new();
     let mut failed = 0;
-    for case in &CASES {
+    for case in CASES {
         for reverse in [false, true] {
             let order = if reverse { "reverse" } else { "forward" };
             let org = Uuid::now_v7();
