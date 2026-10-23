@@ -85,12 +85,13 @@ pub(crate) async fn require_reader_kb(
     state: &AppState,
     reader: &SessionOrToken,
     kb_id: Uuid,
-) -> ApiResult<()> {
-    utopia_store::access::require_kb(&state.pool, &reader.user, kb_id, Role::Viewer).await?;
+) -> ApiResult<utopia_core::models::KnowledgeBase> {
+    let kb =
+        utopia_store::access::require_kb(&state.pool, &reader.user, kb_id, Role::Viewer).await?;
     if !reader.reaches(kb_id) {
         return Err(AppError::NotFound.into());
     }
-    Ok(())
+    Ok(kb)
 }
 
 /// Serve the retained original named by the document ledger.
@@ -448,11 +449,11 @@ pub async fn detail(
 /// 反向证据链：文档各分块抽出的事实（文档查看器右栏）。
 pub async fn extractions(
     State(state): State<AppState>,
-    AuthUser(user): AuthUser,
+    reader: SessionOrToken,
     Path(id): Path<Uuid>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let doc = utopia_store::documents::get(&state.pool, id).await?;
-    utopia_store::access::require_kb(&state.pool, &user, doc.kb_id, Role::Viewer).await?;
+    require_reader_kb(&state, &reader, doc.kb_id).await?;
     let facts = utopia_store::graph::document_extractions(&state.pool, id).await?;
     Ok(Json(json!({ "facts": facts })))
 }

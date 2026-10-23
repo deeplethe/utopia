@@ -1471,6 +1471,47 @@ async fn asking_what_a_date_marks_never_reopens_the_binding() -> anyhow::Result<
 }
 
 #[tokio::test]
+async fn a_negative_case_follows_ordinary_rejudgement_and_keeps_human_binding() -> anyhow::Result<()>
+{
+    let Some(f) = Fx::new().await? else {
+        return Ok(());
+    };
+    let run = async {
+        use utopia_store::ontology_regressions as cases;
+        let actor = f.editor().await?.id;
+        let statement_id = sqlx::query_scalar("SELECT id FROM facts WHERE kb_id=$1 AND layer='open'")
+            .bind(f.kb).fetch_one(&f.pool).await?;
+        let id = cases::add(&f.pool,f.kb,cases::NewCase { statement_id, expected_property_id: None,
+            expected_direction: None, created_by: actor, origin: "person" }).await?;
+        f.script(none()); f.run().await?;
+        assert_eq!(cases::get(&f.pool,f.kb,id).await?.unwrap().last_result.unwrap()["passed"],true);
+        assert_eq!(f.requests().len(),1);
+        f.clear_jobs().await?;
+        sqlx::query("UPDATE relation_types SET description='New definition',updated_at=clock_timestamp() WHERE id=$1")
+            .bind(f.based_in).execute(&f.pool).await?;
+        f.script(bound()); f.run().await?;
+        let result = cases::get(&f.pool,f.kb,id).await?.unwrap().last_result.unwrap();
+        assert_eq!(result["status"],"bound"); assert_eq!(result["passed"],false);
+        assert_eq!(f.requests().len(),3,"cases do not add model calls");
+        let sig = phrase_bindings::signatures(&f.pool,f.kb).await?.remove(0);
+        phrase_bindings::decide(&f.pool,f.kb,&sig,phrase_bindings::Decision {
+            relation_type_id:Some(f.based_in),direction:Some("forward"),status:"bound",decided_by:"person",
+            votes:&Value::Null,basis:None,marks:None,marks_asked:false,
+        }).await?;
+        let before = f.binding().await?;
+        f.run().await?;
+        let result = cases::get(&f.pool,f.kb,id).await?.unwrap().last_result.unwrap();
+        assert_eq!(result["passed"],false); assert_eq!(result["conflict"],"human_binding");
+        assert_eq!(f.requests().len(),3);
+        let after = f.binding().await?;
+        assert_eq!(before.decided_at,after.decided_at); assert_eq!(after.relation_type_id,Some(f.based_in));
+        anyhow::Ok(())
+    }.await;
+    f.cleanup().await?;
+    run
+}
+
+#[tokio::test]
 async fn a_base_with_no_properties_queues_propose_ontology_once_twenty_signatures_are_unbound(
 ) -> anyhow::Result<()> {
     let Some(f) = Fx::new().await? else {

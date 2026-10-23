@@ -47,6 +47,8 @@ export const en = {
   /** 服务端校验错误的措辞。key = 服务端给的 code；缺一条就退回英文原句，不会崩。
       契约守卫（调错接口才碰得到）刻意不在这里——它们的读者是开发者 */
   err: {
+    bad_case_expectation: "Choose a property and direction, or expect no binding.",
+
     bad_email: "That doesn't look like an email address.",
     password_too_short: "Password must be at least 8 characters.",
     bad_display_name: "Display name must be 1-64 characters.",
@@ -641,6 +643,7 @@ export const en = {
       custom: "Custom",
       github_issues: "GitHub issues",
       github_repo: "GitHub repository files",
+      gitlab_repo: "GitLab project files",
       jira_issues: "Jira issues",
       s3: "S3 / MinIO",
       azure_blob: "Azure Blob",
@@ -663,6 +666,10 @@ export const en = {
       github_repo:
         "Reads markdown files off a repository's default branch. Each file becomes one " +
         "document dated by its last commit; unchanged files are not fetched again.",
+      gitlab_repo:
+        "Reads markdown files off a gitlab.com project's default branch, the same way as " +
+        "GitHub repository files. A private project needs a token with read_api. " +
+        "Self-managed GitLab has not been verified.",
       s3:
         "Reads documents out of an S3 bucket, or anything speaking the same protocol " +
         "(MinIO, Ceph, R2). **Leave the endpoint empty for AWS**; fill it in for a " +
@@ -741,6 +748,7 @@ export const en = {
     rssHydrationCounts: (c: { pending: number; queued: number; retrying: number; complete: number; terminal: number }) =>
       `pending ${c.pending} · queued ${c.queued} · retrying ${c.retrying} · complete ${c.complete} · terminal ${c.terminal}`,
     repoField: "Repository (owner/name)",
+    gitlabProjectField: "Project (group/name, subgroups allowed)",
     jiraUrlField: "Jira site URL",
     jiraProjectField: "Project key",
     s3BucketField: "Bucket",
@@ -759,6 +767,7 @@ export const en = {
     notionTokenField: "Internal integration token",
     notionQueryField: "Search term (optional — empty takes every shared page)",
     tokenField: "GitHub token (optional, never shown again)",
+    gitlabTokenField: "GitLab token with read_api (optional, never shown again)",
     includePullRequests: "Treat pull requests as tickets too",
     includeGlobsField: "Include globs (comma-separated, optional; replaces the default)",
     excludeGlobsField: "Exclude globs (comma-separated, optional; replaces the default)",
@@ -1398,7 +1407,11 @@ export const en = {
     caseHideEvidence: "Hide source evidence",
     caseMake: "Add regression case",
     caseAddTitle: "Add a property regression case",
-    caseAddHint: "Save the property and direction this open statement should bind to. Its existing alignment decision will be compared with this expectation.",
+    caseExpectBound: "Bind to a property",
+    caseNoneHint: "Only an explicit no-binding decision passes. An undecided or bound result fails; no decision remains unchecked.",
+    caseHumanConflict: "Failed: manual binding conflict",
+    caseHumanConflictHint: "This case expects no binding, but a person bound the statement. The case fails; the manual binding is retained.",
+    caseAddHint: "Save whether this open statement should bind to a property or remain unbound. Its alignment decision is compared with that expectation.",
     caseExpectedProperty: "Expected property",
     caseDirection: "Direction",
     caseForward: "Subject → Object",

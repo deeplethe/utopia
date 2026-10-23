@@ -1,6 +1,6 @@
 # 0014 · Identity from the person, scope from the token
 
-- **Status**: Implemented · 2026-10-16 · #180, #318, #1243 · open: tokens across workspaces
+- **Status**: Implemented · 2026-10-16 · #180, #318, #1243, #1262 · open: tokens across workspaces
 - **Written**: 2026-09-01 · condensed into English 2026-09-03
 - **Related**: migration `0014_data_source_grants` gave data sources a grant layer; this is the same question where a machine knocks. [0004](0004-language-and-localization.md) has the server speak English only, MCP error codes included. [0015](0015-recording-a-sentence-is-not-asserting-a-fact.md) removes the main objection to opening `remember` over MCP.
 
@@ -111,6 +111,15 @@ push documents in.
    without it the client can check what landed only by searching for its own text. The source's
    push key is not a credential here, so a leaked key stays push-only.
 
+   A document's extractions (`GET /documents/{id}/extractions`) and the base's RDF export
+   (`GET /kbs/{id}/export`) take a token on the same terms. The extractions show what extraction
+   made of a pushed document; the document's base is resolved first, as for its content, so a
+   token outside `kb_ids` gets the same 404 whether or not the document exists. A read token may
+   export the whole base because, with the reads above open, its owner could already copy
+   everything a Viewer sees out one piece at a time; requiring write scope would only push a
+   mirror to hold a write token for a read-only job. The control is the `kb.exported` audit row,
+   which names the owner and, through `via_token`, the token.
+
 ## Dead ends
 
 - **Base-level machine tokens**, one per base and unrelated to a person. It would be a third
@@ -138,7 +147,8 @@ push documents in.
 - 2026-10-16: decision 7 opens four graph reads to any token; decision 6's "only these routes
   and document content" now also counts them. 2026-10-19: the graph overview and neighbourhood
   join them, and so does reading a pushed document back by its `external_id` (#1276). The
-  ontology and a class's instances follow (#1265).
+  ontology and a class's instances follow (#1265), then a document's extractions and the
+  base's export (#1266).
 
 ## Open questions
 
