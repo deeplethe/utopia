@@ -477,6 +477,7 @@ async fn disconnect_keeps_running_busy_does_not_append_and_stale_stop_spares_fol
 #[tokio::test]
 async fn stop_after_save_starts_keeps_one_complete_answer_and_holds_busy_until_commit(
 ) -> anyhow::Result<()> {
+    let _held = HELD_DB_LOCKS.lock().await;
     let Some((f, gates, server)) = setup(Pause::AfterTool).await? else {
         return Ok(());
     };
@@ -552,8 +553,7 @@ async fn stopped_answer_save_failure_emits_error_and_releases_the_conversation(
     let Some((f, gates, server)) = setup(Pause::AfterTool).await? else {
         return Ok(());
     };
-    let trigger = format!("reject_stopped_{}", f.kb.simple());
-    sqlx::raw_sql(&format!("CREATE FUNCTION {trigger}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.role='assistant' AND EXISTS(SELECT 1 FROM conversations WHERE id=NEW.conversation_id AND kb_id='{}') THEN RAISE EXCEPTION 'private stop persistence diagnostic'; END IF; RETURN NEW; END $$; CREATE TRIGGER {trigger} BEFORE INSERT ON conversation_messages FOR EACH ROW EXECUTE FUNCTION {trigger}();", f.kb)).execute(&f.pool).await?;
+    f.reject_answer_saves().await?;
     let result = tokio::time::timeout(std::time::Duration::from_secs(20), async {
         let id =
             utopia_store::conversations::create(&f.pool, f.kb, f.user.id, "save failure").await?;
@@ -574,9 +574,7 @@ async fn stopped_answer_save_failure_emits_error_and_releases_the_conversation(
         );
         let error: serde_json::Value = serde_json::from_str(&terminals[0].data)?;
         anyhow::ensure!(error["code"] == "answer_not_saved");
-        anyhow::ensure!(!terminals[0]
-            .data
-            .contains("private stop persistence diagnostic"));
+        anyhow::ensure!(!terminals[0].data.contains("private persistence diagnostic"));
         anyhow::ensure!(f.state.live.attach(id).await.is_none());
         anyhow::ensure!(
             utopia_store::conversations::messages(&f.pool, id)
@@ -591,11 +589,6 @@ async fn stopped_answer_save_failure_emits_error_and_releases_the_conversation(
     gates.release[0].notify_one();
     server.abort();
     let _ = server.await;
-    sqlx::raw_sql(&format!(
-        "DROP TRIGGER {trigger} ON conversation_messages; DROP FUNCTION {trigger}();"
-    ))
-    .execute(&f.pool)
-    .await?;
     f.cleanup().await?;
     result??;
     Ok(())
