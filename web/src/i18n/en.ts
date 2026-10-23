@@ -127,6 +127,17 @@ export const en = {
       "This data source is not granted to this workspace. Ask a deployment admin to grant it in Administration → Data sources.",
     memory_source_permanent:
       "The Memory source is part of the knowledge base and stays.",
+    google_drive_not_configured:
+      "Google Drive is not set up on this server. An administrator sets UTOPIA_GOOGLE_DRIVE_CLIENT_ID, _CLIENT_SECRET and _REDIRECT_URI.",
+    google_drive_connected_by_someone_else:
+      "This source reads someone else's Google Drive. Disconnect it first, then connect your own.",
+    google_drive_not_connector:
+      "Only the person who connected this Google Drive can choose its folders.",
+    google_drive_not_connected: "Connect a Google account first.",
+    google_drive_unavailable: "Google Drive could not be read.",
+    google_drive_busy: "Too many Google Drive connections are in progress. Try again in a few minutes.",
+    google_drive_too_many_folders: "Choose at most 50 folders. Choose a common parent instead.",
+    google_drive_invalid_folder: "That is not a Google Drive folder id.",
     source_name_required: "Give this source a name.",
     bad_cron: "That cron expression could not be parsed.",
     bad_cron_fields:
@@ -772,6 +783,40 @@ export const en = {
     davPassField: "Password",
     notionTokenField: "Internal integration token",
     notionQueryField: "Search term (optional — empty takes every shared page)",
+    googleDrive: {
+      createHint: "After creating the source, connect a Google account and choose the folders.",
+      notConfigured:
+        "Google Drive is not set up on this server. An administrator sets UTOPIA_GOOGLE_DRIVE_CLIENT_ID, _CLIENT_SECRET and _REDIRECT_URI.",
+      account: "Google account",
+      connect: "Connect Google Drive",
+      reconnect: "Reconnect",
+      disconnect: "Disconnect",
+      waiting: "Finish in the Google window…",
+      connectedAs: (email: string) => `Connected as ${email}`,
+      connectedNoEmail: "Connected",
+      notConnected: "Not connected. Syncing reads Drive with the permissions of whoever connects it.",
+      folders: "Folders to sync",
+      onlyConnector:
+        "Only the person who connected this Google Drive can choose its folders, because they are folders from their own Drive.",
+      foldersHint: "Subfolders are included. Files outside these folders are never read.",
+      myDrive: "My Drive",
+      sharedWithMe: "Shared with me",
+      top: "Google Drive",
+      empty: "No folders here.",
+      open: "Open",
+      noneSelected: "No folders chosen yet.",
+      remove: "Remove",
+      saveFolders: "Save folders and sync",
+      saved: "Folders saved. A sync has started.",
+      disconnectConfirm: (account: string, mine: boolean, connector: string) =>
+        mine
+          ? `Stop reading your Google Drive (${account})? Its access and the chosen folders are removed here, and connecting again starts from scratch.`
+          : `Stop reading the Google Drive ${connector} connected (${account})? Only ${connector} chose its folders. Its access and those folders are removed here.`,
+      unnamedAccount: "the connected account",
+      someoneElse: "someone else",
+      cancel: "Cancel",
+      disconnected: "Google Drive disconnected.",
+    },
     tokenField: "GitHub token (optional, never shown again)",
     gitlabTokenField: "GitLab token with read_api (optional, never shown again)",
     includePullRequests: "Treat pull requests as tickets too",
