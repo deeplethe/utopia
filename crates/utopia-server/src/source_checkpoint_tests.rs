@@ -224,6 +224,7 @@ async fn a_truncated_custom_batch_resumes_on_the_next_run() -> anyhow::Result<()
         assert!(
             first
                 .last_sync_error
+                .as_deref()
                 .unwrap_or_default()
                 .contains("stopped with more"),
             "错误要说明为什么停：{:?}",

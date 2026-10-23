@@ -1347,8 +1347,11 @@ async fn sync_custom(
         .as_array()
         .ok_or_else(|| anyhow::anyhow!("Response is missing the items[] array"))?;
 
-    let mut stats = SyncStats::default();
-    stats.discovered = items.len();
+    // `discovered` 记响应里的条数，不是跑进来的条数——否则日志与警告会读成 `(0 > 200)`
+    let mut stats = SyncStats {
+        discovered: items.len(),
+        ..Default::default()
+    };
     let mut seen_keys: Vec<String> = Vec::new();
     // **走完整个响应，只把有变的条目记在预算上**（ADR 0072 的 Custom 一节）。
     // `take(MAX_NEW_PER_SYNC)` 是 ADR 明写在 Rejected 里的那条：它取走的永远是同样的
