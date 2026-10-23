@@ -1340,6 +1340,14 @@ export const en = {
     chatLabel: "Chat",
     embedLabel: "Embedding",
     ok: (reply: string) => `Reachable and authenticated (${reply})`,
+    /** One line per request shape the jobs send (#1354) */
+    chatShapes: {
+      plain: "Plain request",
+      streaming: "Streamed at temperature 0 with the completion ceiling (extraction)",
+      tools: "With a tool (chat, second look)",
+    },
+    chatShapeOk: "ok",
+    chatShapeRefused: (error: string) => `refused: ${error}`,
     okDim: (dim: number) => `Reachable and authenticated (dim ${dim})`,
     unsaved: "Unsaved changes. Save this card to test them.",
     readersTitle: "Reading scans and recordings",

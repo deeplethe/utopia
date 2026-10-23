@@ -243,6 +243,8 @@ fn cosine(a: &[f32], b: &[f32]) -> Option<f32> {
 struct Candidate {
     id: Uuid,
     canonical_name: String,
+    type_id: Option<Uuid>,
+    exact_name: bool,
     profile_embedding: Option<Vector>,
     profile_n: i32,
 }
@@ -443,8 +445,8 @@ async fn resolve_by_name(
     type_id: Option<Uuid>,
     raw_name: &str,
     context: Option<&[f32]>,
-    // 这次提及所在的**块原文**。画像分不出谁是谁时拿它做事实旁证（#331）——
-    // 传整篇文档会让每个部门都命中，所以这里要的是句子或块，不是文档。
+    // Grounded quotes owned by this mention's subject, supplied by the extractor.
+    // A whole chunk can mention another person's department and is not identity evidence.
     text: Option<&str>,
     // Candidates already claimed by a different response-local handle. They remain stored
     // and recallable on later calls, but this mention cannot attach to them.
@@ -458,28 +460,65 @@ async fn resolve_by_name(
     let name = fold_markdown_markers(&normalized);
     // 名字召回读名字事实（0041 决定 1）：本名、简称、曾用名都是 `known_as` 上的一条。
     // 度数不数名字事实——名字不是一条「关于它的事」，数进去每个实体都凭空多一
-    // 度数要等真有几个候选得比时才数：每个候选一条计数子查询，大库上很贵（#1296）
-    let candidates: Vec<Candidate> = sqlx::query_as(&format!(
-        "SELECT e.id, e.canonical_name, e.profile_embedding, e.profile_n
+    // Keep degree counting lazy, including when corroboration widens exact-name recall.
+    let mut candidates: Vec<Candidate> = sqlx::query_as(&format!(
+        "SELECT e.id, e.canonical_name, e.type_id, e.profile_embedding, e.profile_n,
+                (lower(e.canonical_name) = ANY($4) OR {exact_named}) AS exact_name
          FROM entities e
          -- IS NOT DISTINCT FROM 而不是 =（0009 的那个陷阱）：开放图谱里的实体都没有类
          -- （类由对齐来定），`type_id = NULL` 永远不成立，同名的它就永远撞不上——
          -- 实测一个库里 Securities and Exchange Commission 与它的全大写写法成了两个实体
-         WHERE e.kb_id = $1 AND e.type_id IS NOT DISTINCT FROM $2 AND e.merged_into IS NULL
+         WHERE e.kb_id = $1 AND e.merged_into IS NULL
+           AND (e.type_id IS NOT DISTINCT FROM $2
+                OR ($5 AND ($2::uuid IS NULL OR e.type_id IS NULL)
+                    AND (lower(e.canonical_name) = ANY($4) OR {exact_named})))
            -- 被描述的东西没有名字（0044）：它的 canonical_name 只是显示用的描述，
            -- 不是召回的桥——两篇文档里描述得一样的两个东西不能因此接到一起
            AND e.description IS NULL
            AND (lower(e.canonical_name) = ANY($3) OR {named})",
         named = crate::names::has_name_in("e", 1, 3),
+        exact_named = crate::names::has_name_in("e", 1, 4),
     ))
     .bind(kb_id)
     .bind(type_id)
     .bind(&keys)
+    // Match both the folded spelling and already-stored formatting, as recall does.
+    .bind(vec![name.to_lowercase(), normalized.to_lowercase()])
+    .bind(text.is_some())
     .fetch_all(pool)
     .await?
     .into_iter()
     .filter(|candidate: &Candidate| !exclude.contains(&candidate.id))
     .collect();
+
+    // A clear mention-local clue outranks the chunk's profile, even outside the tie
+    // margin. Include exact names whose class is not yet known on either side, but
+    // do not let that wider recall change profile fallback or classify the winner.
+    let tier_evidence = if let Some(text) = text {
+        let exact: Vec<_> = candidates.iter().filter(|c| c.exact_name).collect();
+        if exact.len() > 1 {
+            if let Some(c) = corroborating_candidate(pool, kb_id, &exact, text).await? {
+                if let Some(ctx) = context {
+                    update_profile(pool, c.id, c.profile_n, ctx).await?;
+                } else {
+                    touch_entity(pool, c.id).await?;
+                }
+                return Ok(Resolution {
+                    entity_id: c.id,
+                    created: false,
+                    reviews: Vec::new(),
+                });
+            }
+            // Shared/conflicting clues must not become unique by retrying a smaller
+            // subset (the best two profiles, or only candidates above SIM_NEW).
+            None
+        } else {
+            Some(text)
+        }
+    } else {
+        None
+    };
+    candidates.retain(|c| c.type_id == type_id);
 
     if candidates.is_empty() {
         // 同类型无候选 ≠ 新名字：类型标签会漂（同一团队被抽成 organization/project/
@@ -558,7 +597,7 @@ async fn resolve_by_name(
             {
                 // 画像掷硬币之前，先问事实（#331）：这句话里提到了其中一个人的
                 // 部门或职位吗？提到了就不是硬币，是线索
-                if let Some(t) = text {
+                if let Some(t) = tier_evidence {
                     if let Some(c) =
                         corroborating_candidate(pool, kb_id, &[best, runner], t).await?
                     {
@@ -633,7 +672,7 @@ async fn resolve_by_name(
     // 这句话里若正好写着某一个候选的部门或职位，那比余弦值可靠。
     // **只认灰区**（≥ SIM_NEW）：分数低于它的候选连审核对都不配入队，
     // 拿一条旁证把它拉成同一人，等于绕过阈值而不是补充它。
-    if let Some(t) = text {
+    if let Some(t) = tier_evidence {
         let in_grey: Vec<&Candidate> = scored
             .iter()
             .filter(|(_, s)| *s >= SIM_NEW)
@@ -845,7 +884,7 @@ async fn containment_reviews(
     // 本体声明了跟这个类互斥的那些类（含继承），一次取出，逐行比 id
     let disjoint = declared_disjoint_from(pool, kb_id, type_id).await?;
     // 第三列可空：未分类实体也要参与包含关系扫描（0009）
-    let rows: Vec<ContainRow> = sqlx::query_as(
+    let rows: Vec<ContainRow> = sqlx::query_as(&format!(
         "SELECT e.id, e.canonical_name, t.key, e.type_id, e.profile_embedding
          FROM entities e LEFT JOIN entity_types t ON t.id = e.type_id
          WHERE e.id IN (
@@ -860,20 +899,25 @@ async fn containment_reviews(
                                         WHERE nr.kb_id = $1 AND nr.builtin AND nr.key = 'known_as')
                 AND nf.invalidated_at IS NULL
                 AND char_length(nf.object_value->>'value') >= $4
-                AND (lower(nf.object_value->>'value') LIKE '%' || $6 || '%'
-                     OR $3 LIKE '%' || replace(replace(replace(lower(nf.object_value->>'value'), '\\', '\\\\'), '%', '\\%'), '_', '\\_') || '%'))
+                AND ((lower(nf.object_value->>'value') LIKE '%' || $6 || '%'
+                      AND lower(nf.object_value->>'value') ~ $7)
+                     OR ($3 LIKE '%' || replace(replace(replace(lower(nf.object_value->>'value'), '\\', '\\\\'), '%', '\\%'), '_', '\\_') || '%'
+                      AND $3 ~ {name_edges})))
            AND e.kb_id = $1 AND e.merged_into IS NULL
            AND e.id <> $2
            AND lower(e.canonical_name) <> $3
          ORDER BY char_length(e.canonical_name)
          LIMIT $5",
-    )
+        name_edges = crate::names::word_edges_sql("lower(nf.object_value->>'value')"),
+    ))
     .bind(kb_id)
     .bind(new_id)
     .bind(&lower)
     .bind(MIN_CONTAIN_CHARS)
     .bind(CONTAIN_SCAN_LIMIT)
     .bind(like_escaped(&lower))
+    // 只靠 LIKE，`token` 会匹配到 `service_token`：拉丁名字须落在词边界上才算包含（#1104）
+    .bind(crate::names::word_edges_pattern(&lower))
     .fetch_all(pool)
     .await?;
 
