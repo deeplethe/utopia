@@ -1187,6 +1187,14 @@ export const zh: Strings = {
     chatLabel: "对话",
     embedLabel: "向量",
     ok: (reply: string) => `已连通，认证通过（${reply}）`,
+    /** 任务发出的每种请求各一行（#1354） */
+    chatShapes: {
+      plain: "普通请求",
+      streaming: "流式、温度 0、带完成上限（抽取）",
+      tools: "带一个工具（对话、第二眼）",
+    },
+    chatShapeOk: "通过",
+    chatShapeRefused: (error: string) => `被拒：${error}`,
     okDim: (dim: number) => `已连通，认证通过（维度 ${dim}）`,
     unsaved: "有未保存的修改。先保存这张卡，再测试。",
     readersTitle: "读扫描件与录音",
