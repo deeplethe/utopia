@@ -145,9 +145,10 @@ fn cell_to_json(row: &sqlx::mysql::MySqlRow, i: usize, type_name: &str) -> serde
             r.try_get::<Option<chrono::NaiveDate>, _>(i)
                 .map(|v| v.map(|d| d.to_string()))
         }),
+        // TIME 是一段时长（-838:59:59 到 838:59:59），NaiveTime 装不下 24 小时以上，还丢负号
         Cell::Time => try_text(row, i, |r| {
-            r.try_get::<Option<chrono::NaiveTime>, _>(i)
-                .map(|v| v.map(|t| t.to_string()))
+            r.try_get::<Option<sqlx::mysql::types::MySqlTime>, _>(i)
+                .map(|v| v.map(time_text))
         }),
         Cell::DateTime => try_text(row, i, |r| {
             r.try_get::<Option<chrono::NaiveDateTime>, _>(i)
@@ -176,6 +177,26 @@ fn cell_to_json(row: &sqlx::mysql::MySqlRow, i: usize, type_name: &str) -> serde
             }
         }
     }
+}
+
+/// 照 MySQL 自己的写法：`-01:30:00`、`30:15:00`，有小数才写小数
+fn time_text(t: sqlx::mysql::types::MySqlTime) -> String {
+    // sqlx 0.8 的 `MySqlTime::is_negative` 返回的是 is_positive，要看 sign 本身
+    let sign = if t.sign().is_negative() { "-" } else { "" };
+    let mut s = format!(
+        "{sign}{:02}:{:02}:{:02}",
+        t.hours(),
+        t.minutes(),
+        t.seconds()
+    );
+    // 小数照 chrono 的 NaiveTime 写：整毫秒三位（`.500`），否则六位（`.000500`），
+    // 一天以内的 TIME 输出和从前一样
+    match t.microseconds() {
+        0 => {}
+        us if us % 1000 == 0 => s.push_str(&format!(".{:03}", us / 1000)),
+        us => s.push_str(&format!(".{us:06}")),
+    }
+    s
 }
 
 /// 按类型读文本，读不出来退回通用字符串（时间列被服务器配置成字符串时会走到）。
@@ -510,6 +531,24 @@ mod tests {
         fx.cleanup().await;
     }
 
+    /// TIME 是一段时长：TIMEDIFF 过了 24 小时或是负的，都还是它自己
+    #[tokio::test]
+    async fn a_time_past_a_day_or_below_zero_reads_as_itself_mysql() {
+        let Some(url) = live_url() else { return };
+        let r = MysqlEngine::new(&url)
+            .execute(
+                "SELECT TIMEDIFF('2024-01-02 06:15:00', '2024-01-01 00:00:00') AS late, \
+                 TIMEDIFF('2024-01-01 00:00:00', '2024-01-01 01:30:00') AS early, \
+                 CAST('08:05:00' AS TIME) AS start",
+            )
+            .await
+            .expect("execute");
+        assert_eq!(
+            r.rows,
+            vec![r#"{"late":"30:15:00","early":"-01:30:00","start":"08:05:00"}"#]
+        );
+    }
+
     /// 每个测试自己的库，名字带随机后缀：并行跑不撞，也不碰服务器上已有的库。
     /// 测完逐个 `DROP DATABASE`。**这是 MySQL 的「schema」，跟 PG 的命名空间
     /// 不同——MySQL 的 schema 就是 database**（见 fetch_schema 顶上的注释）
@@ -732,6 +771,17 @@ mod tests {
             .await
             .expect("drop user");
         fx.cleanup().await;
+    }
+
+    /// CI 没有 MySQL，时长的写法在这里直接验：过 24 小时、负的、带小数
+    #[test]
+    fn a_time_is_written_as_the_duration_it_holds() {
+        use sqlx::mysql::types::{MySqlTime, MySqlTimeSign};
+        let t = |sign, h, m, s, us| time_text(MySqlTime::new(sign, h, m, s, us).unwrap());
+        assert_eq!(t(MySqlTimeSign::Positive, 30, 15, 0, 0), "30:15:00");
+        assert_eq!(t(MySqlTimeSign::Negative, 1, 30, 0, 0), "-01:30:00");
+        assert_eq!(t(MySqlTimeSign::Positive, 8, 5, 0, 500_000), "08:05:00.500");
+        assert_eq!(t(MySqlTimeSign::Positive, 8, 5, 0, 500), "08:05:00.000500");
     }
 
     #[test]
