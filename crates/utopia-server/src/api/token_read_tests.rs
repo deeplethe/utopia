@@ -1,8 +1,8 @@
 //! 个人令牌读图（0014 决定 7）：搜实体、实体详情、认知历史、事实证据、图总览、邻域、本体、
-//! 某类的实例、文档的抽取结果和整库导出这些读路由收任何一枚活着的令牌。角色照旧是上限，`kb_ids` 排除了的库答 404；改实体仍只认会话。
+//! 某类的实例、文档的抽取结果、整库导出和分块检索这些读路由收任何一枚活着的令牌。角色照旧是上限，`kb_ids` 排除了的库答 404；改实体仍只认会话。
 use crate::state::AppState;
 use axum::body::Body;
-use axum::http::{Request, StatusCode};
+use axum::http::{Method, Request, StatusCode};
 use serde_json::json;
 use std::sync::Arc;
 use tower::ServiceExt;
@@ -87,28 +87,49 @@ impl Fixture {
             .1
     }
 
-    fn read_paths(&self) -> [String; 10] {
+    fn read_paths(&self) -> [(Method, String); 11] {
         let (kb, person, entity, fact, doc) =
             (self.kb, self.person, self.entity, self.fact, self.doc);
         [
-            format!("/kbs/{kb}/entities?q=Zhang"),
-            format!("/kbs/{kb}/entities/{entity}"),
-            format!("/kbs/{kb}/entities/{entity}/history"),
-            format!("/kbs/{kb}/facts/{fact}/evidence"),
-            format!("/kbs/{kb}/graph/overview"),
-            format!("/kbs/{kb}/graph/neighborhood?entity={entity}"),
-            format!("/kbs/{kb}/ontology"),
-            format!("/kbs/{kb}/ontology/entity-types/{person}/entities"),
-            format!("/documents/{doc}/extractions"),
-            format!("/kbs/{kb}/export?format=turtle"),
+            (Method::GET, format!("/kbs/{kb}/entities?q=Zhang")),
+            (Method::GET, format!("/kbs/{kb}/entities/{entity}")),
+            (Method::GET, format!("/kbs/{kb}/entities/{entity}/history")),
+            (Method::GET, format!("/kbs/{kb}/facts/{fact}/evidence")),
+            (Method::GET, format!("/kbs/{kb}/graph/overview")),
+            (
+                Method::GET,
+                format!("/kbs/{kb}/graph/neighborhood?entity={entity}"),
+            ),
+            (Method::GET, format!("/kbs/{kb}/ontology")),
+            (
+                Method::GET,
+                format!("/kbs/{kb}/ontology/entity-types/{person}/entities"),
+            ),
+            (Method::GET, format!("/documents/{doc}/extractions")),
+            (Method::GET, format!("/kbs/{kb}/export?format=turtle")),
+            (Method::POST, format!("/kbs/{kb}/search")),
         ]
     }
 
-    async fn get(&self, path: &str, token: &str) -> anyhow::Result<StatusCode> {
+    /// 每个请求都带同一个检索体；GET 路由不读它
+    async fn send(&self, method: Method, path: &str, token: &str) -> anyhow::Result<StatusCode> {
+        self.send_json(method, path, token, r#"{"q":"Zhang"}"#)
+            .await
+    }
+
+    async fn send_json(
+        &self,
+        method: Method,
+        path: &str,
+        token: &str,
+        body: &str,
+    ) -> anyhow::Result<StatusCode> {
         let request = Request::builder()
+            .method(method)
             .uri(format!("/api/v1{path}"))
             .header("authorization", format!("Bearer {token}"))
-            .body(Body::empty())?;
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))?;
         Ok(self.app.clone().oneshot(request).await?.status())
     }
 
@@ -128,8 +149,8 @@ async fn a_read_token_of_a_base_viewer_gets_200_on_every_graph_read() -> anyhow:
     };
     let result = async {
         let token = f.read_token(f.kb).await;
-        for path in f.read_paths() {
-            let status = f.get(&path, &token).await?;
+        for (method, path) in f.read_paths() {
+            let status = f.send(method, &path, &token).await?;
             anyhow::ensure!(status == StatusCode::OK, "{path}: {status}");
         }
         Ok(())
@@ -146,8 +167,8 @@ async fn a_token_limited_to_another_base_gets_404_on_every_graph_read() -> anyho
     };
     let result = async {
         let token = f.read_token(f.other_kb).await;
-        for path in f.read_paths() {
-            let status = f.get(&path, &token).await?;
+        for (method, path) in f.read_paths() {
+            let status = f.send(method, &path, &token).await?;
             anyhow::ensure!(status == StatusCode::NOT_FOUND, "{path}: {status}");
         }
         Ok(())
@@ -168,7 +189,7 @@ async fn an_export_by_token_is_audited_under_its_owner_with_the_token_id() -> an
             .await?
             .token_id;
         let path = format!("/kbs/{}/export?format=turtle", f.kb);
-        let status = f.get(&path, &token).await?;
+        let status = f.send(Method::GET, &path, &token).await?;
         anyhow::ensure!(status == StatusCode::OK, "{path}: {status}");
 
         let audited: (Option<Uuid>, serde_json::Value) = sqlx::query_as(
@@ -187,4 +208,24 @@ async fn an_export_by_token_is_audited_under_its_owner_with_the_token_id() -> an
     .await;
     f.cleanup().await?;
     result
+}
+
+#[tokio::test]
+async fn a_search_past_depth_100_or_with_an_unknown_filters_field_gets_422() -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    let token = f.read_token(f.kb).await;
+    let path = format!("/kbs/{}/search", f.kb);
+    let mut statuses = Vec::new();
+    for body in [
+        r#"{"q":"Zhang","top_k":50,"offset":51}"#,
+        r#"{"q":"Zhang","filters":{"source_id":"x"}}"#,
+    ] {
+        statuses.push(f.send_json(Method::POST, &path, &token, body).await);
+    }
+    f.cleanup().await?;
+    let statuses = statuses.into_iter().collect::<anyhow::Result<Vec<_>>>()?;
+    assert_eq!(statuses, [StatusCode::UNPROCESSABLE_ENTITY; 2]);
+    Ok(())
 }
