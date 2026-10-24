@@ -393,6 +393,9 @@ pub async fn sync_now(
 
 #[derive(Deserialize)]
 pub struct IngestBody {
+    /// 墓碑带着 external_id 时用不上文件名（身份是 external_id），缺了也收；
+    /// 其余情况仍然必填，空串在下面的校验里挡
+    #[serde(default)]
     pub filename: String,
     /// 墓碑推送（`deleted: true`）可以不带 content——指南一直这么写，而字段
     /// 从前是必填，缺了就在反序列化那一步被拒。其余情况仍然必填：空串在
