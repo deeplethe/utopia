@@ -166,10 +166,19 @@ async fn reply(State(m): State<Model>, Json(body): Json<Value>) -> axum::respons
     }
     let step = step.unwrap();
     if !step.stream {
-        return Json(
-            json!({"choices":[{"message":{"role":"assistant","content":step.text},
-            "finish_reason":"stop"}]}),
-        )
+        // Tool turns exercise the real investigation transport; ordinary scripts
+        // remain content replies, including JSON verdicts in their content string.
+        let message = serde_json::from_str::<Value>(&step.text)
+            .ok()
+            .filter(|v| v["tool_calls"].is_array())
+            .unwrap_or_else(|| json!({"role":"assistant","content":step.text}));
+        let finish = if message["tool_calls"].is_array() {
+            "tool_calls"
+        } else {
+            "stop"
+        };
+        return Json(json!({"choices":[{"message":message,
+            "finish_reason":finish}]}))
         .into_response();
     }
     let frame = json!({"choices":[{"delta":{"content":step.text}}]});
@@ -180,6 +189,9 @@ async fn reply(State(m): State<Model>, Json(body): Json<Value>) -> axum::respons
     )
         .into_response()
 }
+
+#[path = "namesake_decision_measurements.rs"]
+mod decision_measurements;
 
 struct Fx {
     pool: sqlx::PgPool,

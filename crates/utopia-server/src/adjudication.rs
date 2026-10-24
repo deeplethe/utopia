@@ -37,6 +37,11 @@ fn pair_key(item: &ReviewItem, precedents: &[String]) -> String {
     digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+#[cfg(test)]
+pub(crate) fn seed_measurement_cache_key(item: &ReviewItem, precedents: &[String]) -> String {
+    pair_key(item, precedents)
+}
+
 /// 攒批没定的对要不要带工具再看一遍（0028）：没判决或把握不到线；硬规则拦得住的不看
 /// （大类不同、版本尾巴、含名字的一句话——再看也改不了规则）；有撤回的不看，那是人的事
 fn wants_another_look(
