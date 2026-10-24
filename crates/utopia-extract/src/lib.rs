@@ -758,10 +758,14 @@ pub fn attribute_value(
         return normalize_attr_value(datatype, raw);
     };
     // 声明的单位拆成量级和其余：「万元」→ (4, 元)，「million dollars」→ (6, dollars)
+    // 币种写在前面的「USD million」「€ million」，量级在末尾
     let (tok, rest) = next_token(declared);
+    let trailing = declared
+        .rsplit_once(char::is_whitespace)
+        .and_then(|(head, last)| Some((magnitude(&last.to_ascii_lowercase())?, head.trim())));
     let (exponent, base) = match magnitude(&tok.to_ascii_lowercase()) {
         Some(m) => (m, rest.trim()),
-        None => (0, declared),
+        None => trailing.unwrap_or((0, declared)),
     };
     let written = q.unit.as_deref().and_then(currency_unit);
     let wanted = currency_unit(base);
@@ -1512,6 +1516,24 @@ mod an_attribute_value_is_read_in_its_declared_unit {
         );
         // 只写到年的日期按年
         assert_eq!(value("date", None, "1982年"), Some(json!("1982")));
+    }
+
+    /// 财报的单位常把币种写在量级前面：「USD million」「€ million」，同「million dollars」
+    #[test]
+    fn a_unit_with_its_currency_first_is_still_read_in_millions() {
+        assert_eq!(
+            value("number", Some("USD million"), "$5 billion"),
+            Some(json!(5000.0))
+        );
+        assert_eq!(
+            value("number", Some("€ million"), "€30 million"),
+            Some(json!(30.0))
+        );
+        assert_eq!(value("number", Some("USD million"), "€30 million"), None);
+        assert_eq!(
+            value("number", Some("million dollars"), "$5 billion"),
+            Some(json!(5000.0))
+        );
     }
 
     /// 换不了的不换：货币对不上、读不出数的，宁缺勿脏
