@@ -77,15 +77,39 @@ impl DatePart {
         let Scalar::Text(text) = value else {
             return None;
         };
-        let date = if text.len() == 10 {
-            NaiveDate::parse_from_str(&text, "%Y-%m-%d").ok()?
+        // 年精度存的是 "2024"，月精度是 "2024-03"（规则 3）。截到比字更细的一档
+        // 是在补一个原文没有的日或月，所以没有。
+        let (date, finest) = if text.len() == 10 {
+            (
+                NaiveDate::parse_from_str(&text, "%Y-%m-%d").ok()?,
+                Self::Day,
+            )
+        } else if text.len() == 7 {
+            (
+                NaiveDate::parse_from_str(&format!("{text}-01"), "%Y-%m-%d").ok()?,
+                Self::Month,
+            )
+        } else if text.len() == 4 {
+            let year: i32 = text.parse().ok()?;
+            (NaiveDate::from_ymd_opt(year, 1, 1)?, Self::Year)
         } else {
             // An offset is required: the host timezone must not change a fact.
-            chrono::DateTime::parse_from_rfc3339(&text)
-                .ok()?
-                .with_timezone(&chrono::Utc)
-                .date_naive()
+            (
+                chrono::DateTime::parse_from_rfc3339(&text)
+                    .ok()?
+                    .with_timezone(&chrono::Utc)
+                    .date_naive(),
+                Self::Day,
+            )
         };
+        let rank = |part: Self| match part {
+            Self::Year => 0,
+            Self::Month => 1,
+            Self::Day => 2,
+        };
+        if rank(self) > rank(finest) {
+            return None;
+        }
         let date = match self {
             Self::Year => NaiveDate::from_ymd_opt(date.year(), 1, 1)?,
             Self::Month => NaiveDate::from_ymd_opt(date.year(), date.month(), 1)?,
@@ -424,6 +448,9 @@ mod tests {
             ("year", "2024-01-01T00:30:00+01:00", "2023-01-01"),
             ("day", "2024-02-29", "2024-02-29"),
             ("month", "2024-02-29", "2024-02-01"),
+            ("month", "2024-03", "2024-03-01"),
+            ("year", "2024-03", "2024-01-01"),
+            ("year", "2024", "2024-01-01"),
         ] {
             let expr = Expr::from_json(&json!({"date_trunc":part,"expr":{"attr":id(1)}})).unwrap();
             assert_eq!(
@@ -432,6 +459,13 @@ mod tests {
             );
         }
         let expr = Expr::from_json(&json!({"date_trunc":"month","expr":{"attr":id(1)}})).unwrap();
+        let day = Expr::from_json(&json!({"date_trunc":"day","expr":{"attr":id(1)}})).unwrap();
+        // 月精度没有日，年精度没有月：截得更细就没有值
+        assert_eq!(
+            day.evaluate(&|_| Some(Scalar::Text("2024-03".into()))),
+            None
+        );
+        assert_eq!(expr.evaluate(&|_| Some(Scalar::Text("2024".into()))), None);
         for input in [
             "2023-02-29",
             "2024-02-30",
