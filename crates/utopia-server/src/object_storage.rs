@@ -179,7 +179,9 @@ pub async fn fetch(
     // **三家各用各的 scheme。** 身份要唯一：同名的桶在 S3 与 GCS 上是两个
     // 不同的东西，共用一个前缀会让两个来源的文档互相认领
     let scheme = uri_scheme(kind);
-    let p = prefix.map(StorePath::from);
+    // 前缀是桶里 key 的原样写法。`Path::from` 会把 `#`、`[`、`%` 这些字符转义掉，
+    // `Case #12` 列的就成了 `Case %2312`，一个对象也找不到
+    let p = prefix.map(|p| StorePath::parse(p).unwrap_or_else(|_| StorePath::from(p)));
     let mut listing = store.list(p.as_ref());
     let mut out = Vec::new();
     let mut truncated = false;
@@ -267,6 +269,27 @@ mod tests {
             "secret_access_key": "...",
         });
         assert!(client("s3", &cfg).is_ok());
+    }
+
+    /// 文件夹名里带 `#`、`[]` 的前缀照原样列：桶里的 key 就是这么写的
+    #[tokio::test]
+    async fn a_prefix_with_symbols_lists_its_objects() {
+        use object_store::memory::InMemory;
+        let store = InMemory::new();
+        for key in ["Case #12/brief.txt", "Q1 [final]/plan.md", "other/x.txt"] {
+            store
+                .put(&StorePath::parse(key).unwrap(), "hello".into())
+                .await
+                .unwrap();
+        }
+        for (prefix, want) in [
+            ("Case #12", "s3://b/Case #12/brief.txt"),
+            ("Q1 [final]/", "s3://b/Q1 [final]/plan.md"),
+        ] {
+            let (objs, _) = fetch("s3", &store, "b", Some(prefix)).await.unwrap();
+            let keys: Vec<&str> = objs.iter().map(|o| o.external_key.as_str()).collect();
+            assert_eq!(keys, [want], "{prefix}");
+        }
     }
 
     /// 真连一个 S3 兼容端点，只测**读**这一侧：列出来、取回内容、身份对不对。
