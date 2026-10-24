@@ -25,6 +25,10 @@ pub struct CreateKbReq {
     /// 后面的包撞名时查对齐表。schema.org 放第一个，别的包才对得上。
     #[serde(default)]
     pub ontology_packs: Vec<String>,
+    /// 场景包的 id（0073）：按业务场景预置的类、属性和能力问题，走编辑器的路建出来。
+    /// 排在标准包之后装，撞键的跳过
+    #[serde(default)]
+    pub scenario_packs: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -132,6 +136,19 @@ pub async fn create(
         .await?;
     install_packs(&state, kb.id, user.id, token_id, &req.ontology_packs).await?;
     let kb = utopia_store::kbs::get(&state.pool, kb.id).await?;
+    // 场景包排在标准包之后：它的类键撞上标准包的就让给标准包，声明还能指向它们（0073）
+    let scenarios = crate::scenario_packs::install(
+        &state,
+        kb.id,
+        user.id,
+        &kb.ontology_lang,
+        &req.scenario_packs,
+    )
+    .await?;
+    if scenarios.classes + scenarios.properties + scenarios.questions > 0 {
+        tracing::info!(kb_id = %kb.id, classes = scenarios.classes, properties = scenarios.properties,
+                       questions = scenarios.questions, "场景包装好");
+    }
     Ok(Json(kb))
 }
 
@@ -442,6 +459,25 @@ pub(super) async fn install_packs(
         }
     }
     Ok(())
+}
+
+/// 场景包清单（0073），给建库界面：两种语言的名字都给，界面按自己的语言挑；
+/// 装进库时按库的 `ontology_lang` 挑
+pub async fn list_scenario_packs(AuthUser(_): AuthUser) -> ApiResult<Json<serde_json::Value>> {
+    let packs: Vec<_> = crate::scenario_packs::PACKS
+        .iter()
+        .map(|p| {
+            json!({
+                "id": p.id,
+                "name": { "zh": p.name.zh, "en": p.name.en },
+                "summary": { "zh": p.summary.zh, "en": p.summary.en },
+                "classes": p.classes.len(),
+                "properties": p.attributes.len() + p.relations.len(),
+                "questions": p.questions.len(),
+            })
+        })
+        .collect();
+    Ok(Json(json!({ "packs": packs })))
 }
 
 /// 可选的本体包清单，给建库界面。不需要登录之外的权限——它是静态数据。

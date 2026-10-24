@@ -33,18 +33,11 @@ const MATCH: &str = "b.kb_id = s.kb_id
        AND b.object_is_value = (s.object_id IS NULL)
        AND (s.object_id IS NULL OR b.object_type_id IS NOT DISTINCT FROM oe.type_id)";
 
-/// 一条只说了一刻的陈述（起止同值）绑在一条状态属性上，而绑定没说那一刻是开始还是
-/// 结束（`marks` 是 none 或未知，#966）：它不算类型化行，留在开放图谱里带着它的日期。
-/// 照抄起止会写成一段任何时刻都不成立的状态。`s` 是陈述，`b` 是绑定。
-///
-/// 每一项都得是真值、不能是 NULL：它在 `NOT` 后面用，`valid_to = valid_from` 在只有起点的
-/// 陈述上是 NULL，`NOT NULL` 还是 NULL，「自那天起」的陈述就整批不算了
-const MOMENT_UNREAD: &str =
-    "(s.valid_from IS NOT NULL AND s.valid_to IS NOT DISTINCT FROM s.valid_from
-       AND EXISTS (SELECT 1 FROM relation_types rt
-                    WHERE rt.id = b.relation_type_id AND rt.temporal = 'state')
-       AND b.marks IS DISTINCT FROM 'start' AND b.marks IS DISTINCT FROM 'end')";
-
+/// 一条只说了一刻的陈述（起止同值）绑在一条状态属性上怎么读，见 [`span_of`]：绑定说
+/// `start` 从那一刻起，说 `end` 到那一刻为止，说 `none` 或没说按那个日期命名的时段读
+/// （0053 修订 2026-10-22）。从前 `none` 和没说的不算类型化行（`MOMENT_UNREAD`），四篇公司
+/// 简介上每一条年度数字都这么丢了；照抄起止会写成一段任何时刻都不成立的状态，所以终点
+/// 挪到桶的尽头、标上 `end_after_period`，读的人印得出原文写的 2023
 /// 属性的 datatype 与单位，值按它们读（[`attribute_value`]）；`rt` 是绑到或蕴含的那条属性，
 /// 是关系时 datatype 为 NULL，值原样写
 const SHAPE: &str = "CASE WHEN rt.kind = 'attribute' THEN rt.datatype END AS datatype, rt.unit";
@@ -74,6 +67,8 @@ struct Due {
     direction: String,
     subject_id: Uuid,
     object_id: Option<Uuid>,
+    /// 宾语是实体时它的名字：绑到文本属性上，名字就是值（0044 修订 2026-10-22）
+    object_name: Option<String>,
     object_value: Option<serde_json::Value>,
     valid_from: Option<chrono::DateTime<chrono::Utc>>,
     valid_from_precision: Option<String>,
@@ -86,6 +81,8 @@ struct Due {
     marks: Option<String>,
     /// 绑到的属性的时间语义
     temporal: Option<String>,
+    /// 绑到的是关系还是属性
+    kind: String,
     /// 绑到的是属性时它的 datatype 与单位，值按它们读（[`attribute_value`]）
     datatype: Option<String>,
     unit: Option<String>,
@@ -212,8 +209,7 @@ async fn materialize_in_tx(
                    AND ((b.direction = 'forward' AND t.subject_id = s.subject_id)
                      OR (b.direction = 'reverse' AND t.subject_id = s.object_id))
                    AND NOT EXISTS (SELECT 1 FROM statement_qualifiers q
-                                    WHERE q.fact_id = s.id AND q.role = 'mood')
-                   AND NOT {MOMENT_UNREAD})"
+                                    WHERE q.fact_id = s.id AND q.role = 'mood'))"
     ))
     .persistent(false)
     .bind(kb_id)
@@ -265,11 +261,11 @@ async fn materialize_in_tx(
     //    且谓词相同。reverse 只对两样东西之间的关系有意义（字面值当不了主语）
     let due: Vec<Due> = sqlx::query_as(&format!(
         "SELECT s.id AS statement, b.relation_type_id AS property, b.direction,
-                s.subject_id, s.object_id, s.object_value,
+                s.subject_id, s.object_id, oe.canonical_name AS object_name, s.object_value,
                 s.valid_from, s.valid_from_precision, s.valid_from_grade,
                 s.valid_to, s.valid_to_precision,
                 s.attested_from, s.confidence, b.marks,
-                rt.temporal, {SHAPE}
+                rt.temporal, rt.kind, {SHAPE}
            FROM facts s
            JOIN entities se ON se.id = s.subject_id
       LEFT JOIN entities oe ON oe.id = s.object_id
@@ -278,7 +274,6 @@ async fn materialize_in_tx(
           WHERE s.kb_id = $1 AND s.layer = 'open' AND s.invalidated_at IS NULL
             AND b.status = 'bound'
             AND (b.direction = 'forward' OR s.object_id IS NOT NULL)
-            AND NOT {MOMENT_UNREAD}
             AND NOT EXISTS (SELECT 1 FROM statement_qualifiers q
                              WHERE q.fact_id = s.id AND q.role = 'mood')
             -- 勘误撤过的（陈述, 属性）不再算（0044 决定 7）：撤销要站得住
@@ -296,46 +291,41 @@ async fn materialize_in_tx(
     .await?;
 
     let (mut added, mut merged) = (0u64, 0u64);
+    // 绑上了却按 datatype 读不出的值：(陈述, 属性, 原文的字)，收尾时记成丢弃行
+    let mut unreadable: Vec<(Uuid, Uuid, String)> = Vec::new();
     for d in &due {
         let reverse = d.direction == "reverse";
-        // 一刻的陈述在状态属性下按绑定说的读（#966）：开始写成从那一刻起，结束写成到那一刻
-        // 为止（走 `insert_fact_on`「某天结束了」那条路，关上开放的那段）。什么都不算的
-        // 在查询里已经排掉了（[`MOMENT_UNREAD`]）。陈述不带 `end_after_period`：终点挪没挪到
-        // 时段的尽头由写入路径定（#994 第一刀）
-        let moment = d.temporal.as_deref() == Some("state")
-            && d.valid_from.is_some()
-            && d.valid_from == d.valid_to;
-        let validity = match (moment, d.marks.as_deref()) {
-            (false, _) => Validity {
-                from: d.valid_from,
-                from_precision: d.valid_from_precision.as_deref(),
-                from_grade: d.valid_from_grade.as_deref(),
-                to: d.valid_to,
-                to_precision: d.valid_to_precision.as_deref(),
-                attested_at: d.attested_from,
-                end_after_period: false,
-            },
-            (true, Some("start")) => Validity {
-                from: d.valid_from,
-                from_precision: d.valid_from_precision.as_deref(),
-                from_grade: d.valid_from_grade.as_deref(),
-                to: None,
-                to_precision: None,
-                attested_at: d.attested_from,
-                end_after_period: false,
-            },
-            (true, Some("end")) => Validity {
-                from: None,
-                from_precision: None,
-                from_grade: None,
-                to: d.valid_from,
-                to_precision: d.valid_from_precision.as_deref(),
-                attested_at: d.attested_from,
-                end_after_period: false,
-            },
-            (true, _) => continue,
+        // 一刻的陈述在状态属性下按绑定说的读（#966、0053 修订 2026-10-22）：开始写成从那一刻
+        // 起，结束写成到那一刻为止（走 `insert_fact_on`「某天结束了」那条路，关上开放的那段），
+        // 都不是或没说：属性按那个日期命名的时段读，关系不写（见 `span_of`）
+        let Some(validity) = span_of(
+            d.kind == "attribute",
+            d.temporal.as_deref() == Some("state"),
+            d.marks.as_deref(),
+            d.valid_from,
+            d.valid_from_precision.as_deref(),
+            d.valid_from_grade.as_deref(),
+            d.valid_to,
+            d.valid_to_precision.as_deref(),
+            d.attested_from,
+        ) else {
+            continue;
         };
-        let (fact, new) = match (reverse, d.object_id, &d.object_value) {
+        // 文本属性绑上了一条宾语是实体的陈述：宾语的名字就是值（0044 修订 2026-10-22）
+        let named_value = (d.kind == "attribute")
+            .then(|| {
+                d.object_name
+                    .as_deref()
+                    .map(|n| serde_json::json!({ "value": n }))
+            })
+            .flatten();
+        let object_value = named_value.as_ref().or(d.object_value.as_ref());
+        let object_id = if d.kind == "attribute" {
+            None
+        } else {
+            d.object_id
+        };
+        let (fact, new) = match (reverse, object_id, object_value) {
             (true, Some(object), _) => {
                 insert_fact_on(
                     tx,
@@ -361,9 +351,11 @@ async fn materialize_in_tx(
                 .await?
             }
             (false, None, Some(value)) => {
-                // 读不成属性的 datatype：陈述留在开放图谱里，这一对不写
+                // 读不成属性的 datatype：陈述留在开放图谱里，这一对不写——但要记一行
+                // （`attr_datatype`），从前这里什么都不说，图里少了一个数没人说得出为什么
                 let Some(value) = attribute_value(value, d.datatype.as_deref(), d.unit.as_deref())
                 else {
+                    unreadable.push((d.statement, d.property, raw_text(value)));
                     continue;
                 };
                 insert_fact_on(
@@ -443,7 +435,8 @@ async fn materialize_in_tx(
     }
     // 3a. 已批准的规则算隐含行（0044 决定 3 第五片）。读数只查缓存：缓存里没有的这一轮
     //     不算，`read_phrases` 填上之后再来。短语规则按陈述触发，类别词规则按实体触发
-    let implied = imply_in_tx(tx, kb_id, &mut written).await?;
+    let implied = imply_in_tx(tx, kb_id, &mut written, &mut unreadable).await?;
+    record_unreadable(tx, kb_id, &unreadable).await?;
     // 3b. 见证跟着来源陈述走（0064 决定 3、5）：类型化的行自己没有出处。物化与算隐含行
     //     用的写入口在陈述没有见证时填的是此刻（那是给人写的事实用的缺省），这里改回陈述的。
     //     排在 3a 之后：规则算出的行也是这样写下的
@@ -531,6 +524,10 @@ struct Implied {
     valid_to_precision: Option<String>,
     attested_from: Option<chrono::DateTime<chrono::Utc>>,
     confidence: f32,
+    /// 结论属性的时间语义：一刻的陈述落到状态属性上按时段读（规则没有 marks）
+    temporal: String,
+    /// 结论是属性还是关系：一刻的陈述只在属性上读成时段
+    kind: String,
     datatype: Option<String>,
     unit: Option<String>,
 }
@@ -539,6 +536,7 @@ async fn imply_in_tx(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     kb_id: Uuid,
     written: &mut Vec<Uuid>,
+    unreadable: &mut Vec<(Uuid, Uuid, String)>,
 ) -> AppResult<u64> {
     // 短语规则：签名下活着的、没 mood 的陈述；宾语是读数的答案（缓存里的实体或值），
     // 没有读数时就是陈述的宾语。已经有活着的隐含行以这条陈述为来源的不再算
@@ -548,7 +546,7 @@ async fn imply_in_tx(
                 CASE WHEN r.reading IS NULL THEN s.object_id ELSE pr.entity_id END AS object_id,
                 CASE WHEN r.reading IS NULL THEN s.object_value ELSE pr.value END AS object_value,
                 s.valid_from, s.valid_from_precision, s.valid_from_grade, s.valid_to, s.valid_to_precision,
-                s.attested_from, s.confidence, {SHAPE}
+                s.attested_from, s.confidence, rt.temporal, rt.kind, {SHAPE}
            FROM implication_rules r
            JOIN relation_types rt ON rt.id = r.conclude_property_id
            JOIN facts s ON s.kb_id = r.kb_id AND s.layer = 'open' AND s.invalidated_at IS NULL
@@ -560,10 +558,6 @@ async fn imply_in_tx(
             AND {RULE_MATCH}
             AND NOT EXISTS (SELECT 1 FROM statement_qualifiers q WHERE q.fact_id = s.id AND q.role = 'mood')
             AND (r.reading IS NULL OR pr.entity_id IS NOT NULL OR pr.value IS NOT NULL)
-            -- 规则没有 marks（#966）：一刻的陈述蕴含一条状态属性时，读法未知，不算隐含行。
-            -- 用 IS NOT DISTINCT FROM：只有起点的陈述上 `=` 是 NULL，NOT 之后照样把它排掉
-            AND NOT (s.valid_from IS NOT NULL AND s.valid_to IS NOT DISTINCT FROM s.valid_from
-                     AND rt.temporal = 'state')
             AND NOT EXISTS (SELECT 1 FROM errata_actions ea
                              WHERE ea.statement_id = s.id AND ea.predicate_id = r.conclude_property_id
                                AND ea.status = 'applied' AND ea.action IN ('retract', 'revise'))
@@ -584,7 +578,7 @@ async fn imply_in_tx(
                 pr.entity_id AS object_id, pr.value AS object_value,
                 NULL::timestamptz AS valid_from, NULL::text AS valid_from_precision, NULL::text AS valid_from_grade,
                 NULL::timestamptz AS valid_to, NULL::text AS valid_to_precision,
-                NULL::timestamptz AS attested_from, 0.9::real AS confidence, {SHAPE}
+                NULL::timestamptz AS attested_from, 0.9::real AS confidence, rt.temporal, rt.kind, {SHAPE}
            FROM implication_rules r
            JOIN relation_types rt ON rt.id = r.conclude_property_id
            JOIN entities e ON e.kb_id = r.kb_id AND e.merged_into IS NULL AND {KIND} = r.phrase
@@ -603,23 +597,34 @@ async fn imply_in_tx(
 
     let mut implied = 0u64;
     for d in by_statement.iter().chain(by_entity.iter()) {
-        let validity = Validity {
-            from: d.valid_from,
-            from_precision: d.valid_from_precision.as_deref(),
-            from_grade: d.valid_from_grade.as_deref(),
-            to: d.valid_to,
-            to_precision: d.valid_to_precision.as_deref(),
-            attested_at: d.attested_from,
-            end_after_period: false,
+        // 规则没有 marks（#966）：一刻的陈述蕴含一条状态属性时，结论是属性的按那个日期命名
+        // 的时段读，是关系的不算隐含行（0053 修订 2026-10-22，同物化）
+        let Some(validity) = span_of(
+            d.kind == "attribute",
+            d.temporal == "state",
+            None,
+            d.valid_from,
+            d.valid_from_precision.as_deref(),
+            d.valid_from_grade.as_deref(),
+            d.valid_to,
+            d.valid_to_precision.as_deref(),
+            d.attested_from,
+        ) else {
+            continue;
         };
         let value;
         let object = match (d.object_id, &d.object_value) {
             (Some(o), _) => FactObject::Entity(o),
             (None, Some(v)) => {
-                let Some(v) = attribute_value(v, d.datatype.as_deref(), d.unit.as_deref()) else {
+                let Some(read) = attribute_value(v, d.datatype.as_deref(), d.unit.as_deref())
+                else {
+                    // 类别词规则的来源是实体，没有文档可记；短语规则的记在触发它的陈述上
+                    if let Some(statement) = d.statement {
+                        unreadable.push((statement, d.property, raw_text(v)));
+                    }
                     continue;
                 };
-                value = v;
+                value = read;
                 FactObject::Value(&value)
             }
             _ => continue,
@@ -676,6 +681,133 @@ async fn imply_in_tx(
     Ok(implied)
 }
 
+/// 一条陈述落成类型化行时的区间。起止不同的照抄；起止同值的一刻落到状态属性上按绑定说的读
+/// （#966）：`start` 从那一刻起，`end` 到那一刻为止（走「某天结束了」那条路）。`none` 或没说：
+/// 落到**属性**上按那个日期命名的时段读（0053 修订 2026-10-22）——「2023年营业收入58亿元」是
+/// 2023 这一年的一个量，起点是它，终点是桶的尽头，标上 `end_after_period`，读的人印得出原文
+/// 写的 2023；落到关系上照旧不算行——「joined on 2023-06-01」读成一天的任职会把同一天起的
+/// 开放行关在次日（写入口「同起点、这次带了终点、那行还开着就关上」），那是一条错的结束。
+/// 没有精度的一刻不是桶，读不出时段，也返回 None
+#[allow(clippy::too_many_arguments)]
+fn span_of<'a>(
+    attribute: bool,
+    state: bool,
+    marks: Option<&str>,
+    from: Option<chrono::DateTime<chrono::Utc>>,
+    from_precision: Option<&'a str>,
+    from_grade: Option<&'a str>,
+    to: Option<chrono::DateTime<chrono::Utc>>,
+    to_precision: Option<&'a str>,
+    attested_at: Option<chrono::DateTime<chrono::Utc>>,
+) -> Option<Validity<'a>> {
+    let moment = state && from.is_some() && from == to;
+    Some(match (moment, marks) {
+        (false, _) => Validity {
+            from,
+            from_precision,
+            from_grade,
+            to,
+            to_precision,
+            attested_at,
+            end_after_period: false,
+        },
+        (true, Some("start")) => Validity {
+            from,
+            from_precision,
+            from_grade,
+            to: None,
+            to_precision: None,
+            attested_at,
+            end_after_period: false,
+        },
+        (true, Some("end")) => Validity {
+            from: None,
+            from_precision: None,
+            from_grade: None,
+            to: from,
+            to_precision: from_precision,
+            attested_at,
+            end_after_period: false,
+        },
+        (true, _) => {
+            if !attribute {
+                return None;
+            }
+            let start = from?;
+            let end = crate::graph::bucket_end(start, from_precision);
+            if end <= start {
+                return None;
+            }
+            Validity {
+                from,
+                from_precision,
+                from_grade,
+                to: Some(end),
+                to_precision: from_precision,
+                attested_at,
+                end_after_period: true,
+            }
+        }
+    })
+}
+
+/// 值那一格原文的字，给丢弃行当样例：`{"value": "超过2000人"}` → `超过2000人`
+fn raw_text(raw: &Value) -> String {
+    match raw.get("value").unwrap_or(raw) {
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    }
+}
+
+/// 读不出的值记成 `attr_datatype` 丢弃行（0001：丢弃是一行，不是沉默）。按库整个重写：
+/// 物化每轮重算，上一轮读不出、这一轮属性改成文本读出来了的，行跟着退掉。文档从陈述的
+/// 证据取；没有证据的陈述（人写的）没有文档可挂，不记
+async fn record_unreadable(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    kb_id: Uuid,
+    unreadable: &[(Uuid, Uuid, String)],
+) -> AppResult<()> {
+    let statements: Vec<Uuid> = unreadable.iter().map(|u| u.0).collect();
+    let properties: Vec<Uuid> = unreadable.iter().map(|u| u.1).collect();
+    let raws: Vec<String> = unreadable.iter().map(|u| u.2.clone()).collect();
+    let rows: Vec<crate::extraction_drops::Unreadable> =
+        sqlx::query_as::<_, (Uuid, String, String)>(
+            "SELECT fe.document_id, rt.key, se.canonical_name || ' → ' || x.raw
+           FROM unnest($2::uuid[], $3::uuid[], $4::text[]) AS x(statement, property, raw)
+           JOIN relation_types rt ON rt.id = x.property
+           JOIN facts s ON s.id = x.statement
+           JOIN entities se ON se.id = s.subject_id
+           JOIN LATERAL (SELECT fe.document_id FROM fact_evidence fe
+                          WHERE fe.fact_id = x.statement AND fe.document_id IS NOT NULL
+                          ORDER BY fe.quote_start NULLS LAST LIMIT 1) fe ON true
+          WHERE rt.kb_id = $1
+          ORDER BY x.statement",
+        )
+        .persistent(false)
+        .bind(kb_id)
+        .bind(&statements)
+        .bind(&properties)
+        .bind(&raws)
+        .fetch_all(&mut **tx)
+        .await?
+        .into_iter()
+        .map(
+            |(document_id, detail, example)| crate::extraction_drops::Unreadable {
+                document_id,
+                detail,
+                example,
+            },
+        )
+        .collect();
+    crate::extraction_drops::replace_reason_tx(
+        tx,
+        kb_id,
+        crate::extraction_drops::reason::ATTR_DATATYPE,
+        &rows,
+    )
+    .await
+}
+
 /// 开放陈述的值（`{"value": "2.3亿元"}`）落到属性上的样子：`value` 那一格按 datatype 与单位读成
 /// 数、日期、真假（[`utopia_extract::attribute_value`]），其余键照抄；绑到关系上的值原样留着。
 ///
@@ -721,3 +853,11 @@ mod delivery_tests;
 #[cfg(test)]
 #[path = "materialize_plan_tests.rs"]
 mod plan_tests;
+
+#[cfg(test)]
+#[path = "materialize_unreadable_tests.rs"]
+mod unreadable_tests;
+
+#[cfg(test)]
+#[path = "materialize_period_tests.rs"]
+mod period_tests;

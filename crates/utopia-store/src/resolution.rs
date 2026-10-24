@@ -402,6 +402,9 @@ pub async fn resolve_identity_name(
                 Some(ctx) => update_profile(pool, holder.id, holder.profile_n, ctx).await?,
                 None => touch_entity(pool, holder.id).await?,
             }
+            if holder.type_id.is_none() {
+                adopt_type(pool, kb_id, holder.id, &holder.canonical_name, type_id).await?;
+            }
             Ok(Resolution {
                 entity_id: holder.id,
                 created: false,
@@ -1011,8 +1014,6 @@ struct CrossCandidate {
     type_key: Option<String>,
     // 同上；`types_are_kin` 要按 id 走类层级
     type_id: Option<Uuid>,
-    // 抽取升格要看它：人说过「就是没有类型」时，那也是一个决定
-    type_source: String,
     profile_embedding: Option<Vector>,
     profile_n: i32,
 }
@@ -1125,6 +1126,38 @@ fn confusable_reviews(
         .collect()
 }
 
+/// 持有者还没判出类型而这次判出来了 → 升格。
+/// 不是合并（没有第二个实体），不入 entity_merges；本体页可手工改回
+///
+/// **人说过的「没有类型」不算「还没判出来」。** 0009 之后两者都是
+/// NULL，只看 type_id 分不出——于是一个人看过、认为
+/// 本体里没有合适类的实体，会在下一次抽取时被安上一个类型
+async fn adopt_type(
+    pool: &PgPool,
+    kb_id: Uuid,
+    entity_id: Uuid,
+    canonical_name: &str,
+    type_id: Option<Uuid>,
+) -> AppResult<()> {
+    let Some(type_id) = type_id else {
+        return Ok(());
+    };
+    let adopted = sqlx::query(
+        "UPDATE entities
+         SET type_id = $2, type_source = 'extracted', updated_at = now()
+         WHERE id = $1 AND type_id IS NULL AND type_source <> 'human'",
+    )
+    .bind(entity_id)
+    .bind(type_id)
+    .execute(pool)
+    .await?;
+    if adopted.rows_affected() > 0 {
+        // 类型标签兜底的消歧后缀可能已过时
+        refresh_disambiguators(pool, kb_id, canonical_name).await?;
+    }
+    Ok(())
+}
+
 /// 同类型召回为空时的跨类型处置（类型漂移）。
 /// concept 兜底型候选跑既有画像分层：高相似直接 ATTACH（漂移的召回修复，concept
 /// 侧类型升格为具体类型），灰区/无从判别 → 宁分勿合新建 + 审核对；易混具体类型
@@ -1152,7 +1185,7 @@ async fn resolve_type_drift(
         None => None,
     };
     let cross: Vec<CrossCandidate> = sqlx::query_as(&format!(
-        "SELECT e.id, e.canonical_name, t.key AS type_key, e.type_id, e.type_source,
+        "SELECT e.id, e.canonical_name, t.key AS type_key, e.type_id,
                 e.profile_embedding, e.profile_n
          FROM entities e LEFT JOIN entity_types t ON t.id = e.type_id
          -- IS DISTINCT FROM 而不是 <>：后者遇 NULL 返回 NULL，被 WHERE 当假，
@@ -1210,24 +1243,8 @@ async fn resolve_type_drift(
         if let Some((best, sim)) = best {
             if sim >= SIM_ATTACH {
                 update_profile(pool, best.id, best.profile_n, ctx).await?;
-                // 候选还没判出类型而这次抽取判出来了 → 升格。
-                // 不是合并（没有第二个实体），不入 entity_merges；本体页可手工改回
-                //
-                // **人说过的「没有类型」不算「还没判出来」。** 0009 之后两者都是
-                // NULL，只看 type_key.is_none() 分不出——于是一个人看过、认为
-                // 本体里没有合适类的实体，会在下一次抽取时被安上一个类型
-                if best.type_key.is_none() && best.type_source != "human" && type_id.is_some() {
-                    sqlx::query(
-                        "UPDATE entities
-                         SET type_id = $2, type_source = 'extracted', updated_at = now()
-                         WHERE id = $1",
-                    )
-                    .bind(best.id)
-                    .bind(type_id)
-                    .execute(pool)
-                    .await?;
-                    // 类型标签兜底的消歧后缀可能已过时
-                    refresh_disambiguators(pool, kb_id, &best.canonical_name).await?;
+                if best.type_key.is_none() {
+                    adopt_type(pool, kb_id, best.id, &best.canonical_name, type_id).await?;
                 }
                 // mention 已定居到召回实体；同名易混类型实体的疑点仍在 → 照常入队
                 let mut reviews =

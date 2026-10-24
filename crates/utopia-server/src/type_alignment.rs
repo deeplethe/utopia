@@ -169,6 +169,13 @@ async fn align_types_locked(
     client: &utopia_llm::LlmClient,
 ) -> anyhow::Result<()> {
     let pool = &state.pool;
+    // 先把已绑上的类补到它的类别词下还没有类的实体上：判定落下时的投影只看得见那一刻
+    // 的实体，之后抽出来的（判定期间还在抽的那几篇）落成没有类的；这里每轮补一次，
+    // 短语对齐排在这之后，签名两端的类才是齐的
+    let caught_up = type_bindings::apply_bound(pool, kb_id).await?;
+    if caught_up > 0 {
+        tracing::info!(%kb_id, entities = caught_up, "已绑上的类补到了后建的实体上");
+    }
     // 调模型之前在一个快照里读齐输入（#795）：类的定义、类的版本与父边、类别词、已有的
     // 判定。分几次读的话，两次读之间提交的编辑会让提示词里的定义和指纹里的版本对不上
     let (classes, snapshot, sigs, existing) = {

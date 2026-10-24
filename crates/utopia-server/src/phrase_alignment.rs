@@ -132,6 +132,20 @@ fn fits_direction(
         via.extend(within(&p.domains, sig.subject_type_id, closure)?);
         return Some(Fit { via });
     }
+    if p.kind == "attribute" {
+        // 宾语是实体的签名也能绑文本属性（0044 修订 2026-10-22）：法定代表人、注册地址的值
+        // 是个名字，抽取把它列成了东西；只认正向，名字就是值。数、日期、真假不是名字。
+        // 没声明定义域的不算（`known_as` 这类）：没声明是「不限」，它会出现在每一条关系签名
+        // 的候选里，同 NVDA 上泛泛的 value 属性吞掉现金流量表每一行的教训
+        if p.datatype.as_deref() != Some("text")
+            || direction != Direction::Forward
+            || p.domains.is_empty()
+        {
+            return None;
+        }
+        via.extend(within(&p.domains, sig.subject_type_id, closure)?);
+        return Some(Fit { via });
+    }
     if p.kind != "relation" {
         return None;
     }
@@ -522,12 +536,13 @@ async fn shortlist(
             continue;
         };
         let (fitting, _) = &full[&s.key()];
+        // 字面值的签名只绑属性；宾语是实体的两种都可能（关系，或文本属性），不按类筛
         let near = utopia_store::ontology::nearest_relation_type_ids(
             pool,
             kb_id,
             vector,
             (fitting.len() * 2) as i64,
-            Some(property_kind(s)),
+            s.object_is_value.then_some("attribute"),
         )
         .await?;
         if near.is_empty() {

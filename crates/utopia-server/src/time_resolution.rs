@@ -80,6 +80,17 @@ fn parts_to_time(p: &DateParts) -> Option<(DateTime<Utc>, &'static str)> {
     Some((Utc.from_utc_datetime(&date.and_time(time)), precision))
 }
 
+/// 区间终点。一个季度单独写时止于它的最后一个月（7 月到 9 月）；写在「到第三季度」
+/// 的那一端也是最后一个月，不能停在这一季的头一个月。
+fn parts_to_end(p: &DateParts) -> Option<(DateTime<Utc>, &'static str)> {
+    let (t, precision) = parts_to_time(p)?;
+    if p.quarter.is_some() {
+        Some((t.checked_add_months(Months::new(2))?, "month"))
+    } else {
+        Some((t, precision))
+    }
+}
+
 fn granularity_str(g: Granularity) -> &'static str {
     match g {
         Granularity::Year => "year",
@@ -252,7 +263,7 @@ fn resolve_one(
             let Some((t, p)) = parts_to_time(from) else {
                 return UNRESOLVED;
             };
-            let until = to.as_ref().and_then(parts_to_time);
+            let until = to.as_ref().and_then(parts_to_end);
             // 一个季度是三个月的区间：到它最后一个月为止
             if let (Some(_), None) = (from.quarter, &until) {
                 let last = t.checked_add_months(Months::new(2)).map(|m| (m, "month"));
@@ -1346,6 +1357,34 @@ mod tests {
         assert_eq!(r.from_p, Some("month"));
         assert_eq!(r.to, Some(at("2025-09-01T00:00:00Z")));
         assert_eq!(r.to_p, Some("month"));
+    }
+
+    #[test]
+    fn an_interval_from_one_quarter_to_another_ends_in_the_last_month() {
+        let quarter = |q| DateParts {
+            quarter: Some(q),
+            ..parts(2025, None, None)
+        };
+        let i = Interpretation {
+            id: 0,
+            shape: Shape::Interval,
+            reference: Reference::Absolute {
+                from: quarter(1),
+                to: Some(quarter(3)),
+            },
+            granularity: Granularity::Month,
+        };
+        let r = resolve_one(&i, &DocumentDating::default(), &HashMap::new());
+        assert_eq!(
+            (r.from, r.to, r.from_p, r.to_p, r.grade),
+            (
+                Some(at("2025-01-01T00:00:00Z")),
+                Some(at("2025-09-01T00:00:00Z")),
+                Some("month"),
+                Some("month"),
+                "A"
+            )
+        );
     }
 
     #[test]
