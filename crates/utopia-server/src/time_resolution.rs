@@ -149,9 +149,16 @@ fn quarter_around(t: DateTime<Utc>, fiscal_year_end: Option<(u32, u32)>) -> Opti
     Some(((start, "month"), (end, "month")))
 }
 
-/// 一个期间的起止（写明的数字部分）。
+/// 一个期间的起止（写明的数字部分）。写在终点的季度是那一季的最后一个月：
+/// 「第一季度到第三季度」止于 9 月，不能停在第三季度的头一个月。
 fn period_bounds(from: &DateParts, to: &DateParts) -> Option<(Bound, Bound)> {
-    Some((parts_to_time(from)?, parts_to_time(to)?))
+    let (end, end_p) = parts_to_time(to)?;
+    let (end, end_p) = if to.quarter.is_some() {
+        (end.checked_add_months(Months::new(2))?, "month")
+    } else {
+        (end, end_p)
+    };
+    Some((parts_to_time(from)?, (end, end_p)))
 }
 
 /// 形状决定字在世界轴上占哪一段（决定 7：形状另存，这里只算区间）。
@@ -1526,6 +1533,35 @@ mod tests {
         assert_eq!(
             (r.from, r.to, r.grade),
             (None, Some(at("2019-06-30T00:00:00Z")), "A")
+        );
+    }
+
+    #[test]
+    fn a_period_from_one_quarter_to_another_ends_in_the_last_month() {
+        let quarter = |q| DateParts {
+            quarter: Some(q),
+            ..parts(2025, None, None)
+        };
+        let i = Interpretation {
+            id: 0,
+            shape: Shape::Interval,
+            reference: Reference::Period {
+                name: "Q1 to Q3 2025".into(),
+                from: Some(quarter(1)),
+                to: Some(quarter(3)),
+            },
+            granularity: Granularity::Month,
+        };
+        let r = resolve_one(&i, &DocumentDating::default(), &HashMap::new());
+        assert_eq!(
+            (r.from, r.to, r.from_p, r.to_p, r.grade),
+            (
+                Some(at("2025-01-01T00:00:00Z")),
+                Some(at("2025-09-01T00:00:00Z")),
+                Some("month"),
+                Some("month"),
+                "A"
+            )
         );
     }
 
