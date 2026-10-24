@@ -143,9 +143,10 @@ fn cell_to_json(row: &sqlx::mysql::MySqlRow, i: usize, type_name: &str) -> serde
             r.try_get::<Option<chrono::NaiveDate>, _>(i)
                 .map(|v| v.map(|d| d.to_string()))
         }),
+        // TIME 是一段时长（-838:59:59 到 838:59:59），NaiveTime 装不下 24 小时以上，还丢负号
         Cell::Time => try_text(row, i, |r| {
-            r.try_get::<Option<chrono::NaiveTime>, _>(i)
-                .map(|v| v.map(|t| t.to_string()))
+            r.try_get::<Option<sqlx::mysql::types::MySqlTime>, _>(i)
+                .map(|v| v.map(time_text))
         }),
         Cell::DateTime => try_text(row, i, |r| {
             r.try_get::<Option<chrono::NaiveDateTime>, _>(i)
@@ -174,6 +175,22 @@ fn cell_to_json(row: &sqlx::mysql::MySqlRow, i: usize, type_name: &str) -> serde
             }
         }
     }
+}
+
+/// 照 MySQL 自己的写法：`-01:30:00`、`30:15:00`，有微秒才写 `.000500`
+fn time_text(t: sqlx::mysql::types::MySqlTime) -> String {
+    // sqlx 0.8 的 `MySqlTime::is_negative` 返回的是 is_positive，要看 sign 本身
+    let sign = if t.sign().is_negative() { "-" } else { "" };
+    let mut s = format!(
+        "{sign}{:02}:{:02}:{:02}",
+        t.hours(),
+        t.minutes(),
+        t.seconds()
+    );
+    if t.microseconds() != 0 {
+        s.push_str(&format!(".{:06}", t.microseconds()));
+    }
+    s
 }
 
 /// 按类型读文本，读不出来退回通用字符串（时间列被服务器配置成字符串时会走到）。
@@ -467,6 +484,24 @@ mod tests {
 
         // 写路径仍然被闸挡住（第 1 层），只读会话是第 3 层
         assert!(super::super::guard_sql_for("mysql", "DELETE FROM sales.orders").is_err());
+    }
+
+    /// TIME 是一段时长：TIMEDIFF 过了 24 小时或是负的，都还是它自己
+    #[tokio::test]
+    async fn a_time_past_a_day_or_below_zero_reads_as_itself_mysql() {
+        let Some(url) = live_url() else { return };
+        let r = MysqlEngine::new(&url)
+            .execute(
+                "SELECT TIMEDIFF('2024-01-02 06:15:00', '2024-01-01 00:00:00') AS late, \
+                 TIMEDIFF('2024-01-01 00:00:00', '2024-01-01 01:30:00') AS early, \
+                 CAST('08:05:00' AS TIME) AS start",
+            )
+            .await
+            .expect("execute");
+        assert_eq!(
+            r.rows,
+            vec![r#"{"late":"30:15:00","early":"-01:30:00","start":"08:05:00"}"#]
+        );
     }
 
     /// 每个测试自己的库，名字带随机后缀：并行跑不撞，也不碰服务器上已有的库。
