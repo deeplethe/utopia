@@ -509,6 +509,19 @@ function auditDetailName(e: AuditEvent): string {
 
 const AUDIT_PAGE = 50;
 
+/** 两个日期框说的是读者日历上的几天：起始那天零点起、截止那天过完为止。服务端的区间
+ *  含起点不含终点、按时刻比，所以截止日要送下一天的零点，零点也按本地时区换成时刻 */
+export function auditBounds(since: string, until: string) {
+  const midnight = (day: string, later: number) => {
+    const [y, m, d] = day.split("-").map(Number);
+    return new Date(y, m - 1, d + later).toISOString();
+  };
+  return {
+    since: since ? midnight(since, 0) : undefined,
+    until: until ? midnight(until, 1) : undefined,
+  };
+}
+
 function KbActivity({ kbId }: { kbId: string }) {
   // 筛选按真实查法来：查一类动作、查一个人、查一段时间。
   // 动作前缀匹配——`entity.` 就能把 retyped / renamed 一族一起捞出来
@@ -521,8 +534,7 @@ function KbActivity({ kbId }: { kbId: string }) {
     queryFn: () =>
       api.kbAudit(kbId, {
         action: action || undefined,
-        since: since || undefined,
-        until: until || undefined,
+        ...auditBounds(since, until),
         limit: AUDIT_PAGE,
         offset: page * AUDIT_PAGE,
       }),
