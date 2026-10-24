@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { S } from "../i18n";
 import { chatTestMessage, modelCardStatus } from "./Settings";
 
 describe("model card status", () => {
@@ -81,6 +82,20 @@ describe("chat test message", () => {
     expect(lines).toHaveLength(3);
     expect(lines[2]).toContain("tools are not supported");
     expect(lines[0]).not.toContain("refused");
+  });
+
+  it("says a shape timed out rather than that it was refused", () => {
+    const text = chatTestMessage({
+      ok: false,
+      checks: {
+        plain: { ok: true },
+        streaming: { ok: false, timed_out: true, error: "no answer within 45 s" },
+        tools: { ok: false, error: "HTTP 400" },
+      },
+    });
+    const [, streaming, tools] = text.split("\n");
+    expect(streaming).toContain(S.settings.chatShapeTimedOut("no answer within 45 s"));
+    expect(tools).toContain(S.settings.chatShapeRefused("HTTP 400"));
   });
 
   it("falls back to one sentence when the server sends no checks", () => {

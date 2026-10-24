@@ -37,9 +37,10 @@
 //! `pull_request` 字段区分。默认排除：问"工单系统"要的是工单。但留了开关——
 //! 有些仓库（包括本仓库）的决策记录实际写在 PR 描述里。
 
-use crate::time_text;
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
+
+use crate::ticket::stamp;
 
 /// 一次同步最多取多少页（每页 100）。GitHub 的分页没有天然终点，
 /// 一个活跃仓库能翻很久；这里沿用单端点的分页预算。
@@ -101,95 +102,67 @@ fn issue_number_from_url(url: &str) -> Option<i64> {
     url.rsplit('/').next()?.parse().ok()
 }
 
-/// 工单上的一个时刻，写进正文的样子：到秒、带 `Z`（`2026-08-18T16:18:27Z`）
-fn stamp(t: DateTime<Utc>) -> String {
-    time_text::world(t, Some("second"))
-}
-
-/// 把一张工单连同它的评论与事件排成一篇文档。
+/// 把一张工单连同它的评论与事件排成一篇文档（[`crate::ticket::render`]）。
 ///
 /// **纯函数，不联网**——取回与组织分开，于是组织这一半测得动。
 /// 三次分页的拼装逻辑（谁归谁、按什么排序）恰恰是最容易出错的部分。
 pub fn render(issue: &Issue, comments: &[&Comment], events: &[&Event]) -> String {
-    let mut out = String::new();
-    out.push_str(&format!("# #{} {}\n\n", issue.number, issue.title));
-
     // 抬头写成带日期的陈述句，而不是键值对：抽取器读的是句子。
     // "opened by X on 2026-08-18T16:18:27Z" 能抽出带 valid_from 的事实，
-    // "created_at: 2026-08-18" 则要它自己去猜这是什么意思。
-    //
-    // **时间写到秒**（#691，0024 第 3 节）：GitHub 给的是带 `Z` 的时刻，抽取器读回来就是
-    // second 精度。从前截到 UTC 的那一天，起点最多提前 24 小时，同一天的两件事还会被判成
-    // 同时发生的冲突。这不是开关——精度是数据自己的，截掉它等于替来源说「不知道几点」
+    // "created_at: 2026-08-18" 则要它自己去猜这是什么意思
+    let mut sentences = Vec::new();
     if let Some(u) = &issue.user {
-        out.push_str(&format!(
-            "Opened by {} on {}.\n",
+        sentences.push(format!(
+            "Opened by {} on {}.",
             u.login,
             stamp(issue.created_at)
         ));
     }
-    out.push_str(&format!("Currently {}.\n", issue.state));
+    sentences.push(format!("Currently {}.", issue.state));
     if let Some(c) = issue.closed_at {
-        out.push_str(&format!("Closed on {}.\n", stamp(c)));
+        sentences.push(format!("Closed on {}.", stamp(c)));
     }
     if !issue.labels.is_empty() {
         let names: Vec<&str> = issue.labels.iter().map(|l| l.name.as_str()).collect();
-        out.push_str(&format!("Labelled {}.\n", names.join(", ")));
+        sentences.push(format!("Labelled {}.", names.join(", ")));
     }
     if !issue.assignees.is_empty() {
         let names: Vec<&str> = issue.assignees.iter().map(|a| a.login.as_str()).collect();
-        out.push_str(&format!("Assigned to {}.\n", names.join(", ")));
+        sentences.push(format!("Assigned to {}.", names.join(", ")));
     }
-
-    if let Some(b) = issue
-        .body
-        .as_deref()
-        .map(str::trim)
-        .filter(|b| !b.is_empty())
-    {
-        out.push_str("\n## Description\n\n");
-        out.push_str(b);
-        out.push('\n');
-    }
-
     // **状态变更史是这个来源存在的理由。** 每一行都带日期，
     // 于是账本拿到的是"何时变成什么"，而不是一个静止的当前值
-    if !events.is_empty() {
-        out.push_str("\n## History\n\n");
-        for e in events {
+    let history = events
+        .iter()
+        .map(|e| {
             let who = e.actor.as_ref().map(|a| a.login.as_str()).unwrap_or("?");
             let detail = match (e.event.as_str(), &e.label, &e.assignee) {
                 ("labeled" | "unlabeled", Some(l), _) => format!(" ({})", l.name),
                 ("assigned" | "unassigned", _, Some(a)) => format!(" ({})", a.login),
                 _ => String::new(),
             };
-            out.push_str(&format!(
-                "- {} — {} by {}{}\n",
-                stamp(e.created_at),
-                e.event,
-                who,
-                detail
-            ));
-        }
-    }
-
-    if !comments.is_empty() {
-        out.push_str("\n## Comments\n\n");
-        for c in comments {
-            let who = c.user.as_ref().map(|a| a.login.as_str()).unwrap_or("?");
-            let body = c.body.as_deref().unwrap_or("").trim();
-            if body.is_empty() {
-                continue;
-            }
-            out.push_str(&format!(
-                "### {} on {}\n\n{}\n\n",
-                who,
-                stamp(c.created_at),
-                body
-            ));
-        }
-    }
-    out
+            (e.created_at, format!("{} by {}{}", e.event, who, detail))
+        })
+        .collect();
+    let comments = comments
+        .iter()
+        .map(|c| crate::ticket::Comment {
+            author: c
+                .user
+                .as_ref()
+                .map(|a| a.login.clone())
+                .unwrap_or_else(|| "?".into()),
+            at: Some(c.created_at),
+            body: c.body.clone().unwrap_or_default(),
+        })
+        .collect();
+    crate::ticket::render(&crate::ticket::Ticket {
+        heading: format!("#{} {}", issue.number, issue.title),
+        sentences,
+        description: issue.body.clone(),
+        history,
+        comments,
+    })
 }
 
 /// 只保留这张工单的评论，按时间升序；响应里归不到它的评论不能混进正文。

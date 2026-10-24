@@ -1,0 +1,215 @@
+{
+ "note": "取自 gitlab.com/QuintinBotes/utopia-gitlab-fixture 的真实 GitLab 响应（#1327），条目和字段已裁到我们读的那些。sizes 是 HEAD files/:path?ref=HEAD 的 X-Gitlab-Size；commits 是 commits?path=…&per_page=1 的第一条；blobs 是 blobs/:sha/raw 的原文。",
+ "tree": [
+  {
+   "id": "59b6118b73cbcb3122d252045b26d6c7d02efc94",
+   "path": ".gitlab",
+   "type": "tree",
+   "mode": "040000"
+  },
+  {
+   "id": "59640446df63d4d2b440c3f6a507d8623c725b3c",
+   "path": "docs",
+   "type": "tree",
+   "mode": "040000"
+  },
+  {
+   "id": "1874e3dcfe298a170dafc6ceb499f46f04151ba2",
+   "path": "docs/nested",
+   "type": "tree",
+   "mode": "040000"
+  },
+  {
+   "id": "7a5166199491d8fa764ff635ac43f6fdbdd6c6a4",
+   "path": "node_modules",
+   "type": "tree",
+   "mode": "040000"
+  },
+  {
+   "id": "d4e81d17fba4bf2637d5d5a2e73ebea2cdbe07f0",
+   "path": "node_modules/pkg",
+   "type": "tree",
+   "mode": "040000"
+  },
+  {
+   "id": "244272f25fe72c258f73baecc92eb343a8bda9d7",
+   "path": "notes",
+   "type": "tree",
+   "mode": "040000"
+  },
+  {
+   "id": "5d90422423db5ef6b431e8b9e60e0baf04b8742a",
+   "path": "src",
+   "type": "tree",
+   "mode": "040000"
+  },
+  {
+   "id": "1bd4a12d379be6929bc1baa24b8e3cd01c398d53",
+   "path": "vendor",
+   "type": "tree",
+   "mode": "040000"
+  },
+  {
+   "id": "d4e81d17fba4bf2637d5d5a2e73ebea2cdbe07f0",
+   "path": "vendor/lib",
+   "type": "tree",
+   "mode": "040000"
+  },
+  {
+   "id": "3e426bd76155c7e0885219a9465f467c9cff59f2",
+   "path": ".gitlab/notes.md",
+   "type": "blob",
+   "mode": "100644"
+  },
+  {
+   "id": "9e4eb8b5657c5b9f1abfbef693a6e743d92a1862",
+   "path": "README.md",
+   "type": "blob",
+   "mode": "100644"
+  },
+  {
+   "id": "928fe85d3c0b086cc74cbd9acf419d075a1a1387",
+   "path": "big.md",
+   "type": "blob",
+   "mode": "100644"
+  },
+  {
+   "id": "9292cffaa5dba9013a3b89201041c96584661f0a",
+   "path": "docs/copy-of-guide.md",
+   "type": "blob",
+   "mode": "100644"
+  },
+  {
+   "id": "9292cffaa5dba9013a3b89201041c96584661f0a",
+   "path": "docs/guide.md",
+   "type": "blob",
+   "mode": "100644"
+  },
+  {
+   "id": "f9b2af405d33985a3b1f3b21b3aae6b6c08fd6c9",
+   "path": "docs/nested/deep.mdx",
+   "type": "blob",
+   "mode": "100644"
+  },
+  {
+   "id": "eafc2aac7162cad4e1f335fab78ae18b297e49cc",
+   "path": "link.md",
+   "type": "blob",
+   "mode": "120000"
+  },
+  {
+   "id": "08e8dd66c3cd6625b1ef680260b6861732ed1ab9",
+   "path": "node_modules/pkg/README.md",
+   "type": "blob",
+   "mode": "100644"
+  },
+  {
+   "id": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+   "path": "notes/empty.md",
+   "type": "blob",
+   "mode": "100644"
+  },
+  {
+   "id": "f328e4d9d04c31d0d70d16d21a07d1613be9d577",
+   "path": "src/main.rs",
+   "type": "blob",
+   "mode": "100644"
+  },
+  {
+   "id": "08e8dd66c3cd6625b1ef680260b6861732ed1ab9",
+   "path": "vendor/lib/README.md",
+   "type": "blob",
+   "mode": "100644"
+  }
+ ],
+ "sizes": {
+  ".gitlab/notes.md": 34,
+  "README.md": 61,
+  "big.md": 3368,
+  "docs/copy-of-guide.md": 51,
+  "docs/guide.md": 51,
+  "docs/nested/deep.mdx": 38,
+  "link.md": 13,
+  "node_modules/pkg/README.md": 11,
+  "notes/empty.md": 0,
+  "src/main.rs": 13,
+  "vendor/lib/README.md": 11
+ },
+ "commits": {
+  ".gitlab/notes.md": [
+   {
+    "id": "8cdce7f6f4c5d3048293693813009afe9867448c",
+    "committed_date": "2026-10-01T09:00:00.000+00:00"
+   }
+  ],
+  "README.md": [
+   {
+    "id": "8cdce7f6f4c5d3048293693813009afe9867448c",
+    "committed_date": "2026-10-01T09:00:00.000+00:00"
+   }
+  ],
+  "big.md": [
+   {
+    "id": "8cdce7f6f4c5d3048293693813009afe9867448c",
+    "committed_date": "2026-10-01T09:00:00.000+00:00"
+   }
+  ],
+  "docs/copy-of-guide.md": [
+   {
+    "id": "189e30cff625d4c238cfb1059941383b711b2a81",
+    "committed_date": "2026-10-05T14:30:00.000+00:00"
+   }
+  ],
+  "docs/guide.md": [
+   {
+    "id": "189e30cff625d4c238cfb1059941383b711b2a81",
+    "committed_date": "2026-10-05T14:30:00.000+00:00"
+   }
+  ],
+  "docs/nested/deep.mdx": [
+   {
+    "id": "8cdce7f6f4c5d3048293693813009afe9867448c",
+    "committed_date": "2026-10-01T09:00:00.000+00:00"
+   }
+  ],
+  "link.md": [
+   {
+    "id": "8cdce7f6f4c5d3048293693813009afe9867448c",
+    "committed_date": "2026-10-01T09:00:00.000+00:00"
+   }
+  ],
+  "node_modules/pkg/README.md": [
+   {
+    "id": "8cdce7f6f4c5d3048293693813009afe9867448c",
+    "committed_date": "2026-10-01T09:00:00.000+00:00"
+   }
+  ],
+  "notes/empty.md": [
+   {
+    "id": "8cdce7f6f4c5d3048293693813009afe9867448c",
+    "committed_date": "2026-10-01T09:00:00.000+00:00"
+   }
+  ],
+  "src/main.rs": [
+   {
+    "id": "8cdce7f6f4c5d3048293693813009afe9867448c",
+    "committed_date": "2026-10-01T09:00:00.000+00:00"
+   }
+  ],
+  "vendor/lib/README.md": [
+   {
+    "id": "8cdce7f6f4c5d3048293693813009afe9867448c",
+    "committed_date": "2026-10-01T09:00:00.000+00:00"
+   }
+  ]
+ },
+ "blobs": {
+  "3e426bd76155c7e0885219a9465f467c9cff59f2": "# Hidden\n\nInside a hidden folder.\n",
+  "9e4eb8b5657c5b9f1abfbef693a6e743d92a1862": "# Fixture project\n\nRecorded by the Utopia gitlab_repo tests.\n",
+  "928fe85d3c0b086cc74cbd9acf419d075a1a1387": "# Big\n\nLorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. Lorem ipsum dolor sit amet. \n",
+  "9292cffaa5dba9013a3b89201041c96584661f0a": "# Guide\n\nThe guide a base should take in, revised.\n",
+  "f9b2af405d33985a3b1f3b21b3aae6b6c08fd6c9": "# Deep\n\nAn mdx file two folders down.\n",
+  "08e8dd66c3cd6625b1ef680260b6861732ed1ab9": "# Vendored\n",
+  "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391": ""
+ }
+}

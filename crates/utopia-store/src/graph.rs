@@ -1833,7 +1833,7 @@ pub async fn entity_detail(
            AND NOT {represented}
            AND ({subject} = $2 OR {object} = $2)
            AND {not_name}
-         ORDER BY f.valid_from NULLS LAST, f.recorded_at",
+         ORDER BY f.valid_from NULLS LAST, f.recorded_at, f.id",
         targets = TIME_CORRECTED_TARGETS,
         corrected_ends = corrected_ends_sql("f"),
         correction_note = correction_note_sql("f"),
@@ -2105,9 +2105,26 @@ pub async fn confirm_fact(pool: &PgPool, kb_id: Uuid, fact_id: Uuid) -> AppResul
 }
 
 /// 人工否决事实：作废（账本 append-only，不 DELETE）。
+///
+/// 否决的是开放陈述时，随后排一次类型化重算（#1366）：它物化出的类型化行要等重算才退
+/// （`materialize` 的第 1、2 步按 `typed_fact_sources` 看每一个支撑者，还有别的活陈述撑着的
+/// 行照旧留着），而否决本身只写 `invalidated_at`，不排的话这一行一直要等到下一次对齐。
+/// 先作废、后排：反过来的话重算可能在作废提交之前跑完，读到的陈述还活着。排着就不重复
 pub async fn reject_fact(pool: &PgPool, kb_id: Uuid, fact_id: Uuid) -> AppResult<()> {
     if !crate::temporal::retract(pool, kb_id, fact_id).await? {
         return Err(AppError::NotFound);
+    }
+    let open: Option<bool> = sqlx::query_scalar("SELECT layer = 'open' FROM facts WHERE id = $1")
+        .bind(fact_id)
+        .fetch_optional(pool)
+        .await?;
+    if open == Some(true) {
+        crate::jobs::enqueue_unless_queued(
+            pool,
+            crate::phrase_bindings::MATERIALIZE_KIND,
+            serde_json::json!({ "kb_id": kb_id }),
+        )
+        .await?;
     }
     Ok(())
 }
@@ -2478,6 +2495,7 @@ pub async fn entity_history(
 ///
 /// 事件推导与 `entity_history` 同源（见那里的注释）：一条事实行最多产出两个事件，
 /// 且已被后继修正的死亡不重复记。
+#[allow(clippy::too_many_arguments)]
 pub async fn graph_changes(
     pool: &PgPool,
     kb_id: Uuid,
@@ -2486,6 +2504,7 @@ pub async fn graph_changes(
     entity_id: Option<Uuid>,
     kinds: Option<&[String]>,
     limit: i64,
+    offset: i64,
 ) -> AppResult<Vec<GraphChange>> {
     // 两个分支各自按**自己那根时间列**开窗，而不是先union再过滤：
     // 一条 2 月写入、8 月被推翻的事实，在"3–4 月"窗口里两个事件都不该出现
@@ -2536,8 +2555,9 @@ pub async fn graph_changes(
            -- 限量的变更清单会被它挤满。新读到的别名、改名照样列出来
            AND NOT (coalesce(r.builtin AND r.key = 'known_as', false)
                     AND lower(ev.object_value->>'value') = lower(s.canonical_name))
-         ORDER BY ev.at DESC, ev.id
-         LIMIT $6"
+         -- 同一事实可以在同一时刻写入并作废；事件种类也得参与排序才能稳定续页。
+         ORDER BY ev.at DESC, ev.id, ev.kind
+         LIMIT $6 OFFSET $7"
     ))
     .bind(kb_id)
     .bind(since)
@@ -2545,6 +2565,7 @@ pub async fn graph_changes(
     .bind(entity_id)
     .bind(kinds)
     .bind(limit)
+    .bind(offset)
     .fetch_all(pool)
     .await?)
 }

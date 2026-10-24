@@ -1,6 +1,6 @@
 # 0013 · A source hands over its history
 
-- **Status**: Implemented for GitHub, Jira and Notion (#134, #135, #213) · open: Feishu, Confluence, decision 7 (#1327)
+- **Status**: Implemented for GitHub, Jira and Notion (#134, #135, #213); decision 7's shared ticket document (#1378) · open: Feishu, Confluence, GitLab issues on the ticket document (#1327)
 - **Written**: 2026-08-31 · condensed into English 2026-09-03
 - **Related**: the bitemporal ground of [0001](0001-ontology-import-and-governance.md); the same judgment on the corpus side in `scripts/bench/fetch-wiki-history.mjs` (#122); [0012](0012-the-ontology-is-a-contract-not-a-suggestion.md) is the other end of the line — this record is about how things come in, that one about the rules they land by; the grant layer added afterwards (#142, `data_source_grants`) decides who may mount a source: provenance visible, destination governed
 

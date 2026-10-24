@@ -1375,6 +1375,7 @@ function SourceModal({
     kind === "custom" ||
     kind === "github_issues" ||
     kind === "github_repo" ||
+    kind === "gitlab_repo" ||
     kind === "jira_issues" ||
     kind === "s3" ||
     kind === "azure_blob" ||
@@ -1402,6 +1403,13 @@ function SourceModal({
                       ? includePrs ? { include_pull_requests: true } : {}
                       : { include: globList(includeGlobs), exclude: globList(excludeGlobs) }),
                   }
+                : kind === "gitlab_repo"
+                  ? {
+                      project: repo.trim(),
+                      ...(authHeader.trim() ? { auth_header: authHeader.trim() } : {}),
+                      include: globList(includeGlobs),
+                      exclude: globList(excludeGlobs),
+                    }
                 : kind === "jira_issues"
                   ? {
                       base_url: jiraUrl.trim(),
@@ -1806,21 +1814,21 @@ function SourceModal({
               )}
             </>
           )}
-          {(kind === "github_issues" || kind === "github_repo") && (
+          {(kind === "github_issues" || kind === "github_repo" || kind === "gitlab_repo") && (
             <>
               {field(
-                S.library.repoField,
+                kind === "gitlab_repo" ? S.library.gitlabProjectField : S.library.repoField,
                 <Input className="w-full font-mono"
-                  placeholder="owner/name"
+                  placeholder={kind === "gitlab_repo" ? "group/name" : "owner/name"}
                   value={repo}
                   onChange={(e) => setRepo(e.target.value)}
                 />,
               )}
               {field(
-                S.library.tokenField,
+                kind === "gitlab_repo" ? S.library.gitlabTokenField : S.library.tokenField,
                 <Input className="w-full font-mono"
                   type="password"
-                  placeholder="Bearer ghp_…"
+                  placeholder={kind === "gitlab_repo" ? "Bearer glpat-…" : "Bearer ghp_…"}
                   value={authHeader}
                   onChange={(e) => setAuthHeader(e.target.value)}
                 />,
@@ -1888,7 +1896,8 @@ function SourceEditModal({
   );
   const [endpoint, setEndpoint] = useState(cfg.endpoint ?? "");
   const [authHeader, setAuthHeader] = useState("");
-  const [repo, setRepo] = useState(cfg.repo ?? "");
+  // GitLab 的项目路径存在 `project`（与 Jira 的项目 key 同名不同义），表单里同用这一格
+  const [repo, setRepo] = useState((kind === "gitlab_repo" ? cfg.project : cfg.repo) ?? "");
   const [includePrs, setIncludePrs] = useState(Boolean(cfg.include_pull_requests));
   const [includeGlobs, setIncludeGlobs] = useState((cfg.include ?? []).join(", "));
   const [excludeGlobs, setExcludeGlobs] = useState((cfg.exclude ?? []).join(", "));
@@ -1911,8 +1920,8 @@ function SourceEditModal({
     (kind === "github_issues" &&
       (repo.trim() !== (cfg.repo ?? "") ||
         includePrs !== Boolean(cfg.include_pull_requests))) ||
-    (kind === "github_repo" &&
-      (repo.trim() !== (cfg.repo ?? "") ||
+    ((kind === "github_repo" || kind === "gitlab_repo") &&
+      (repo.trim() !== ((kind === "gitlab_repo" ? cfg.project : cfg.repo) ?? "") ||
         String(globList(includeGlobs) ?? "") !== String(cfg.include ?? "") ||
         String(globList(excludeGlobs) ?? "") !== String(cfg.exclude ?? "")));
 
@@ -1936,13 +1945,12 @@ function SourceEditModal({
                     ...(authHeader.trim() ? { auth_header: authHeader.trim() } : {}),
                     include_pull_requests: includePrs,
                   }
-                : kind === "github_repo"
-                  ? githubRepoConfig(cfg, {
-                      repo,
-                      authHeader,
-                      include: includeGlobs,
-                      exclude: excludeGlobs,
-                    })
+                : kind === "github_repo" || kind === "gitlab_repo"
+                  ? githubRepoConfig(
+                      cfg,
+                      { repo, authHeader, include: includeGlobs, exclude: excludeGlobs },
+                      kind === "gitlab_repo" ? "project" : "repo",
+                    )
                   : undefined;
       return api.updateSource(kbId, source.id, {
         name: name.trim(),
@@ -2064,21 +2072,21 @@ function SourceEditModal({
               </p>
             </>
           )}
-          {(kind === "github_issues" || kind === "github_repo") && (
+          {(kind === "github_issues" || kind === "github_repo" || kind === "gitlab_repo") && (
             <>
               {field(
-                S.library.repoField,
+                kind === "gitlab_repo" ? S.library.gitlabProjectField : S.library.repoField,
                 <Input className="w-full font-mono"
-                  placeholder="owner/name"
+                  placeholder={kind === "gitlab_repo" ? "group/name" : "owner/name"}
                   value={repo}
                   onChange={(e) => setRepo(e.target.value)}
                 />,
               )}
               {field(
-                S.library.tokenField,
+                kind === "gitlab_repo" ? S.library.gitlabTokenField : S.library.tokenField,
                 <Input className="w-full font-mono"
                   type="password"
-                  placeholder="Bearer ghp_…"
+                  placeholder={kind === "gitlab_repo" ? "Bearer glpat-…" : "Bearer ghp_…"}
                   value={authHeader}
                   onChange={(e) => setAuthHeader(e.target.value)}
                 />,

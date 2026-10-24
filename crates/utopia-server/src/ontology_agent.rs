@@ -1245,8 +1245,10 @@ async fn finish_adoption(
         }
     }
     for (statement_id, direction) in examples {
-        // Removed examples cannot be checked; never substitute another statement.
-        let live: Option<Uuid> = sqlx::query_scalar("SELECT id FROM facts WHERE kb_id=$1 AND id=$2 AND layer='open' AND invalidated_at IS NULL FOR SHARE")
+        // A negative case observes disagreement; it must not veto adoption or gain an
+        // automatic positive counterpart. Removed examples are skipped too, never replaced.
+        let live: Option<Uuid> = sqlx::query_scalar("SELECT f.id FROM facts f WHERE f.kb_id=$1 AND f.id=$2 AND f.layer='open' AND f.invalidated_at IS NULL
+            AND NOT EXISTS (SELECT 1 FROM ontology_regression_cases c WHERE c.kb_id=f.kb_id AND c.statement_id=f.id AND c.expected_property_id IS NULL) FOR SHARE OF f")
             .bind(kb_id).bind(statement_id).fetch_optional(&mut **tx).await?;
         if live.is_none() {
             continue;
@@ -1256,8 +1258,8 @@ async fn finish_adoption(
             kb_id,
             utopia_store::ontology_regressions::NewCase {
                 statement_id,
-                expected_property_id: property_id,
-                expected_direction: direction,
+                expected_property_id: Some(property_id),
+                expected_direction: Some(direction),
                 created_by: actor,
                 origin: "adoption",
             },

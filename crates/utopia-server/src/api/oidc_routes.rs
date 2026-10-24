@@ -69,6 +69,27 @@ struct Config {
     /// 本地开发：允许 issuer 与各端点走回环地址上的明文 HTTP。只认 localhost /
     /// 127.0.0.1 / ::1，公网地址照旧只能 HTTPS
     loopback_http: bool,
+    /// 授权请求的 scope（`UTOPIA_OIDC_SCOPES`，默认 `openid profile email`）。有的身份提供方
+    /// 的管理员只批了 `openid profile`，多要一个 `email` 就让每个人登录时都卡在同意页（#1355）
+    scopes: String,
+}
+
+/// `openid` 必须在：少了它就不是 OIDC，拿不到 ID token。没写就补在最前面，而不是报错
+fn scopes(raw: Option<&str>) -> String {
+    let mut out: Vec<&str> = Vec::new();
+    for s in raw
+        .filter(|r| !r.trim().is_empty())
+        .unwrap_or("openid profile email")
+        .split_whitespace()
+    {
+        if !out.contains(&s) {
+            out.push(s);
+        }
+    }
+    if !out.contains(&"openid") {
+        out.insert(0, "openid");
+    }
+    out.join(" ")
 }
 
 fn config() -> Result<Config, AppError> {
@@ -100,6 +121,7 @@ fn config() -> Result<Config, AppError> {
             .collect(),
         loopback_http: std::env::var("UTOPIA_OIDC_ALLOW_LOOPBACK_HTTP")
             .is_ok_and(|v| matches!(v.trim(), "1" | "true")),
+        scopes: scopes(std::env::var("UTOPIA_OIDC_SCOPES").ok().as_deref()),
     };
     secure_url(&c.issuer, c.loopback_http)?;
     secure_url(&c.redirect, true)?;
@@ -292,6 +314,16 @@ pub fn password_login(s: &AppState) -> bool {
     s.password_login || config().is_err()
 }
 
+/// 启动时说出来：允许名单按 ID token 里核实过的 email 关联账号，scope 里没有 `email`
+/// 时多数身份提供方根本不发这个声明，名单就形同虚设
+pub fn warn_about_scopes() {
+    if let Ok(c) = config() {
+        if !c.allowed_domains.is_empty() && !c.scopes.split_whitespace().any(|s| s == "email") {
+            tracing::warn!("UTOPIA_OIDC_SCOPES 里没有 email，而 UTOPIA_OIDC_ALLOWED_DOMAINS 已设：身份提供方多半不发 email，按域名关联和开户不会发生")
+        }
+    }
+}
+
 /// 启动时把关掉密码登录的两种后果说出来：没配 SSO 时这个开关不生效；
 /// 没有允许名单时只有绑定过身份的人进得来，新人既注册不了也开不了户
 pub fn warn_about_password_login(s: &AppState) {
@@ -387,7 +419,7 @@ async fn begin(
     .await?;
     url.query_pairs_mut().extend_pairs([
         ("response_type", "code"),
-        ("scope", "openid profile email"),
+        ("scope", c.scopes.as_str()),
         ("client_id", &c.client_id),
         ("redirect_uri", &c.redirect),
         ("state", &state),
@@ -1100,7 +1132,23 @@ mod tests {
             exchange_audiences: vec!["sibling-app".into(), "utopia-test".into()],
             allowed_domains: vec![],
             loopback_http: false,
+            scopes: super::scopes(None),
         }
+    }
+
+    #[test]
+    fn scopes_default_to_openid_profile_email_and_always_keep_openid() {
+        assert_eq!(super::scopes(None), "openid profile email");
+        assert_eq!(super::scopes(Some("  ")), "openid profile email");
+        assert_eq!(super::scopes(Some("openid profile")), "openid profile");
+        assert_eq!(
+            super::scopes(Some("profile  email")),
+            "openid profile email"
+        );
+        assert_eq!(
+            super::scopes(Some("profile openid profile")),
+            "profile openid"
+        );
     }
 
     // This key is generated solely for these tests and is never used by the app.

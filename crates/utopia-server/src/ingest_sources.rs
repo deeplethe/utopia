@@ -84,6 +84,7 @@ pub async fn sync_source(state: &AppState, source_id: Uuid) -> anyhow::Result<()
         Some(SourceKind::Custom) => sync_custom(state, &source, since).await,
         Some(SourceKind::GithubIssues) => sync_github_issues(state, &source, since).await,
         Some(SourceKind::GithubRepo) => sync_github_repo(state, &source).await,
+        Some(SourceKind::GitlabRepo) => sync_gitlab_repo(state, &source).await,
         Some(SourceKind::JiraIssues) => sync_jira_issues(state, &source, since).await,
         Some(SourceKind::S3 | SourceKind::AzureBlob | SourceKind::Gcs) => {
             sync_object_storage(state, &source).await
@@ -987,6 +988,183 @@ async fn sync_github_repo_with_client(
     Ok(stats)
 }
 
+/// GitLab 项目文件（gitlab.com，#1327）：与 [`sync_github_repo`] 同一个形状，一条路径一篇文档，
+/// 按 blob SHA 判「没变」。树要翻页；新出现或变了的文件多一次 `HEAD`，先拿到大小再决定取不取。
+async fn sync_gitlab_repo(state: &AppState, source: &Source) -> anyhow::Result<SyncStats> {
+    let url = reqwest::Url::parse("https://gitlab.com/")?;
+    let http = crate::http_fetch::client_for(
+        &url,
+        crate::http_fetch::Reach::Content,
+        crate::http_fetch::Limits::default(),
+    )
+    .await?;
+    sync_gitlab_repo_with_client(state, source, &http, "https://gitlab.com/api/v4").await
+}
+
+/// 带令牌发一个请求并判状态。GitLab 限流回 429，说清楚是限流，正确的动作是等或配令牌
+async fn gitlab_checked(
+    http: &reqwest::Client,
+    method: reqwest::Method,
+    url: reqwest::Url,
+    auth: Option<&str>,
+) -> anyhow::Result<reqwest::Response> {
+    let mut req = http.request(method, url);
+    if let Some(a) = auth {
+        req = req.header(reqwest::header::AUTHORIZATION, a);
+    }
+    let resp = req.send().await?;
+    let status = resp.status();
+    if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        anyhow::bail!("GitLab 限流：请求太多，稍后再同步；未认证的配额更低，配一个 read_api 令牌");
+    }
+    if !status.is_success() {
+        anyhow::bail!("HTTP {status} from GitLab");
+    }
+    Ok(resp)
+}
+
+// HTTP 接缝让回归测试走同一条同步与落库路径，生产固定访问 gitlab.com 的 API。
+async fn sync_gitlab_repo_with_client(
+    state: &AppState,
+    source: &Source,
+    http: &reqwest::Client,
+    api_base: &str,
+) -> anyhow::Result<SyncStats> {
+    use crate::{github_repo as gr, gitlab_repo as gl};
+    let project = source.config["project"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!("gitlab_repo source is missing config.project (group/name)")
+        })?;
+    // 子组可以有好几层，但每一段都得有字
+    if project.split('/').count() < 2 || project.split('/').any(str::is_empty) {
+        anyhow::bail!(
+            "config.project should look like group/name or group/subgroup/name, got {project:?}"
+        );
+    }
+    let auth = source.config["auth_header"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let filter = gr::FileFilter::from_config(&source.config)?;
+    let base = reqwest::Url::parse(api_base)?;
+    // 每一段各自编码：项目路径里的 `/` 与文件路径里的 `/` 都得成 `%2F`
+    let at = |segments: &[&str]| -> anyhow::Result<reqwest::Url> {
+        let mut u = base.clone();
+        u.path_segments_mut()
+            .map_err(|_| anyhow::anyhow!("API base cannot take a path"))?
+            .pop_if_empty()
+            .extend(["projects", project, "repository"])
+            .extend(segments);
+        Ok(u)
+    };
+
+    let mut tree_url = at(&["tree"])?;
+    tree_url
+        .query_pairs_mut()
+        .append_pair("recursive", "true")
+        .append_pair("per_page", "100")
+        .append_pair("pagination", "keyset");
+    let (mut entries, mut next, mut pages) = (Vec::<gl::TreeEntry>::new(), Some(tree_url), 0);
+    while let Some(url) = next.take() {
+        if pages == gl::MAX_TREE_PAGES {
+            next = Some(url);
+            break;
+        }
+        let resp = gitlab_checked(http, reqwest::Method::GET, url, auth).await?;
+        let link = resp
+            .headers()
+            .get(reqwest::header::LINK)
+            .and_then(|v| v.to_str().ok())
+            .map(String::from);
+        entries.extend(resp.json::<Vec<gl::TreeEntry>>().await?);
+        next = gl::next_page(link.as_deref(), &base);
+        pages += 1;
+    }
+    let (truncated, chosen) = (next.is_some(), gl::choose(entries, &filter));
+    let keys: Vec<String> = chosen
+        .iter()
+        .map(|e| format!("gitlab:{project}:{}", e.path))
+        .collect();
+    let mut stats = SyncStats::default();
+    for (entry, key) in chosen.iter().zip(&keys) {
+        // 没变的整条跳过：树里没有大小，但已落库的字节算出同一个 git SHA 就够了
+        let old =
+            utopia_store::documents::find_by_external_key(&state.pool, source.id, key).await?;
+        let unchanged = match old {
+            Some(d) => state
+                .blob
+                .get(&d.sha256)
+                .await
+                .is_ok_and(|b| gr::git_blob_sha(&b) == entry.id),
+            None => false,
+        };
+        if unchanged {
+            continue;
+        }
+        // 先问大小，大小上限得在下载之前判。超限的文件不落库，于是每一轮都会为它再问一次：
+        // 一次 HEAD，不下载正文。真撞上限流时，再把挡掉的 blob SHA 记下来
+        let mut fu = at(&["files", &entry.path])?;
+        fu.query_pairs_mut().append_pair("ref", "HEAD");
+        let head = gitlab_checked(http, reqwest::Method::HEAD, fu, auth).await?;
+        let size = head
+            .headers()
+            .get("x-gitlab-size")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<i64>().ok());
+        let Some(size) = size else {
+            tracing::warn!(%project, path = %entry.path, "GitLab 没有给出文件大小，跳过这个文件");
+            continue;
+        };
+        if !filter.size_ok(size) {
+            continue;
+        }
+        // 文档日期取最后一次动过这条路径的提交，只在新出现或变了时问
+        let mut cu = at(&["commits"])?;
+        cu.query_pairs_mut()
+            .append_pair("path", &entry.path)
+            .append_pair("per_page", "1");
+        let commits: serde_json::Value = gitlab_checked(http, reqwest::Method::GET, cu, auth)
+            .await?
+            .json()
+            .await?;
+        let doc_time = commits[0]["committed_date"]
+            .as_str()
+            .and_then(gl::commit_time);
+        let bytes = gitlab_checked(
+            http,
+            reqwest::Method::GET,
+            at(&["blobs", &entry.id, "raw"])?,
+            auth,
+        )
+        .await?
+        .bytes()
+        .await?;
+        let action = ingest_item(
+            state,
+            source.kb_id,
+            source.id,
+            key,
+            &entry.path,
+            "text/markdown",
+            &bytes,
+            doc_time,
+        )
+        .await?;
+        stats.absorb(action);
+    }
+    if truncated {
+        tracing::warn!(%project, pages = gl::MAX_TREE_PAGES, "GitLab 文件树没翻完，本轮只摄入列出的文件，不做不在来源中对账");
+    } else {
+        utopia_store::documents::reconcile_missing(&state.pool, source.id, &keys)
+            .await
+            .map_err(|e| anyhow::anyhow!(e))?;
+    }
+    Ok(stats)
+}
+
 /// Jira 工单：一张工单一篇文档，正文里带**字段级**的变更史。
 ///
 /// 比 GitHub 那条路省：`search?expand=changelog` 一次调用就带回工单本体、
@@ -1416,3 +1594,6 @@ mod github_sync_tests;
 #[cfg(test)]
 #[path = "github_repo_sync_tests.rs"]
 mod github_repo_sync_tests;
+#[cfg(test)]
+#[path = "gitlab_repo_sync_tests.rs"]
+mod gitlab_repo_sync_tests;

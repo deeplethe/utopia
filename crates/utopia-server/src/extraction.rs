@@ -209,12 +209,23 @@ async fn resolve_uncached(
     name_vec: Option<&[f32]>,
     text: Option<&str>,
     exclude: &[Uuid],
+    identity: bool,
     needs_adjudication: &mut bool,
 ) -> anyhow::Result<Uuid> {
-    let r = utopia_store::resolution::resolve_mention(
-        pool, kb_id, type_id, name, ctx, name_vec, text, exclude,
-    )
-    .await?;
+    let r = match identity {
+        true => {
+            utopia_store::resolution::resolve_identity_name(
+                pool, kb_id, type_id, name, ctx, text, exclude,
+            )
+            .await?
+        }
+        false => {
+            utopia_store::resolution::resolve_mention(
+                pool, kb_id, type_id, name, ctx, name_vec, text, exclude,
+            )
+            .await?
+        }
+    };
     // 疑似重复对（画像灰区 / 类型漂移 / 同名并列）入审核队列。多数走批量裁决器，
     // 同名并列（`ReviewStage::Human`）分不出谁是谁，只能等人裁——它自己带着 stage。
     for review in &r.reviews {
@@ -268,6 +279,7 @@ pub(crate) async fn resolve_handle(
     ctx: Option<&[f32]>,
     name_vec: Option<&[f32]>,
     text: Option<&str>,
+    identity: bool,
     response_claims: &mut HashMap<String, Vec<Uuid>>,
     handled_by_name: &mut HashMap<String, Vec<Uuid>>,
     ambiguous_bare_cache: &mut HashMap<String, Uuid>,
@@ -309,6 +321,7 @@ pub(crate) async fn resolve_handle(
                 name_vec,
                 text,
                 &excluded,
+                identity,
                 needs_adjudication,
             )
             .await?;
@@ -343,10 +356,14 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
     }
     let kb = utopia_store::kbs::get(&state.pool, doc.kb_id).await?;
     // 推送来的陈述（0054）：块就是契约，抽取按契约解析、不问模型，没配对话模型也照抽
-    let pushed = crate::pipeline::source_kind(state, doc.source_id)
-        .await?
-        .as_deref()
-        == Some("statements");
+    let source = match doc.source_id {
+        Some(id) => Some(utopia_store::sources::get(&state.pool, id).await?),
+        None => None,
+    };
+    let pushed = source.as_ref().is_some_and(|s| s.kind == "statements");
+    let identity = source
+        .as_ref()
+        .is_some_and(utopia_core::models::Source::names_are_identities);
     // settings 有就传：推送路径不问对话模型，但名字向量的嵌入模型（#877）仍从它来
     let settings = utopia_store::settings::get(&state.pool, kb.workspace_id).await?;
     let client = if pushed {
@@ -376,6 +393,7 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
         proposer,
         await_nod,
         pushed,
+        identity,
     )
     .await
 }
@@ -496,6 +514,7 @@ mod tests {
                 None,
                 None,
                 None,
+                false,
                 &mut response_claims,
                 &mut document_claims,
                 &mut bare_cache,
@@ -510,6 +529,7 @@ mod tests {
                 None,
                 None,
                 None,
+                false,
                 &mut response_claims,
                 &mut document_claims,
                 &mut bare_cache,
@@ -588,6 +608,7 @@ mod tests {
                 None,
                 None,
                 None,
+                false,
                 &mut later_response_claims,
                 &mut document_claims,
                 &mut bare_cache,
@@ -616,6 +637,7 @@ mod tests {
                 None,
                 None,
                 None,
+                false,
                 &mut another_response_claims,
                 &mut document_claims,
                 &mut bare_cache,
@@ -743,6 +765,7 @@ mod tests {
                 Some(&ctx),
                 None,
                 None,
+                false,
                 &mut response_claims,
                 &mut document_claims,
                 &mut bare_cache,

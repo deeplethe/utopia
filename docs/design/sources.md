@@ -21,7 +21,10 @@ keeps the stored value; a truncated round says so [0013]. A ticket is one docume
 carries its history as dated declarative sentences and a `## History` list; GitHub fetches events
 per ticket; timestamps are written to the second [0013]. A GitHub repository file is one document
 keyed by its path and dated by the last commit that touched it; a file whose blob SHA has not
-changed is not fetched again, and identical files at several paths go in once [#1303].
+changed is not fetched again, and identical files at several paths go in once [#1303]. A GitLab project file
+(gitlab.com; self-managed is not verified) takes the same shape; its tree is paged, so a tree that
+runs past the page cap is a truncated round, and its entries carry no size, so the size cap is read
+from a `HEAD` on the file before anything is downloaded [#1327].
 
 **Statements.** A `statements` source takes the open extraction contract itself (`e`, `s`, `n`) on `POST /sources/{id}/statements`, with the `api` push's identity, versions, tombstones and run history; the payload is the document and its single chunk, and extraction parses the chunk instead of prompting a model, then runs the unchanged path, so a pushed statement is an open statement with the item as its evidence (null offsets) and reaches the typed graph only through alignment. The contract has no slot for a property or a class and unknown keys are refused; a second push under the same identity marks the earlier statements stale rather than closing them; tables belong on a mount, not here [0054].
 

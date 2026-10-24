@@ -41,6 +41,8 @@
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 
+use crate::ticket::stamp;
+
 /// 一次同步最多翻多少页。Jira 的 `total` 常常是几万，全量拉回来没有意义——
 /// 增量窗口之外的等下一次 JQL 取。
 const MAX_PAGES: u32 = 10;
@@ -159,20 +161,13 @@ fn who(u: &Option<User>) -> &str {
 /// 把一张工单排成一篇文档。**纯函数，不联网**——取回与组织分开，组织这一半测得动。
 pub fn render(issue: &Issue) -> String {
     let f = &issue.fields;
-    let mut out = String::new();
-    out.push_str(&format!(
-        "# {} {}\n\n",
-        issue.key,
-        f.summary.as_deref().unwrap_or("")
-    ));
-
     // 抬头写成带日期的陈述句，不是键值对：抽取器读的是句子，
     // "Reported by X on 2026-08-24T11:11:52Z" 能抽出带 valid_from 的事实。
-    // 时间写到秒、带 `Z`（#691，0024 第 3 节），与 GitHub 那边同一个写法；
     // Jira 给的毫秒不写，抽取器也只认到秒
+    let mut sentences = Vec::new();
     if let (Some(r), Some(c)) = (&f.reporter, &f.created) {
-        out.push_str(&format!(
-            "Reported by {} on {}.\n",
+        sentences.push(format!(
+            "Reported by {} on {}.",
             who(&Some(User {
                 display_name: r.display_name.clone()
             })),
@@ -180,41 +175,30 @@ pub fn render(issue: &Issue) -> String {
         ));
     }
     if let Some(t) = name(&f.issuetype) {
-        out.push_str(&format!("Type {t}.\n"));
+        sentences.push(format!("Type {t}."));
     }
     if let Some(s) = name(&f.status) {
-        out.push_str(&format!("Currently {s}.\n"));
+        sentences.push(format!("Currently {s}."));
     }
     if let Some(p) = name(&f.priority) {
-        out.push_str(&format!("Priority {p}.\n"));
+        sentences.push(format!("Priority {p}."));
     }
     if let Some(a) = &f.assignee {
-        out.push_str(&format!(
-            "Assigned to {}.\n",
+        sentences.push(format!(
+            "Assigned to {}.",
             a.display_name.as_deref().unwrap_or("?")
         ));
     }
     if let Some(r) = &f.resolutiondate {
-        out.push_str(&format!("Resolved on {}.\n", stamp(r.0)));
+        sentences.push(format!("Resolved on {}.", stamp(r.0)));
     }
     if !f.labels.is_empty() {
-        out.push_str(&format!("Labelled {}.\n", f.labels.join(", ")));
-    }
-
-    if let Some(d) = f
-        .description
-        .as_deref()
-        .map(str::trim)
-        .filter(|d| !d.is_empty())
-    {
-        out.push_str("\n## Description\n\n");
-        out.push_str(d);
-        out.push('\n');
+        sentences.push(format!("Labelled {}.", f.labels.join(", ")));
     }
 
     // **字段级变更史。** Jira 比 GitHub 多给的正是这个：不只是"发生了什么事件"，
     // 而是"哪个字段从什么变成了什么"——from/to 本身就是一次认知变更的两端
-    let mut lines: Vec<(DateTime<Utc>, String)> = Vec::new();
+    let mut history = Vec::new();
     for h in issue.changelog.iter().flat_map(|c| c.histories.iter()) {
         let Some(at) = h.created else { continue };
         for item in &h.items {
@@ -223,42 +207,30 @@ pub fn render(issue: &Issue) -> String {
             };
             let from = item.from_string.as_deref().unwrap_or("(empty)");
             let to = item.to_string.as_deref().unwrap_or("(empty)");
-            lines.push((
+            history.push((
                 at.0,
-                format!(
-                    "- {} — {} changed {field}: {from} → {to}\n",
-                    stamp(at.0),
-                    who(&h.author),
-                ),
+                format!("{} changed {field}: {from} → {to}", who(&h.author)),
             ));
         }
     }
-    if !lines.is_empty() {
-        // 端点的顺序不是契约，排序自己做——排错了的后果是历史倒着讲
-        lines.sort_by_key(|(t, _)| *t);
-        out.push_str("\n## History\n\n");
-        for (_, l) in &lines {
-            out.push_str(l);
-        }
-    }
 
-    let comments: Vec<&Comment> = f
+    let comments = f
         .comment
-        .as_ref()
-        .map(|c| c.comments.iter().collect())
-        .unwrap_or_default();
-    if !comments.is_empty() {
-        out.push_str("\n## Comments\n\n");
-        for c in comments {
-            let body = c.body.as_deref().unwrap_or("").trim();
-            if body.is_empty() {
-                continue;
-            }
-            let at = c.created.map(|t| stamp(t.0)).unwrap_or_else(|| "?".into());
-            out.push_str(&format!("### {} on {}\n\n{}\n\n", who(&c.author), at, body));
-        }
-    }
-    out
+        .iter()
+        .flat_map(|c| c.comments.iter())
+        .map(|c| crate::ticket::Comment {
+            author: who(&c.author).to_string(),
+            at: c.created.map(|t| t.0),
+            body: c.body.clone().unwrap_or_default(),
+        })
+        .collect();
+    crate::ticket::render(&crate::ticket::Ticket {
+        heading: format!("{} {}", issue.key, f.summary.as_deref().unwrap_or("")),
+        sentences,
+        description: f.description.clone(),
+        history,
+        comments,
+    })
 }
 
 /// 增量用的 JQL。**时间格式是 Jira 自己的**（`yyyy-MM-dd HH:mm`），不是 RFC3339，
@@ -327,11 +299,6 @@ pub async fn fetch_all(
         }
     }
     Ok((out, total))
-}
-
-/// 工单上的一个时刻，写进正文的样子：到秒、带 `Z`
-fn stamp(t: DateTime<Utc>) -> String {
-    crate::time_text::world(t, Some("second"))
 }
 
 #[cfg(test)]
