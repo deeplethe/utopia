@@ -27,7 +27,7 @@
 //!
 //! ## 增量靠 JQL，不靠 since 参数
 //!
-//! Jira 没有 `since`，但 JQL 能表达：`updated >= "2026-08-30 12:00"`。
+//! Jira 没有 `since`，但 JQL 能表达：`updated >= "-90m"`（相对现在，不受账号时区影响）。
 //! 时间格式必须是 Jira 认的那种（不是 RFC3339），且**要带引号**——
 //! 这两点写错的症状都是 400，而不是"查不到"。
 //!
@@ -233,14 +233,19 @@ pub fn render(issue: &Issue) -> String {
     })
 }
 
-/// 增量用的 JQL。**时间格式是 Jira 自己的**（`yyyy-MM-dd HH:mm`），不是 RFC3339，
-/// 而且要带引号——两点写错的症状都是 400，不是"查不到"。
+/// 增量用的 JQL。**时间格式是 Jira 自己的**，不是 RFC3339，而且要带引号——
+/// 两点写错的症状都是 400，不是"查不到"。
+///
+/// 写成相对现在的分钟数（`"-90m"`），不写 `yyyy-MM-dd HH:mm`：绝对时间 Jira 按
+/// 调用账号的时区读，`since` 却是 UTC，账号在 UTC 以西就漏掉中间那几小时的更新。
+/// 分钟向上取整，窗口只会宽不会窄
 pub fn jql(project: &str, since: Option<DateTime<Utc>>) -> String {
     let mut q = format!("project = {project}");
     if let Some(t) = since {
+        let seconds = (Utc::now() - t).num_seconds().max(0);
         q.push_str(&format!(
-            " AND updated >= \"{}\"",
-            t.format("%Y-%m-%d %H:%M")
+            " AND updated >= \"-{}m\"",
+            ((seconds + 59) / 60).max(1)
         ));
     }
     q.push_str(" ORDER BY updated ASC");
@@ -317,14 +322,14 @@ mod tests {
     }
 
     /// JQL 的时间格式与引号：两点写错都报 400，而不是"查不到"。
+    /// 写成绝对时间，Jira 按调用账号的时区读：UTC-5 的账号把 UTC 的 12:34 读成
+    /// 17:34 UTC，中间五小时更新的工单就漏了。相对现在的分钟数不看时区
     #[test]
     fn the_incremental_jql_uses_jiras_own_time_format() {
-        let t = DateTime::parse_from_rfc3339("2026-08-30T12:34:56Z")
-            .unwrap()
-            .with_timezone(&Utc);
+        let t = Utc::now() - chrono::Duration::seconds(90 * 60 - 20);
         let q = jql("KAFKA", Some(t));
         assert!(q.contains("project = KAFKA"), "{q}");
-        assert!(q.contains("updated >= \"2026-08-30 12:34\""), "{q}");
+        assert!(q.contains("updated >= \"-90m\""), "{q}");
         assert!(q.contains("ORDER BY updated ASC"), "{q}");
         // 没有 since 时不该带上 updated 子句。**查子句不查词**——
         // ORDER BY updated ASC 里也有 "updated"，第一版断言就栽在这上面
