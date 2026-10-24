@@ -88,6 +88,8 @@ fn cell_kind(type_name: &str) -> Cell {
     match ty.as_str() {
         "BOOLEAN" | "BOOL" => Cell::Bool,
         "TINYINT" | "SMALLINT" | "MEDIUMINT" | "INT" | "BIGINT" => Cell::Int,
+        // 名字里没有 UNSIGNED，驱动却只认 u64：i64 与 String 都读不出，整列变 null
+        "YEAR" | "BIT" => Cell::UnsignedInt,
         "FLOAT" | "DOUBLE" => Cell::Float,
         "DECIMAL" => Cell::Decimal,
         "JSON" => Cell::Json,
@@ -469,6 +471,24 @@ mod tests {
         assert!(super::super::guard_sql_for("mysql", "DELETE FROM sales.orders").is_err());
     }
 
+    /// YEAR 与 BIT 只有无符号整数读得出：字符串、字节都不收它们，落进兜底档就整列 null
+    #[tokio::test]
+    async fn a_year_or_bit_column_reads_as_its_number_mysql() {
+        let Some(fx) = Fx::new(1).await else { return };
+        let a = fx.schemas[0].clone();
+        fx.exec(&format!(
+            "CREATE TABLE {a}.budget (fiscal YEAR, active BIT(1), mask BIT(8));
+             INSERT INTO {a}.budget VALUES (2024, b'1', b'00000101');"
+        ))
+        .await;
+        let r = MysqlEngine::new(&fx.url)
+            .execute(&format!("SELECT fiscal, active, mask FROM {a}.budget"))
+            .await
+            .expect("execute");
+        assert_eq!(r.rows, vec![r#"{"fiscal":2024,"active":1,"mask":5}"#]);
+        fx.cleanup().await;
+    }
+
     /// 每个测试自己的库，名字带随机后缀：并行跑不撞，也不碰服务器上已有的库。
     /// 测完逐个 `DROP DATABASE`。**这是 MySQL 的「schema」，跟 PG 的命名空间
     /// 不同——MySQL 的 schema 就是 database**（见 fetch_schema 顶上的注释）
@@ -728,6 +748,10 @@ mod tests {
             "INT UNSIGNED",
             "BIGINT UNSIGNED",
         ] {
+            assert_eq!(cell_kind(t), Cell::UnsignedInt, "{t}");
+        }
+        // YEAR 与 BIT 的类型名不带 UNSIGNED，驱动却只肯用无符号整数读它们
+        for t in ["YEAR", "BIT"] {
             assert_eq!(cell_kind(t), Cell::UnsignedInt, "{t}");
         }
         // DECIMAL 被驱动同时挡在 f64 与 String 之外，只有 BigDecimal 读得出。
