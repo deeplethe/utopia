@@ -768,10 +768,15 @@ pub fn attribute_value(
     if written.is_some() && wanted.is_some() && written != wanted {
         return None;
     }
-    // 原文写了量级词，或写了和声明一样的单位（「50000000元」对「万元」），n 才是绝对量，
-    // 要除下来；光秃秃的数就是声明单位下的数。除法走一次十进制解析，同 `scan_quantity`
-    // 乘量级词的道理：先算成 f64 再除会留下 23000.000000000004
-    let n = if q.scaled || (written.is_some() && written == wanted) {
+    // 原文写了量级词，或写了和声明一样的单位（「50000000元」对「万元」、「12,000人」对
+    // 「万人」），或写了计数量词，n 才是绝对量，要除下来；光秃秃的数就是声明单位下的数。
+    // 除法走一次十进制解析，同 `scan_quantity` 乘量级词的道理：先算成 f64 再除会留下
+    // 23000.000000000004
+    let counted = q
+        .unit
+        .as_deref()
+        .is_some_and(|u| u == base || COUNTERS.iter().any(|c| c.trim() == u));
+    let n = if q.scaled || counted || (written.is_some() && written == wanted) {
         format!("{}e-{exponent}", q.n).parse().ok()?
     } else {
         q.n
@@ -1512,6 +1517,22 @@ mod an_attribute_value_is_read_in_its_declared_unit {
         );
         // 只写到年的日期按年
         assert_eq!(value("date", None, "1982年"), Some(json!("1982")));
+    }
+
+    /// 数后面写了人数的词，那就是一个个数出来的人，落到「万人」上要除下来
+    #[test]
+    fn a_counted_figure_is_read_into_a_larger_unit() {
+        assert_eq!(value("number", Some("万人"), "12,000人"), Some(json!(1.2)));
+        assert_eq!(value("number", Some("万人"), "约3500名"), Some(json!(0.35)));
+        assert_eq!(
+            value("number", Some("thousand people"), "1,250 employees"),
+            Some(json!(1.25))
+        );
+        assert_eq!(
+            value("number", Some("万人"), "1400万人"),
+            Some(json!(1400.0))
+        );
+        assert_eq!(value("number", Some("万人"), "1.2"), Some(json!(1.2)));
     }
 
     /// 换不了的不换：货币对不上、读不出数的，宁缺勿脏
