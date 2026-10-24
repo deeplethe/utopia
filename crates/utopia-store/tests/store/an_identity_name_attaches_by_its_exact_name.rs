@@ -1,8 +1,11 @@
-//! 0071 decisions 2 and 3: an identity mention attaches to the exact-name holder whatever the
-//! profile says, and is created otherwise. Skipped without `UTOPIA_DATABASE_URL`.
+//! 0071 decisions 2 to 6: an identity mention attaches to the exact-name holder whatever the
+//! profile says, and is created otherwise; its names get no vectors. Skipped without
+//! `UTOPIA_DATABASE_URL`.
 
+use serde_json::json;
 use sqlx::PgPool;
-use utopia_store::resolution::resolve_identity_name;
+use utopia_store::names::{record, NameSource};
+use utopia_store::{name_vectors, resolution::resolve_identity_name, sources};
 use uuid::Uuid;
 
 /// Orthogonal to every holder's profile, so the profile never supports an attach.
@@ -86,6 +89,26 @@ async fn one_exact_holder_is_attached_and_otherwise_the_name_is_created() -> any
         let untyped =
             resolve_identity_name(&pool, kb, None, "acme/d.ts", Some(&same), None, &[]).await?;
         assert!(untyped.created && untyped.entity_id != typed);
+        // an untyped holder takes the declared class
+        let untyped_holder = holder(&pool, kb, None, "acme/f.ts").await?;
+        resolve("acme/f.ts").await?;
+        let class: Option<Uuid> = sqlx::query_scalar("SELECT type_id FROM entities WHERE id = $1")
+            .bind(untyped_holder)
+            .fetch_one(&pool)
+            .await?;
+        assert_eq!(class, Some(project));
+        // a class a person removed stays removed
+        let cleared = holder(&pool, kb, None, "acme/g.ts").await?;
+        sqlx::query("UPDATE entities SET type_source = 'human' WHERE id = $1")
+            .bind(cleared)
+            .execute(&pool)
+            .await?;
+        resolve("acme/g.ts").await?;
+        let class: Option<Uuid> = sqlx::query_scalar("SELECT type_id FROM entities WHERE id = $1")
+            .bind(cleared)
+            .fetch_one(&pool)
+            .await?;
+        assert_eq!(class, None);
         Ok(())
     })
     .await
@@ -117,6 +140,134 @@ async fn a_name_under_another_class_is_created_with_a_drift_review_unless_disjoi
                 .await?;
         }
         assert_eq!(reviews("acme/b.ts").await?, (true, vec![]));
+        Ok(())
+    })
+    .await
+}
+
+/// A statements source with this config and one chunk in it; `None` is an upload's chunk.
+async fn chunk(
+    pool: &PgPool,
+    kb: Uuid,
+    config: Option<serde_json::Value>,
+) -> anyhow::Result<(Uuid, Uuid)> {
+    let (source, document, chunk) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
+    if let Some(config) = &config {
+        sqlx::query("INSERT INTO sources (id, kb_id, kind, name, config) VALUES ($1, $2, 'statements', 's', $3)")
+            .bind(source)
+            .bind(kb)
+            .bind(config)
+            .execute(pool)
+            .await?;
+    }
+    sqlx::query("INSERT INTO documents (id, kb_id, filename, sha256, source_id) VALUES ($1, $2, 'd', $1::text, $3)")
+        .bind(document)
+        .bind(kb)
+        .bind(config.map(|_| source))
+        .execute(pool)
+        .await?;
+    sqlx::query(
+        "INSERT INTO chunks (id, kb_id, document_id, seq, text) VALUES ($1, $2, $3, 0, 'acme')",
+    )
+    .bind(chunk)
+    .bind(kb)
+    .bind(document)
+    .execute(pool)
+    .await?;
+    Ok((source, chunk))
+}
+
+/// Names `entity` once from each chunk and returns the one name fact.
+async fn named(
+    pool: &PgPool,
+    kb: Uuid,
+    entity: Uuid,
+    name: &str,
+    chunks: &[Uuid],
+) -> anyhow::Result<Uuid> {
+    let mut fact = None;
+    for &chunk_id in chunks {
+        fact = record(
+            pool,
+            kb,
+            entity,
+            name,
+            Some(NameSource {
+                chunk_id,
+                quote: name,
+            }),
+            None,
+        )
+        .await?;
+    }
+    fact.ok_or_else(|| anyhow::anyhow!("no name fact"))
+}
+
+async fn vectors(pool: &PgPool, kb: Uuid) -> anyhow::Result<Vec<Uuid>> {
+    Ok(
+        sqlx::query_scalar("SELECT fact_id FROM name_vectors WHERE kb_id = $1")
+            .bind(kb)
+            .fetch_all(pool)
+            .await?,
+    )
+}
+
+async fn pending_entities(pool: &PgPool, kb: Uuid) -> anyhow::Result<Vec<Uuid>> {
+    Ok(name_vectors::pending(pool, kb, 100)
+        .await?
+        .into_iter()
+        .map(|(_, entity, _)| entity)
+        .collect())
+}
+
+#[tokio::test]
+async fn a_name_with_identity_evidence_gets_no_vector_even_when_prose_names_it_too(
+) -> anyhow::Result<()> {
+    in_kb(|pool, kb, project, _| async move {
+        let (_, identity) = chunk(&pool, kb, Some(json!({"names": "identity"}))).await?;
+        let (_, prose) = chunk(&pool, kb, None).await?;
+        let both = holder(&pool, kb, Some(project), "acme/a.ts").await?;
+        let both_name = named(&pool, kb, both, "acme/a.ts", &[identity, prose]).await?;
+        let prose_only = holder(&pool, kb, Some(project), "acme/b.ts").await?;
+        named(&pool, kb, prose_only, "acme/b.ts", &[prose]).await?;
+        assert_eq!(pending_entities(&pool, kb).await?, vec![prose_only]);
+        // a backfill that read it as pending before the identity evidence came writes nothing
+        name_vectors::set(&pool, kb, &[(both_name, both, vec![1.0, 0.0, 0.0])]).await?;
+        assert_eq!(vectors(&pool, kb).await?, Vec::<Uuid>::new());
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test]
+async fn turning_the_flag_on_drops_the_sources_name_vectors_and_off_makes_them_pending(
+) -> anyhow::Result<()> {
+    in_kb(|pool, kb, project, _| async move {
+        let (source, pushed) = chunk(&pool, kb, Some(json!({}))).await?;
+        let (_, prose) = chunk(&pool, kb, None).await?;
+        let file = holder(&pool, kb, Some(project), "acme/a.ts").await?;
+        let file_name = named(&pool, kb, file, "acme/a.ts", &[pushed]).await?;
+        let other = holder(&pool, kb, Some(project), "acme/b.ts").await?;
+        let other_name = named(&pool, kb, other, "acme/b.ts", &[prose]).await?;
+        let vector = vec![1.0, 0.0, 0.0];
+        name_vectors::set(
+            &pool,
+            kb,
+            &[
+                (file_name, file, vector.clone()),
+                (other_name, other, vector),
+            ],
+        )
+        .await?;
+        let flag = |config: serde_json::Value| {
+            let pool = pool.clone();
+            async move { sources::update(&pool, source, None, Some(&config), None, None).await }
+        };
+
+        flag(json!({"names": "identity"})).await?;
+        assert_eq!(vectors(&pool, kb).await?, vec![other_name]);
+        flag(json!({})).await?;
+        assert!(pending_entities(&pool, kb).await?.contains(&file));
         Ok(())
     })
     .await

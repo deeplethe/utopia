@@ -1,13 +1,15 @@
 //! A statements source with `{"names": "identity"}` (0071) gets no embedding call and no
-//! `name_vector|` pair. The fake endpoint returns one vector for every name.
+//! `name_vector|` pair, and the name it pushes loses the vector prose gave it first. The fake
+//! endpoint returns one vector for every name.
 use super::*;
 use axum::{routing::post, Json, Router};
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-/// Push `PUSHED` into a base holding `KNOWN` (with a name vector); answers (embedding calls, review reasons).
-async fn push(config: Value) -> anyhow::Result<Option<(usize, Vec<String>)>> {
+/// Push `PUSHED` and `KNOWN` into a base holding `KNOWN` (with a name vector); answers
+/// (embedding calls, review reasons, whether `KNOWN` kept its vector).
+async fn push(config: Value) -> anyhow::Result<Option<(usize, Vec<String>, bool)>> {
     let Some(url) = utopia_store::test_db::url() else {
         return Ok(None);
     };
@@ -17,7 +19,7 @@ async fn push(config: Value) -> anyhow::Result<Option<(usize, Vec<String>)>> {
         std::array::from_fn(|_| Uuid::now_v7());
     let text = serde_json::to_string(&json!({
         "external_id": "commit:identity",
-        "e": [[PUSHED, "SourceFile", true]],
+        "e": [[PUSHED, "SourceFile", true], [KNOWN, "SourceFile", true]],
         "s": [[null, PUSHED, "path", null, "src/x.ts", null, null, null]],
         "n": []
     }))?;
@@ -90,6 +92,11 @@ async fn push(config: Value) -> anyhow::Result<Option<(usize, Vec<String>)>> {
     .bind(kb)
     .fetch_all(&pool)
     .await?;
+    let known_kept: bool =
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM name_vectors WHERE fact_id = $1)")
+            .bind(fact)
+            .fetch_one(&pool)
+            .await?;
 
     server.abort();
     sqlx::query("DELETE FROM jobs WHERE payload->>'kb_id' = $1")
@@ -100,7 +107,7 @@ async fn push(config: Value) -> anyhow::Result<Option<(usize, Vec<String>)>> {
         .bind(org)
         .execute(&pool)
         .await?;
-    Ok(Some((calls.load(Ordering::SeqCst), reasons)))
+    Ok(Some((calls.load(Ordering::SeqCst), reasons, known_kept)))
 }
 
 const KNOWN: &str = "re-cinq/lore:src/a.ts";
@@ -108,19 +115,29 @@ const PUSHED: &str = "re-cinq/lore:src/b.ts";
 
 #[tokio::test]
 async fn an_identity_source_adds_no_name_vectors_and_asks_no_neighbours() -> anyhow::Result<()> {
-    let Some(outcome) = push(json!({"names": "identity"})).await? else {
+    let Some((calls, reasons, _)) = push(json!({"names": "identity"})).await? else {
         return Ok(());
     };
-    assert_eq!(outcome, (0, Vec::<String>::new()));
+    assert_eq!((calls, reasons), (0, Vec::<String>::new()));
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_name_prose_gave_a_vector_loses_it_when_an_identity_source_pushes_it(
+) -> anyhow::Result<()> {
+    let Some((_, _, known_kept)) = push(json!({"names": "identity"})).await? else {
+        return Ok(());
+    };
+    assert!(!known_kept);
     Ok(())
 }
 
 #[tokio::test]
 async fn a_statements_source_without_the_flag_still_proposes_by_name_vector() -> anyhow::Result<()>
 {
-    let Some((calls, reasons)) = push(json!({})).await? else {
+    let Some((calls, reasons, known_kept)) = push(json!({})).await? else {
         return Ok(());
     };
-    assert!(calls > 0 && reasons.iter().any(|r| r.starts_with("name_vector|")));
+    assert!(calls > 0 && reasons.iter().any(|r| r.starts_with("name_vector|")) && known_kept);
     Ok(())
 }

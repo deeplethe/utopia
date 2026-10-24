@@ -281,7 +281,7 @@ pub async fn update(
         && old_full
         && new_full
         && rss_feed_url(&previous.config) != rss_feed_url(&next_config);
-    let source = sqlx::query_as(
+    let source: Source = sqlx::query_as(
         "UPDATE sources SET
             name = COALESCE($2, name),
             config = COALESCE($3, config),
@@ -302,6 +302,9 @@ pub async fn update(
 
     if (!old_full && new_full) || feed_url_changed {
         crate::rss_full_content::enable_source(&mut tx, id).await?;
+    }
+    if !previous.names_are_identities() && source.names_are_identities() {
+        crate::name_vectors::drop_for_source(&mut tx, id).await?;
     }
     tx.commit().await?;
     opened(source)

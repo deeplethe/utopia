@@ -563,8 +563,11 @@ impl Fx {
             }
             _ => {}
         }
+        // 类别词绑到的类，TypedToUntyped 收尾时要核对它
+        let mut person_class = None;
         if matches!(guard, TypedToUntyped | UntypedToTyped | IncompatibleType) {
             let person = Uuid::now_v7();
+            person_class = Some(person);
             sqlx::query(
                 "INSERT INTO entity_types(id,kb_id,key,label) VALUES ($1,$2,'person','Person')",
             )
@@ -629,17 +632,24 @@ impl Fx {
         .bind(self.kb)
         .fetch_one(&self.pool)
         .await?;
-        let type_preserved = if guard == TypedToUntyped {
-            sqlx::query_scalar::<_, bool>("SELECT type_id IS NULL FROM entities WHERE id=$1")
-                .bind(expected)
-                .fetch_one(&self.pool)
-                .await?
+        // 消解不给实体定类，类由对齐来定：被选中的无类同名实体记下了提及的类别词
+        // （`set_specific_type`），「person」又已绑到 Person，抽完那一刻的补投影
+        // （`type_bindings::apply_bound`）就把它写成 aligned 的 Person。消解自己写的类
+        // 不会是 aligned；从前它留着空类，是补投影缺席的结果，不是规矩
+        let type_from_alignment = if guard == TypedToUntyped {
+            sqlx::query_scalar::<_, bool>(
+                "SELECT type_source = 'aligned' AND type_id = $2 FROM entities WHERE id=$1",
+            )
+            .bind(expected)
+            .bind(person_class)
+            .fetch_one(&self.pool)
+            .await?
         } else {
             true
         };
         Ok((
-            owners == vec![expected] && count == 2 && reviews == 0 && type_preserved,
-            json!({"expected_owner":expected,"owners":owners,"entities":count,"pending_reviews":reviews,"type_preserved":type_preserved}),
+            owners == vec![expected] && count == 2 && reviews == 0 && type_from_alignment,
+            json!({"expected_owner":expected,"owners":owners,"entities":count,"pending_reviews":reviews,"type_from_alignment":type_from_alignment}),
         ))
     }
 

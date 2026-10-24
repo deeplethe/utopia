@@ -597,6 +597,35 @@ pub async fn unapply<'e>(
     Ok(res.rows_affected())
 }
 
+/// 把库里每条绑上的类补到它的类别词下还不在那个类上的实体上。返回改动数。
+///
+/// [`apply`] 只在判定落下那一刻投影一次，之后建的实体它看不见。抽取开抽时读一次
+/// 绑定表（`bound_map`），一篇文档抽到一半时「公司」才绑上企业类，这篇后半建的公司
+/// 就落成没有类的实体；几篇并发上传时第一篇的判定对其余几篇都是「抽到一半」。没有类
+/// 的主语进不了任何声明了定义域的属性的候选，它的属性陈述全判成「无」——四篇测试
+/// 文档里表格那篇的六条注册资本、成立时间、员工人数就是这么丢的（2026-10-22）。
+///
+/// 每篇抽完、每轮类别词对齐开跑前各补一次。幂等：已在那个类上的不算改动。与 [`apply`]
+/// 同一条规矩：人定过类的不动（`type_source = 'human'`），`proposed_type` 一并清掉
+pub async fn apply_bound<'e>(
+    pool: impl Executor<'e, Database = Postgres>,
+    kb_id: Uuid,
+) -> AppResult<u64> {
+    let sql = format!(
+        "UPDATE entities e
+            SET type_id = b.type_id, type_source = 'aligned', proposed_type = NULL, updated_at = now()
+           FROM type_bindings b
+          WHERE e.kb_id = $1 AND b.kb_id = e.kb_id
+            AND b.status = 'bound' AND b.type_id IS NOT NULL
+            AND e.merged_into IS NULL AND e.type_source <> 'human'
+            AND e.specific_type IS NOT NULL AND {kind} = b.kind_word
+            AND e.type_id IS DISTINCT FROM b.type_id",
+        kind = kind_word_sql("e.specific_type")
+    );
+    let res = sqlx::query(&sql).bind(kb_id).execute(pool).await?;
+    Ok(res.rows_affected())
+}
+
 /// 抽取时用的绑定表：归一过的类别词 → 类 id，只有绑上的。
 pub async fn bound_map(pool: &PgPool, kb_id: Uuid) -> AppResult<HashMap<String, Uuid>> {
     let rows: Vec<(String, Uuid)> = sqlx::query_as(
@@ -641,6 +670,10 @@ pub async fn propose(
         .await?;
     Ok(res.rows_affected())
 }
+
+#[cfg(test)]
+#[path = "type_bindings_catch_up_tests.rs"]
+mod catch_up_tests;
 
 #[cfg(test)]
 mod tests {

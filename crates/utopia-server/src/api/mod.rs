@@ -140,6 +140,7 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
         .route("/workspaces/{id}/kbs", get(kbs::list).post(kbs::create))
         // 建库界面用的静态清单，与具体工作区无关
         .route("/ontology-packs", get(kbs::list_packs))
+        .route("/scenario-packs", get(kbs::list_scenario_packs))
         .route("/workspaces/{id}/my-kbs", get(kbs::my_kbs))
         .route(
             "/workspaces/{id}/settings",
