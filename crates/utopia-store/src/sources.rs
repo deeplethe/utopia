@@ -310,6 +310,30 @@ pub async fn update(
     opened(source)
 }
 
+/// 只动配置里的几个键：`set` 里的写进去（密钥照样封印），`remove` 里的删掉，别的键原样。
+/// 一条语句完成，不先读后写——两个请求同时改不同的键时，谁也不会把对方刚写的盖掉
+pub async fn patch_config(
+    pool: &PgPool,
+    id: Uuid,
+    set: &serde_json::Value,
+    remove: &[&str],
+) -> AppResult<Source> {
+    let mut set = set.clone();
+    secrets::seal_json_keys(&mut set, SOURCE_SECRET_KEYS);
+    let source = sqlx::query_as(
+        "UPDATE sources SET config =
+            (CASE WHEN jsonb_typeof(config) = 'object' THEN config ELSE '{}'::jsonb END - $3::text[]) || $2
+         WHERE id = $1 RETURNING *",
+    )
+    .bind(id)
+    .bind(set)
+    .bind(remove)
+    .fetch_optional(pool)
+    .await?
+    .ok_or(AppError::NotFound)?;
+    opened(source)
+}
+
 /// 删除来源；其文档保留（source_id 置 NULL，落回 Uploads 组）。
 pub async fn delete(pool: &PgPool, id: Uuid) -> AppResult<()> {
     let res = sqlx::query("DELETE FROM sources WHERE id = $1")

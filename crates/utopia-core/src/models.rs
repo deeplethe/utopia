@@ -259,6 +259,8 @@ pub const SOURCE_SECRET_KEYS: &[&str] = &[
     "secret_access_key",
     "account_key",
     "service_account_key",
+    // Google Drive 的 OAuth 刷新令牌（0074）：能换出那个人整个 Drive 的只读权限
+    "refresh_token",
 ];
 
 impl Source {
@@ -306,6 +308,8 @@ pub enum SourceKind {
     Gcs,
     Webdav,
     Notion,
+    /// 一个人授权、按他选的文件夹同步（0074）
+    GoogleDrive,
     Api,
     /// 推送的不是文档而是陈述本身（0054）：请求体就是开放抽取契约，抽取不问模型
     Statements,
