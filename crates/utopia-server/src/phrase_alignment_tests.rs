@@ -2,6 +2,7 @@
 //! 无候选与超限各自落库、端点类换了旧行不再循环、请求途中的编辑留下可见的过期、
 //! 人的判定不被覆盖。模型是脚本化的 HTTP 端点，库是真的 PostgreSQL。
 use super::*;
+use anyhow::Context as _;
 use axum::{extract::State, response::IntoResponse, routing::post, Json, Router};
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
@@ -16,8 +17,17 @@ struct Model {
     release: Arc<tokio::sync::Notify>,
     /// 嵌入端点被叫了几次：短名单该不该嵌签名（#1097）看的是这个数
     embeds: Arc<std::sync::atomic::AtomicUsize>,
+    /// 嵌入端点回余额耗尽（#1360）
+    embeds_broke: Arc<std::sync::atomic::AtomicBool>,
 }
-async fn reply(State(m): State<Model>, Json(body): Json<Value>) -> impl IntoResponse {
+/// 脚本里放这个字符串，对话端点就回 OpenAI 余额耗尽的 429
+const OUT_OF_CREDIT: &str = "out_of_credit";
+fn out_of_credit() -> axum::response::Response {
+    let body = json!({"error": {"message": "You have no credits remaining.",
+        "type": "insufficient_quota", "code": "insufficient_quota"}});
+    (axum::http::StatusCode::TOO_MANY_REQUESTS, Json(body)).into_response()
+}
+async fn reply(State(m): State<Model>, Json(body): Json<Value>) -> axum::response::Response {
     let n = {
         let mut seen = m.requests.lock().unwrap();
         seen.push(body);
@@ -32,19 +42,26 @@ async fn reply(State(m): State<Model>, Json(body): Json<Value>) -> impl IntoResp
         if replies.is_empty() {
             panic!("unexpected model request #{n}");
         }
-        replies.remove(0).to_string()
+        replies.remove(0)
     };
-    let frame = json!({"choices":[{"delta":{"content":text}}]});
+    if text == OUT_OF_CREDIT {
+        return out_of_credit();
+    }
+    let frame = json!({"choices":[{"delta":{"content":text.to_string()}}]});
     (
         [("content-type", "text/event-stream")],
         format!("data: {frame}\n\ndata: [DONE]\n\n"),
     )
+        .into_response()
 }
 
 /// 脚本化的嵌入端点：每段文字一个由字节算出的四维向量。只要求确定、条数对得上——
 /// 这里测的是「向量有没有」，不是近不近
-async fn embed(State(m): State<Model>, Json(body): Json<Value>) -> impl IntoResponse {
+async fn embed(State(m): State<Model>, Json(body): Json<Value>) -> axum::response::Response {
     m.embeds.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    if m.embeds_broke.load(std::sync::atomic::Ordering::SeqCst) {
+        return out_of_credit();
+    }
     let data: Vec<Value> = body["input"]
         .as_array()
         .cloned()
@@ -66,7 +83,7 @@ async fn embed(State(m): State<Model>, Json(body): Json<Value>) -> impl IntoResp
             json!({ "embedding": v })
         })
         .collect();
-    Json(json!({ "data": data }))
+    Json(json!({ "data": data })).into_response()
 }
 
 struct Fx {
@@ -134,6 +151,7 @@ impl Fx {
             entered: Arc::new(tokio::sync::Notify::new()),
             release: Arc::new(tokio::sync::Notify::new()),
             embeds: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            embeds_broke: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let endpoint = format!("http://{}", listener.local_addr()?);
@@ -724,6 +742,49 @@ async fn signatures_are_not_embedded_while_no_property_has_a_vector() -> anyhow:
         f.script(bound());
         f.run().await?;
         assert_eq!(f.embed_calls(), 1, "with property vectors the signature is embedded");
+        anyhow::Ok(())
+    }
+    .await;
+    f.cleanup().await?;
+    run
+}
+
+/// 余额空了（#1360）：签名嵌入或对话的第一个欠费 429 让整轮带着类型失败，任务失败一次、
+/// 告警响起。从前它按「这一批留到下次」记，任务照样 done，马上再排一份，同一个 429 每几秒
+/// 来一遍，直到有人充值
+#[tokio::test]
+async fn an_empty_balance_fails_the_run_instead_of_queueing_another() -> anyhow::Result<()> {
+    let Some(f) = Fx::new().await? else {
+        return Ok(());
+    };
+    let run = async {
+        f.enable_embeddings().await?;
+        // 13 > SHORTLIST 条候选、属性都有向量：这条签名要嵌入
+        for i in 0..12 {
+            sqlx::query("INSERT INTO relation_types(id,kb_id,key,label,kind,temporal) VALUES($1,$2,$3,$3,'relation','state')")
+                .bind(Uuid::now_v7()).bind(f.kb).bind(format!("filler_{i}")).execute(&f.pool).await?;
+        }
+        sqlx::query("UPDATE relation_types SET embedding = '[1,0,0,0]' WHERE kb_id=$1")
+            .bind(f.kb)
+            .execute(&f.pool)
+            .await?;
+
+        f.model
+            .embeds_broke
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let err = f.run().await.err().context("a refused embedding fails the run")?;
+        anyhow::ensure!(crate::alerting::hopeless(&err), "not hopeless: {err:#}");
+        assert!(f.requests().is_empty(), "nothing is asked after the refusal");
+        assert!(!f.requeued().await?, "no follow-up alignment is queued");
+
+        f.model
+            .embeds_broke
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        f.script(vec![json!(OUT_OF_CREDIT)]);
+        let err = f.run().await.err().context("a refused chat call fails the run")?;
+        anyhow::ensure!(crate::alerting::hopeless(&err), "not hopeless: {err:#}");
+        assert_eq!(f.requests().len(), 1);
+        assert!(!f.requeued().await?, "no follow-up alignment is queued");
         anyhow::Ok(())
     }
     .await;
@@ -1466,6 +1527,47 @@ async fn asking_what_a_date_marks_never_reopens_the_binding() -> anyhow::Result<
         anyhow::Ok(())
     }
     .await;
+    f.cleanup().await?;
+    run
+}
+
+#[tokio::test]
+async fn a_negative_case_follows_ordinary_rejudgement_and_keeps_human_binding() -> anyhow::Result<()>
+{
+    let Some(f) = Fx::new().await? else {
+        return Ok(());
+    };
+    let run = async {
+        use utopia_store::ontology_regressions as cases;
+        let actor = f.editor().await?.id;
+        let statement_id = sqlx::query_scalar("SELECT id FROM facts WHERE kb_id=$1 AND layer='open'")
+            .bind(f.kb).fetch_one(&f.pool).await?;
+        let id = cases::add(&f.pool,f.kb,cases::NewCase { statement_id, expected_property_id: None,
+            expected_direction: None, created_by: actor, origin: "person" }).await?;
+        f.script(none()); f.run().await?;
+        assert_eq!(cases::get(&f.pool,f.kb,id).await?.unwrap().last_result.unwrap()["passed"],true);
+        assert_eq!(f.requests().len(),1);
+        f.clear_jobs().await?;
+        sqlx::query("UPDATE relation_types SET description='New definition',updated_at=clock_timestamp() WHERE id=$1")
+            .bind(f.based_in).execute(&f.pool).await?;
+        f.script(bound()); f.run().await?;
+        let result = cases::get(&f.pool,f.kb,id).await?.unwrap().last_result.unwrap();
+        assert_eq!(result["status"],"bound"); assert_eq!(result["passed"],false);
+        assert_eq!(f.requests().len(),3,"cases do not add model calls");
+        let sig = phrase_bindings::signatures(&f.pool,f.kb).await?.remove(0);
+        phrase_bindings::decide(&f.pool,f.kb,&sig,phrase_bindings::Decision {
+            relation_type_id:Some(f.based_in),direction:Some("forward"),status:"bound",decided_by:"person",
+            votes:&Value::Null,basis:None,marks:None,marks_asked:false,
+        }).await?;
+        let before = f.binding().await?;
+        f.run().await?;
+        let result = cases::get(&f.pool,f.kb,id).await?.unwrap().last_result.unwrap();
+        assert_eq!(result["passed"],false); assert_eq!(result["conflict"],"human_binding");
+        assert_eq!(f.requests().len(),3);
+        let after = f.binding().await?;
+        assert_eq!(before.decided_at,after.decided_at); assert_eq!(after.relation_type_id,Some(f.based_in));
+        anyhow::Ok(())
+    }.await;
     f.cleanup().await?;
     run
 }

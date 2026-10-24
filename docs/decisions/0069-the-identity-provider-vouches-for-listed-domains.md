@@ -1,6 +1,6 @@
 # 0069 · The identity provider vouches for listed domains
 
-- **Status**: Implemented · 2026-10-16 · #1237, #1258 · open: no per-domain role; an SSO-opened account has no password and no reset; no global case-insensitive email uniqueness
+- **Status**: Implemented · 2026-10-16 · #1237, #1258, #1362 · open: no per-domain role; an SSO-opened account has no password and no reset; no global case-insensitive email uniqueness
 - **Written**: 2026-10-16 (conventions in the [README](README.md))
 - **Related**: migration `0056` (an identity is linked by its owner); [0066](0066-another-app-may-trade-a-fresh-id-token-for-a-session.md) (the exchange, whose mapping this widens); [0014](0014-identity-from-the-person-scope-from-the-token.md) (identity comes from the person); [#1237](https://github.com/deeplethe/utopia/pull/1237)
 
@@ -13,6 +13,8 @@ Migration 0056 rejected linking by email for a reason that still holds in genera
 ## Decisions
 
 1. **`UTOPIA_OIDC_ALLOWED_DOMAINS` lists the domains the identity provider is authoritative for.** On a login or an exchange whose subject is not linked, a token whose `email` is in a listed domain and whose `email_verified` is true is mapped by email: to the active account with that address (case-insensitive), or to a new one. The subject is then linked to it, so later sign-ins go by subject as before. The list is empty by default, and an empty list keeps 0056's rule exactly.
+
+   **Revision 2026-10-22 (#1355).** The `email` claim arrives only when the authorization request asks for the `email` scope. The scopes are now `UTOPIA_OIDC_SCOPES` (default `openid profile email`), so a deployment that lists domains must keep `email` in them, or no address reaches this rule and nobody is linked or opened by domain; the server warns at startup when the list is set and `email` is missing.
 
    **Revision 2026-10-16 (#1258).** This assumed the active match was unique. Checking `users_email_active_idx` showed that it compares the stored spelling, while registration and administrator-created accounts preserve casing: two active accounts can differ only in email case. `account_for_sso` now refuses multiple active case-insensitive matches as `unlinked` before creating an account or writing an identity, rather than choosing one. The check covers the query snapshot; a unique index on `lower(email)`, normalization at registration and administrator creation, and a decision about existing duplicates remain separate work.
 

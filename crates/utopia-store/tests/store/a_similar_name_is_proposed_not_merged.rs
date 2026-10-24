@@ -660,3 +660,62 @@ async fn a_described_entity_is_not_paired_by_containment() -> anyhow::Result<()>
     teardown(&pool, &f).await?;
     run
 }
+
+/// 拉丁名字只在词边界上算包含（#1104）；汉字照旧按子串匹配
+#[tokio::test]
+async fn a_latin_name_is_contained_only_at_word_edges() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let f = seed(&pool, "contain-word-edges").await?;
+    let run = async {
+        let resolve = |name: &'static str| {
+            utopia_store::resolution::resolve_mention(
+                &pool,
+                f.kb,
+                Some(f.device),
+                name,
+                None,
+                None,
+                None,
+                &[],
+            )
+        };
+        // (库里的名字, 它的别名, 新名字, 是否排成一对)
+        for (stored, alias, new, want) in [
+            ("SERVICE_TOKEN", None, "token", false),
+            ("install_scheduled_task.ps1", None, "task", false),
+            ("AreaScorecard", None, "area", false),
+            ("Sherlock Holmes", None, "Holmes", true),
+            ("星云科技上海研究院", None, "上海研究院", true),
+            ("pump", None, "pumpkin soup", false),
+            ("Watson", None, "Doctor Watson", true),
+            (
+                "Scotland Yard",
+                Some("Inspector Lestrade"),
+                "Lestrade",
+                true,
+            ),
+            ("Gregson file", Some("gregson_notes"), "notes", false),
+            ("Baker Street", Some("Hudson"), "Mrs Hudson", true),
+            ("Prefect file", Some("Ford"), "Fordham Road", false),
+        ] {
+            let old = resolve(stored).await?;
+            if let Some(alias) = alias {
+                utopia_store::names::record(&pool, f.kb, old.entity_id, alias, None, None).await?;
+            }
+            let r = resolve(new).await?;
+            assert_eq!(
+                contained(&r).contains(&old.entity_id),
+                want,
+                "{new} against {stored}: {:?}",
+                r.reviews
+            );
+        }
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    teardown(&pool, &f).await?;
+    run
+}

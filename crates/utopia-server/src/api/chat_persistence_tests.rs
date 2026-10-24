@@ -29,9 +29,8 @@ async fn exercise(deny: bool, disconnect: bool) -> anyhow::Result<()> {
         .respond_with(model.clone())
         .mount(&f._server)
         .await;
-    let trigger = format!("reject_chat_{}", f.kb.simple());
     if deny {
-        sqlx::raw_sql(&format!("CREATE FUNCTION {trigger}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.role='assistant' AND EXISTS(SELECT 1 FROM conversations WHERE id=NEW.conversation_id AND kb_id='{}') THEN RAISE EXCEPTION 'private persistence diagnostic'; END IF; RETURN NEW; END $$; CREATE TRIGGER {trigger} BEFORE INSERT ON conversation_messages FOR EACH ROW EXECUTE FUNCTION {trigger}();",f.kb)).execute(&f.pool).await?;
+        f.reject_answer_saves().await?;
     }
     let result = tokio::time::timeout(std::time::Duration::from_secs(20), async {
         let sse = if disconnect {
@@ -89,13 +88,6 @@ async fn exercise(deny: bool, disconnect: bool) -> anyhow::Result<()> {
         Ok::<_, anyhow::Error>(())
     })
     .await;
-    if deny {
-        sqlx::raw_sql(&format!(
-            "DROP TRIGGER {trigger} ON conversation_messages; DROP FUNCTION {trigger}();"
-        ))
-        .execute(&f.pool)
-        .await?;
-    }
     f.cleanup().await?;
     result??;
     Ok(())

@@ -14,6 +14,7 @@ export const CREATABLE_SOURCE_KINDS = [
   "rss",
   "github_issues",
   "github_repo",
+  "gitlab_repo",
   "jira_issues",
   "s3",
   "azure_blob",
@@ -31,7 +32,7 @@ export type CreatableSourceKind = (typeof CREATABLE_SOURCE_KINDS)[number];
 export type SourceKind = CreatableSourceKind | "memory" | "upload";
 
 /**
- * GitHub、Jira 来源同步缺不得的几项填了没有。缺了照样建得出来、存得下，之后每一轮同步
+ * GitHub、GitLab、Jira 来源同步缺不得的几项填了没有。缺了照样建得出来、存得下，之后每一轮同步
  * 都只会报错。仓库要是 `owner/name`：粘一整条 GitHub 链接进来，后端同样每轮拒收
  */
 export function hasSyncFields(
@@ -41,6 +42,8 @@ export function hasSyncFields(
   if (kind === "github_issues" || kind === "github_repo") {
     return /^[^/\s]+\/[^/\s]+$/.test(f.repo?.trim() ?? "");
   }
+  // GitLab 的项目路径可以有好几层子组：group/sub/name
+  if (kind === "gitlab_repo") return /^[^/\s]+(\/[^/\s]+)+$/.test(f.repo?.trim() ?? "");
   if (kind === "jira_issues") return Boolean(f.jiraUrl?.trim() && f.jiraProject?.trim());
   return true;
 }

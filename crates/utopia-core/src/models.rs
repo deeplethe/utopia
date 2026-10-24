@@ -181,6 +181,13 @@ impl Source {
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(true)
     }
+
+    /// statements 来源的 config 写了 `{"names": "identity"}`：它推来的每个名字各指一个
+    /// 确定的东西（0071），按字面归并、不算名字向量。其余来源照旧。
+    pub fn names_are_identities(&self) -> bool {
+        self.kind == "statements"
+            && self.config.get("names").and_then(serde_json::Value::as_str) == Some("identity")
+    }
 }
 
 #[cfg(test)]
@@ -216,6 +223,25 @@ mod source_extracts_tests {
         assert!(with(serde_json::json!({ "extract": "no" })).extracts());
         assert!(with(serde_json::json!({ "extract": 0 })).extracts());
         assert!(!with(serde_json::json!({ "extract": false })).extracts());
+    }
+
+    fn of_kind(kind: &str, config: serde_json::Value) -> Source {
+        Source {
+            kind: kind.into(),
+            ..with(config)
+        }
+    }
+
+    #[test]
+    fn only_a_statements_source_with_the_string_identity_has_identity_names() {
+        let identity = serde_json::json!({ "names": "identity" });
+        assert!(of_kind("statements", identity.clone()).names_are_identities());
+        assert!(!of_kind("api", identity).names_are_identities());
+        assert!(!of_kind("statements", serde_json::json!({})).names_are_identities());
+        assert!(!of_kind("statements", serde_json::json!({ "names": true })).names_are_identities());
+        assert!(
+            !of_kind("statements", serde_json::json!({ "names": "prose" })).names_are_identities()
+        );
     }
 }
 
@@ -272,6 +298,8 @@ pub enum SourceKind {
     Rss,
     GithubIssues,
     GithubRepo,
+    /// gitlab.com 项目默认分支的文件（#1327）；自建 GitLab 没有验证过
+    GitlabRepo,
     JiraIssues,
     S3,
     AzureBlob,

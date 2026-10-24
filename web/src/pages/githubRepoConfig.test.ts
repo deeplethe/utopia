@@ -15,3 +15,9 @@ it("keeps what the edit form does not show, and a cleared glob list falls back t
     max_file_bytes: 2000,
   });
 });
+
+it("a GitLab source keeps its project path under project", () => {
+  const saved = { project: "g/p", max_file_bytes: 2000 };
+  const sent = githubRepoConfig(saved, { repo: " g/sub/p ", authHeader: "Bearer t", include: "", exclude: "" }, "project");
+  expect(JSON.parse(JSON.stringify(sent))).toEqual({ project: "g/sub/p", auth_header: "Bearer t", max_file_bytes: 2000 });
+});

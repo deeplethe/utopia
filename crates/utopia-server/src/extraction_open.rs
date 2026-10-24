@@ -286,6 +286,7 @@ async fn apply_open_extraction(
     attested_at: Option<chrono::DateTime<chrono::Utc>>,
     bound_types: &HashMap<String, Uuid>,
     pushed: bool,
+    identity: bool,
     await_nod: bool,
     proposer: Proposer,
     pending_count: &mut usize,
@@ -330,6 +331,7 @@ async fn apply_open_extraction(
                 ctx,
                 name_vecs.get(&key).map(Vec::as_slice),
                 evidence.get(&key).map(String::as_str),
+                identity,
                 &mut response_claims,
                 handled_by_name,
                 ambiguous_bare_cache,
@@ -1010,6 +1012,8 @@ pub(crate) async fn run_open(
     proposer: Proposer,
     await_nod: bool,
     pushed: bool,
+    // 0071: the source's names are identities, so they get no name vectors
+    identity: bool,
 ) -> anyhow::Result<()> {
     let pool = &state.pool;
     let document_id = doc.id;
@@ -1044,7 +1048,9 @@ pub(crate) async fn run_open(
 
     // 名字向量的嵌入客户端（0041 决定 3 通道 2）。没配嵌入模型就是 None：召回退回
     // 字面相等，抽取照常
-    let embed = settings.and_then(crate::llm_util::embed_client);
+    let embed = settings
+        .and_then(crate::llm_util::embed_client)
+        .filter(|_| !identity);
     // 文档自己说到的日期（0064 决定 1）：每一块报上来的，连它所在的标题路径。块与块之间
     // 不传——一条日期管到哪，看的是它自己那一块正文里的标题，块并行抽的时候照样成立（#588）
     let mut time_entries: Vec<utopia_extract::time::TimeEntry> = Vec::new();
@@ -1140,6 +1146,7 @@ pub(crate) async fn run_open(
             attested_at,
             &bound_types,
             pushed,
+            identity,
             await_nod,
             proposer,
             &mut pending_count,
@@ -1210,6 +1217,12 @@ pub(crate) async fn run_open(
         serde_json::json!({ "document_id": document_id }),
     )
     .await?;
+    // 这篇开抽时还没绑上、抽到一半才绑上的类别词：它的类补到这篇后半建的实体上
+    // （`bound_types` 是开抽时读的一份，判定落下时的投影看不见之后建的实体）
+    let caught_up = utopia_store::type_bindings::apply_bound(pool, kb_id).await?;
+    if caught_up > 0 {
+        tracing::info!(%document_id, entities = caught_up, "抽取途中绑上的类补到了后建的实体上");
+    }
     // 新出现的类别词绑到类（0044 对齐第一片）：库级，同库排着就不重复
     utopia_store::jobs::enqueue_unless_queued(
         pool,
@@ -1239,6 +1252,10 @@ pub(crate) async fn run_open(
         state.emit_review(kb_id);
     }
 
+    // 身份来源（0071 决定 5）：散文先写下的名字向量，这篇给了它身份证据，删掉
+    if identity {
+        utopia_store::name_vectors::drop_for_document(pool, document_id).await?;
+    }
     // 名字向量：这篇新写的名字事实，向量补上（0041 决定 3 通道 2）。算不出来只记日志——
     // 文档已经抽完了，不能因为召回的辅助数据没算而把它标成 failed
     if let (Some(settings), Some(client)) = (settings, &embed) {
@@ -1281,6 +1298,10 @@ pub(crate) async fn run_open(
 #[cfg(test)]
 #[path = "extraction_open_known_flow_tests.rs"]
 mod known_flow_tests;
+
+#[cfg(test)]
+#[path = "extraction_open_identity_names_tests.rs"]
+mod identity_names_tests;
 
 #[cfg(test)]
 #[path = "extraction_open_out_of_credit_tests.rs"]

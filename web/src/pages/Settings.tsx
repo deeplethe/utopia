@@ -61,13 +61,17 @@ export function chatTestMessage(chat: {
   ok: boolean;
   reply?: string;
   error?: string;
-  checks?: Record<"plain" | "streaming" | "tools", { ok: boolean; error?: string }>;
+  checks?: Record<"plain" | "streaming" | "tools", { ok: boolean; timed_out?: boolean; error?: string }>;
 }): string {
   if (!chat.checks) return chat.ok ? S.settings.ok(chat.reply ?? "OK") : (chat.error ?? "");
   return (["plain", "streaming", "tools"] as const)
     .map((shape) => {
       const c = chat.checks![shape];
-      const verdict = c.ok ? S.settings.chatShapeOk : S.settings.chatShapeRefused(c.error ?? "");
+      const verdict = c.ok
+        ? S.settings.chatShapeOk
+        : c.timed_out
+          ? S.settings.chatShapeTimedOut(c.error ?? "")
+          : S.settings.chatShapeRefused(c.error ?? "");
       return `${S.settings.chatShapes[shape]}: ${verdict}`;
     })
     .join("\n");
