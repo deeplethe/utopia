@@ -1196,6 +1196,109 @@ async fn entity_facts_keeps_identity_values_filters_and_both_clocks() -> anyhow:
 }
 
 #[tokio::test]
+async fn entity_facts_pages_filtered_rows_without_repeating_time_ties() -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    async fn check(f: &Fixture) -> anyhow::Result<()> {
+        let extra: Vec<Uuid> = (0..4).map(|_| Uuid::new_v4()).collect();
+        sqlx::query(
+            "INSERT INTO facts(id,kb_id,subject_id,predicate_id,object_value,
+                               valid_from,valid_from_precision,recorded_at)
+             SELECT extra.id,f.kb_id,f.subject_id,f.predicate_id,
+                    jsonb_build_object('value',extra.n),f.valid_from,
+                    f.valid_from_precision,f.recorded_at
+             FROM facts f CROSS JOIN unnest($2::uuid[]) WITH ORDINALITY extra(id,n)
+             WHERE f.id=$1",
+        )
+        .bind(f.attribute)
+        .bind(&extra)
+        .execute(&f.state.pool)
+        .await?;
+        let mut expected = extra;
+        expected.push(f.attribute);
+        expected.sort();
+        for offset in [0, 2, 3, 4, 5, 99] {
+            let page = f
+                .call(
+                    "entity_facts",
+                    json!({"entity_id":f.subject,"predicate":"weight","limit":2,
+                           "offset":offset,"at":"2026-01-01","before":CORRECTION}),
+                )
+                .await?;
+            let data = &page["structuredContent"];
+            assert_eq!(page["isError"], false);
+            assert_eq!(data["offset"], offset);
+            assert_eq!(data["matched_facts"], 5);
+            let ids: Vec<Uuid> = data["facts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|fact| uuid(&fact["id"]))
+                .collect();
+            assert_eq!(ids, expected[offset.min(5)..(offset + 2).min(5)]);
+            let next = (offset + 2 < 5).then_some(offset + 2);
+            assert_eq!(data["next_offset"], json!(next));
+            assert_eq!(data["truncated"], next.is_some());
+            if let Some(next) = next {
+                assert!(page["content"][0]["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains(&format!("offset={next}")));
+            }
+        }
+        Ok(())
+    }
+    let result = check(&f).await;
+    f.clean().await?;
+    result
+}
+
+#[tokio::test]
+async fn paged_tools_advertise_offsets_and_refuse_invalid_values() -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    let listed = f
+        .request(f.kb, "tools/list", json!({}))
+        .await
+        .map_err(|e| e.0)?
+        .0;
+    for name in ["entity_facts", "changes"] {
+        let tool = listed["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == name)
+            .unwrap();
+        assert_eq!(
+            tool["inputSchema"]["properties"]["offset"]["type"],
+            "integer"
+        );
+        assert_eq!(tool["inputSchema"]["properties"]["offset"]["minimum"], 0);
+    }
+    for offset in [
+        json!(-1),
+        json!(1.5),
+        json!("2"),
+        json!(null),
+        json!(u64::MAX),
+    ] {
+        for tool in ["entity_facts", "changes"] {
+            let result = f
+                .call(
+                    tool,
+                    json!({"entity_id":f.subject,"since":"2026","offset":offset}),
+                )
+                .await?;
+            assert_eq!(result["isError"], true, "{tool}: {result}");
+            assert!(result.get("structuredContent").is_none());
+        }
+    }
+    f.clean().await
+}
+
+#[tokio::test]
 async fn changes_returns_fact_ids_and_a_reusable_correction_timestamp() -> anyhow::Result<()> {
     let Some(f) = Fixture::new().await? else {
         return Ok(());
@@ -1255,6 +1358,17 @@ async fn changes_returns_fact_ids_and_a_reusable_correction_timestamp() -> anyho
     .bind(f.attribute)
     .execute(&f.state.pool)
     .await?;
+    let ids: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM facts WHERE kb_id=$1 AND recorded_at='2026-03-21' ORDER BY id",
+    )
+    .bind(f.kb)
+    .fetch_all(&f.state.pool)
+    .await?;
+    // 同一事实同一时刻的两种事件恰好跨页；只按时间或事实 id 排都不够。
+    sqlx::query("UPDATE facts SET invalidated_at=recorded_at WHERE id=$1")
+        .bind(ids[39])
+        .execute(&f.state.pool)
+        .await?;
     let capped = f
         .call(
             "changes",
@@ -1269,6 +1383,64 @@ async fn changes_returns_fact_ids_and_a_reusable_correction_timestamp() -> anyho
         40
     );
     assert_eq!(capped["structuredContent"]["limit_reached"], true);
+    assert_eq!(capped["structuredContent"]["offset"], 0);
+    assert_eq!(capped["structuredContent"]["next_offset"], 40);
+    assert!(capped["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("offset=40"));
+    assert_eq!(
+        capped["structuredContent"]["changes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|event| (uuid(&event["fact_id"]), event["kind"].as_str().unwrap()))
+            .collect::<Vec<_>>(),
+        ids[..40]
+            .iter()
+            .map(|id| (*id, "asserted"))
+            .collect::<Vec<_>>()
+    );
+    let last = f
+        .call(
+            "changes",
+            json!({"since":"2026-03-21","until":"2026-03-21","offset":40}),
+        )
+        .await?;
+    let events = last["structuredContent"]["changes"].as_array().unwrap();
+    assert_eq!(events.len(), 2);
+    assert_eq!(uuid(&events[0]["fact_id"]), ids[39]);
+    assert_eq!(events[0]["kind"], "rejected");
+    assert_eq!(uuid(&events[1]["fact_id"]), ids[40]);
+    assert_eq!(last["structuredContent"]["offset"], 40);
+    assert!(last["structuredContent"]["next_offset"].is_null());
+    assert_eq!(last["structuredContent"]["limit_reached"], false);
+    let exhausted = f
+        .call(
+            "changes",
+            json!({"since":"2026-03-21","until":"2026-03-21","offset":42}),
+        )
+        .await?;
+    assert_eq!(exhausted["structuredContent"]["changes"], json!([]));
+    assert!(exhausted["structuredContent"]["next_offset"].is_null());
+    assert_eq!(exhausted["isError"], false);
+    // 满四十条不等于还有下一页；过滤后再偏移，断言事件正好剩四十条。
+    let full_last = f
+        .call(
+            "changes",
+            json!({"since":"2026-03-21","until":"2026-03-21","offset":1,
+                   "entity_id":f.subject,"kinds":["asserted"]}),
+        )
+        .await?;
+    assert_eq!(full_last["structuredContent"]["limit_reached"], true);
+    assert!(full_last["structuredContent"]["next_offset"].is_null());
+    assert_eq!(
+        full_last["structuredContent"]["changes"]
+            .as_array()
+            .unwrap()
+            .len(),
+        40
+    );
     f.clean().await
 }
 
@@ -3119,6 +3291,10 @@ async fn a_list_cut_at_its_limit_says_so() -> anyhow::Result<()> {
         );
         let gadgets = f.call("find_entities", json!({"name":"Gadget"})).await?;
         anyhow::ensure!(!text(&gadgets).contains("were read"), "{gadgets}");
+        assert_eq!(widgets["structuredContent"]["matched_entities"], 10);
+        assert_eq!(widgets["structuredContent"]["truncated"], true);
+        assert_eq!(gadgets["structuredContent"]["matched_entities"], 3);
+        assert_eq!(gadgets["structuredContent"]["truncated"], false);
         step_has(
             &step_of(f, &[], "find_entities", json!({"name":"Widget"})).await,
             json!({"status":"ok","count":8,"total":10}),

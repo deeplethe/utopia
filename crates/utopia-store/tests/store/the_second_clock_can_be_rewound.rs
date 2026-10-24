@@ -286,6 +286,7 @@ async fn the_recording_axis_rewinds_on_every_graph_read() -> anyhow::Result<()> 
         Some(f.zhang),
         None,
         10,
+        0,
     )
     .await?;
     assert_eq!(events.len(), 2);
