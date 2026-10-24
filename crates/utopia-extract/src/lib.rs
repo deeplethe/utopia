@@ -832,6 +832,33 @@ pub fn read_time(s: &str) -> Option<(DateTime<Utc>, &'static str)> {
     })
 }
 
+/// 「17th」「2nd」「23rd」里的日。后缀得和数字相符：11、12、13 是 th，不是 11st。
+fn ordinal_day(w: &str) -> Option<&str> {
+    let (digits, suffix) = w.split_at_checked(w.len().checked_sub(2)?)?;
+    if digits.is_empty() || digits.len() > 2 || !digits.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let n: u32 = digits.parse().ok()?;
+    let expected = match n % 100 {
+        11..=13 => "th",
+        _ => match n % 10 {
+            1 => "st",
+            2 => "nd",
+            3 => "rd",
+            _ => "th",
+        },
+    };
+    suffix.eq_ignore_ascii_case(expected).then_some(digits)
+}
+
+fn day_digits(w: &str) -> Option<&str> {
+    if w.chars().all(|c| c.is_ascii_digit()) {
+        Some(w)
+    } else {
+        ordinal_day(w)
+    }
+}
+
 /// 没照规则 3 写、但说得清是哪一天（或哪个月）的日期（#688）。
 ///
 /// 合同、公告里的日期多半这么写，模型常常照抄；从前这些值全被当成「不是日期」丢掉。
@@ -853,9 +880,14 @@ pub fn written_date(s: &str) -> Option<(NaiveDate, &'static str)> {
         .filter(|w| !w.is_empty())
         .collect();
     let is_number = |w: &str| w.chars().all(|c| c.is_ascii_digit());
+    // 日可以带序数后缀（March 17th、2nd March）；月名不带
     let (day, month, year) = match words.as_slice() {
-        [m, d, y] if !is_number(m) && is_number(d) && is_number(y) => (Some(*d), *m, *y),
-        [d, m, y] if is_number(d) && !is_number(m) && is_number(y) => (Some(*d), *m, *y),
+        [m, d, y] if !is_number(m) && day_digits(d).is_some() && is_number(y) => {
+            (day_digits(d), *m, *y)
+        }
+        [d, m, y] if day_digits(d).is_some() && !is_number(m) && is_number(y) => {
+            (day_digits(d), *m, *y)
+        }
         [m, y] if !is_number(m) && is_number(y) => (None, *m, *y),
         _ => return None,
     };
@@ -1229,6 +1261,7 @@ mod tests {
         use serde_json::json;
         let day = |s: &str| normalize_attr_value("date", &json!(s));
         for written in [
+            "March 17th, 2020",
             "March 17, 2020",
             "March 17 2020",
             "march 17, 2020",
@@ -1244,6 +1277,15 @@ mod tests {
             "2020年3月17日",
         ] {
             assert_eq!(day(written), Some(json!("2020-03-17")), "{written}");
+        }
+        for (written, iso) in [
+            ("2nd March 2020", "2020-03-02"),
+            ("March 11th, 2020", "2020-03-11"),
+            ("March 21st, 2020", "2020-03-21"),
+            ("March 22nd, 2020", "2020-03-22"),
+            ("March 23rd, 2020", "2020-03-23"),
+        ] {
+            assert_eq!(day(written), Some(json!(iso)), "{written}");
         }
         // 只写到月的是月，不补日
         for written in ["March 2020", "Mar. 2020", "2020年3月"] {
