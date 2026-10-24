@@ -512,7 +512,8 @@ fn scan_quantity(s: &str, strict: bool) -> Option<Quantity> {
         // 取下一个记号：中文按字（量级/货币词最长两三个字），其它按空白分词
         let (tok, next) = next_token(tail);
         if !ate_magnitude {
-            if let Some(m) = magnitude(tok) {
+            // 标题里写成「$5 Billion」：量级词不分大小写，不然 5 billion 读成 5
+            if let Some(m) = magnitude(&tok.to_ascii_lowercase()) {
                 // Parse the written decimal with its scale in one conversion. Multiplying
                 // an already rounded f64 needs an epsilon that can erase real fractions.
                 // The suffix is at most three bytes (e12), so allocation stays O(num.len()).
@@ -581,8 +582,11 @@ fn strip_approx(s: &str) -> &str {
         "~",
         "≈",
     ] {
-        if let Some(rest) = s.strip_prefix(p) {
-            s = rest.trim_start();
+        // 句首的「About 350」「Approximately 1,200」：英文的约数词不分大小写
+        if s.get(..p.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(p))
+        {
+            s = s[p.len()..].trim_start();
             break;
         }
     }
@@ -1205,6 +1209,10 @@ mod tests {
             Some(json!(5e9))
         );
         assert_eq!(
+            normalize_attr_value("number", &json!("$2.5 Billion")),
+            Some(json!(2.5e9))
+        );
+        assert_eq!(
             normalize_attr_value("number", &json!("52%")),
             Some(json!(52.0))
         );
@@ -1494,6 +1502,14 @@ mod an_attribute_value_is_read_in_its_declared_unit {
         // 光秃秃的数就是声明单位下的数
         assert_eq!(value("number", Some("万元"), "5000"), Some(json!(5000.0)));
         assert_eq!(value("number", Some("人"), "约350名"), Some(json!(350.0)));
+        assert_eq!(
+            value("number", Some("人"), "Approximately 1,200"),
+            Some(json!(1200.0))
+        );
+        assert_eq!(
+            value("number", Some("people"), "About 350 people"),
+            Some(json!(350.0))
+        );
         // 只写到年的日期按年
         assert_eq!(value("date", None, "1982年"), Some(json!("1982")));
     }

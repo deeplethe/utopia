@@ -61,6 +61,51 @@ pub mod reason {
     /// 宾语其实是个值（一个量、一个日期、表格的一格）：挪进值那一格，不建实体
     /// （`open::values_are_not_things`）。数的是规则 2 和表格规则还有多少次没管住模型
     pub const OBJECT_IS_VALUE: &str = "object_is_value";
+    /// 陈述绑到了一条属性，值却按属性声明的 datatype 与单位读不出来（「超过2000人」读不成
+    /// 数，「5000万美元」换不成万元）：陈述留在开放图谱，不落类型化行（`materialize`）。
+    /// 这一条由物化发出，不是抽取；每轮物化按库重写，detail 是属性的 key
+    pub const ATTR_DATATYPE: &str = "attr_datatype";
+}
+
+/// 一轮物化读不出的值：(文档, 属性 key, 一个样例)。
+pub struct Unreadable {
+    pub document_id: Uuid,
+    pub detail: String,
+    pub example: String,
+}
+
+/// 把一个库里某个原因码的行整个换成这一批（事务内）。物化是集合运算、每轮重算，
+/// 它发出的信号也按集合写：删掉这个原因码在这个库下的全部行，再按（文档, detail）
+/// 数一遍写回。用 `record` 的话每轮重算都会把同一条陈述再数一次
+pub async fn replace_reason_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    kb_id: Uuid,
+    reason: &str,
+    rows: &[Unreadable],
+) -> AppResult<()> {
+    // 整库的语句不缓存（#1298）：缓存几次后换成通用计划，看不见这个库有多少行
+    sqlx::query("DELETE FROM extraction_drops WHERE kb_id = $1 AND reason = $2")
+        .persistent(false)
+        .bind(kb_id)
+        .bind(reason)
+        .execute(&mut **tx)
+        .await?;
+    for r in rows {
+        sqlx::query(
+            "INSERT INTO extraction_drops (kb_id, document_id, reason, detail, example)
+             VALUES ($1, $2, $3, left($4, 120), left($5, 200))
+             ON CONFLICT (kb_id, document_id, reason, detail)
+             DO UPDATE SET count = extraction_drops.count + 1, updated_at = now()",
+        )
+        .bind(kb_id)
+        .bind(r.document_id)
+        .bind(reason)
+        .bind(&r.detail)
+        .bind(&r.example)
+        .execute(&mut **tx)
+        .await?;
+    }
+    Ok(())
 }
 
 pub async fn record(

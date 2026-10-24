@@ -595,6 +595,7 @@ export const en = {
       phrase_is_value: "Kept, but the phrase is the value itself",
       phrase_is_subject: "Kept, but the phrase is the subject's own name",
       object_is_value: "Kept, with the object read as a value",
+      attr_datatype: "Kept as an open statement, but the value cannot be read as the attribute's datatype",
     } as Record<string, string>,
     // 来源级重抽：不危险，只是费时费钱——轻确认，文案直说成本与保留项
     reExtractSource: "Re-extract",
@@ -1319,6 +1320,14 @@ export const en = {
       packsPick: "Search packs…",
       packsNone: "None — the ontology grows out of the documents",
       packsCount: (c: number, p: number) => `${c} classes · ${p} properties`,
+      scenariosLabel: "Scenario packs",
+      scenariosHint:
+        "Classes, properties and the questions to answer for one kind of corpus; " +
+        "installed as this base's own ontology. Optional.",
+      scenariosPick: "Search scenarios…",
+      scenariosNone: "None — build the ontology by hand later",
+      scenariosCount: (c: number, p: number, q: number) =>
+        `${c} classes · ${p} properties · ${q} questions`,
       name: "Name",
       description: "Description",
       visibility: "Visibility",

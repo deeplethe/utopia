@@ -1,0 +1,203 @@
+{
+  "id": "enterprise-profile",
+  "name": { "zh": "企业档案", "en": "Enterprise profile" },
+  "summary": {
+    "zh": "公司简介、工商信息、年报：企业的注册资本、成立时间、人员规模、营收、法定代表人与控股关系",
+    "en": "Company profiles, registry records and annual reports: capital, founding, headcount, revenue, legal representative and holding chains"
+  },
+  "classes": [
+    {
+      "key": "company",
+      "label": { "zh": "企业", "en": "Company" },
+      "description": {
+        "zh": "企业、公司、集团、工厂、药房等以营利为目的的法人组织；一家分公司或子公司也是一个企业。",
+        "en": "A business organisation: a company, corporation, group, plant or shop; a subsidiary or branch is a company too."
+      }
+    },
+    {
+      "key": "person",
+      "label": { "zh": "人员", "en": "Person" },
+      "description": {
+        "zh": "一个具体的人：董事长、法定代表人、高管、员工、创始人。",
+        "en": "A particular human being: a chairman, legal representative, executive, employee or founder."
+      }
+    },
+    {
+      "key": "product",
+      "label": { "zh": "产品", "en": "Product" },
+      "description": {
+        "zh": "企业生产、销售或提供的具体产品、品牌或服务，有自己的名字。",
+        "en": "A named product, brand or service a company makes, sells or provides."
+      }
+    },
+    {
+      "key": "place",
+      "label": { "zh": "地点", "en": "Place" },
+      "description": {
+        "zh": "城市、区县、园区、地址等地理位置。",
+        "en": "A geographic place: a city, district, park or address."
+      }
+    }
+  ],
+  "attributes": [
+    {
+      "key": "registered_capital",
+      "host": "company",
+      "label": { "zh": "注册资本", "en": "Registered capital" },
+      "description": {
+        "zh": "企业在登记机关登记的注册资本金额。原文写「注册资本 5000 万元」「注册资本为 1.2 亿元」。",
+        "en": "The registered capital a company declares to the registry, as written: 注册资本 5000 万元, registered capital of RMB 120 million."
+      },
+      "datatype": "number",
+      "unit": "万元",
+      "functional": true
+    },
+    {
+      "key": "founded_at",
+      "host": "company",
+      "label": { "zh": "成立时间", "en": "Founded" },
+      "description": {
+        "zh": "企业成立、注册登记的日期。原文写「成立于 2015 年 3 月」「2008 年在上海成立」。",
+        "en": "The date a company was founded or registered: 成立于 2015 年 3 月, founded in 2008."
+      },
+      "datatype": "date",
+      "functional": true
+    },
+    {
+      "key": "employee_count",
+      "host": "company",
+      "label": { "zh": "员工人数", "en": "Employees" },
+      "description": {
+        "zh": "企业现有员工的人数。原文写「员工 1200 人」「现有员工约 350 名」。",
+        "en": "How many people a company employs: 员工 1200 人, about 350 employees."
+      },
+      "datatype": "number",
+      "functional": true
+    },
+    {
+      "key": "revenue",
+      "host": "company",
+      "label": { "zh": "营业收入", "en": "Revenue" },
+      "description": {
+        "zh": "企业某一年度的营业收入金额，不是增长率或变化。原文写「2023 年营业收入 2.3 亿元」。",
+        "en": "A company's revenue for a period, an amount and not a change or growth rate: 2023 年营业收入 2.3 亿元."
+      },
+      "datatype": "number",
+      "unit": "万元",
+      "functional": true
+    },
+    {
+      "key": "net_profit",
+      "host": "company",
+      "label": { "zh": "净利润", "en": "Net profit" },
+      "description": {
+        "zh": "企业某一年度的净利润金额，不是增长率或变化。原文写「净利润 1800 万元」。",
+        "en": "A company's net profit for a period, an amount and not a change: 净利润 1800 万元."
+      },
+      "datatype": "number",
+      "unit": "万元",
+      "functional": true
+    },
+    {
+      "key": "legal_representative",
+      "host": "company",
+      "label": { "zh": "法定代表人", "en": "Legal representative" },
+      "description": {
+        "zh": "企业的法定代表人的姓名。原文写「法定代表人为李明」「法定代表人：陈国华」。",
+        "en": "The name of the company's legal representative: 法定代表人为李明."
+      },
+      "datatype": "text",
+      "functional": true
+    },
+    {
+      "key": "registered_address",
+      "host": "company",
+      "label": { "zh": "注册地址", "en": "Registered address" },
+      "description": {
+        "zh": "企业的注册地或注册地址，一个地名或地址。原文写「注册地为浙江绍兴」「注册地址：杭州市滨江区」。",
+        "en": "Where the company is registered, a place name or address: 注册地为浙江绍兴."
+      },
+      "datatype": "text",
+      "functional": true
+    },
+    {
+      "key": "credit_code",
+      "host": "company",
+      "label": { "zh": "统一社会信用代码", "en": "Unified social credit code" },
+      "description": {
+        "zh": "企业的 18 位统一社会信用代码。",
+        "en": "The company's 18-character unified social credit code."
+      },
+      "datatype": "text",
+      "functional": true
+    }
+  ],
+  "relations": [
+    {
+      "key": "controlled_by",
+      "label": { "zh": "控股方", "en": "Controlled by" },
+      "description": {
+        "zh": "主语企业由宾语企业控股或全资持有：「由仁和医药集团控股」「集团旗下的仁和制药厂」。方向：子公司 → 母公司。",
+        "en": "The subject company is controlled or wholly owned by the object company: 由仁和医药集团控股, 集团旗下的仁和制药厂. Direction: subsidiary → parent."
+      },
+      "domains": ["company"],
+      "ranges": ["company"],
+      "temporal": "state"
+    },
+    {
+      "key": "officer_of",
+      "label": { "zh": "任职于", "en": "Officer of" },
+      "description": {
+        "zh": "主语人员在宾语企业担任董事长、总经理、高管等职务：「董事长为王海」「周敏任心内科主任」。方向：人员 → 企业。",
+        "en": "The subject person holds an office at the object company (chairman, CEO, executive): 董事长为王海. Direction: person → company."
+      },
+      "domains": ["person"],
+      "ranges": ["company"],
+      "temporal": "state"
+    },
+    {
+      "key": "produces",
+      "label": { "zh": "主要产品", "en": "Produces" },
+      "description": {
+        "zh": "主语企业生产、销售或提供宾语产品：「主要产品为启明 X7 推理加速卡」「主要生产降压药」。方向：企业 → 产品。",
+        "en": "The subject company makes, sells or provides the object product: 主要产品为启明 X7 推理加速卡. Direction: company → product."
+      },
+      "domains": ["company"],
+      "ranges": ["product"],
+      "temporal": "state"
+    },
+    {
+      "key": "headquartered_in",
+      "label": { "zh": "总部位于", "en": "Headquartered in" },
+      "description": {
+        "zh": "主语企业的总部、注册地或主要经营地在宾语地点：「总部位于杭州市滨江区」「位于绍兴」。方向：企业 → 地点。",
+        "en": "The subject company's headquarters, registered seat or main place of business is the object place: 总部位于杭州市滨江区. Direction: company → place."
+      },
+      "domains": ["company"],
+      "ranges": ["place"],
+      "temporal": "state"
+    }
+  ],
+  "questions": [
+    {
+      "question": { "zh": "某家企业的注册资本是多少？", "en": "What is a company's registered capital?" },
+      "needs": { "classes": ["company"], "properties": ["registered_capital"] }
+    },
+    {
+      "question": { "zh": "某家企业某一年的营业收入和净利润是多少？", "en": "What were a company's revenue and net profit in a given year?" },
+      "needs": { "classes": ["company"], "properties": ["revenue", "net_profit"] }
+    },
+    {
+      "question": { "zh": "某家企业的法定代表人是谁，成立于什么时候？", "en": "Who is a company's legal representative, and when was it founded?" },
+      "needs": { "classes": ["company"], "properties": ["legal_representative", "founded_at"] }
+    },
+    {
+      "question": { "zh": "某家企业由谁控股，旗下有哪些企业？", "en": "Who controls a company, and which companies does it control?" },
+      "needs": { "classes": ["company"], "properties": ["controlled_by"] }
+    },
+    {
+      "question": { "zh": "某个人在哪些企业任职？", "en": "At which companies does a person hold office?" },
+      "needs": { "classes": ["person", "company"], "properties": ["officer_of"] }
+    }
+  ]
+}
