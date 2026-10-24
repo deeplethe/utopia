@@ -471,6 +471,8 @@ fn scan_quantity(s: &str, strict: bool) -> Option<Quantity> {
     if s.is_empty() {
         return None;
     }
+    let negated = if strict { None } else { accounting_negative(s) };
+    let s = negated.as_deref().unwrap_or(s);
     let (body, percent) = match s.strip_suffix('%') {
         Some(b) => (b.trim_end(), true),
         None => (s, false),
@@ -553,6 +555,25 @@ fn scan_quantity(s: &str, strict: bool) -> Option<Quantity> {
         unit,
         scaled: ate_magnitude,
     })
+}
+
+/// 财报的写法：括号里的数是负数。`(1,234)` → `-1,234`，`$(1.2) billion` → `$-1.2 billion`，
+/// `(12.5%)` → `-12.5%`。括号前只许有一个货币，括号里只许是数
+fn accounting_negative(s: &str) -> Option<String> {
+    let (head, rest) = s.split_once('(')?;
+    let (inner, after) = rest.split_once(')')?;
+    if !head.trim().is_empty() && currency_unit(head.trim()).is_none() {
+        return None;
+    }
+    let digits = inner.trim().strip_suffix('%').unwrap_or(inner.trim());
+    if !digits.starts_with(|c: char| c.is_ascii_digit())
+        || !digits
+            .chars()
+            .all(|c| c.is_ascii_digit() || matches!(c, ',' | '.'))
+    {
+        return None;
+    }
+    Some(format!("{head}-{}{after}", inner.trim()))
 }
 
 /// 读出来的一个量。`n` 已经乘上了量级词；`scaled` 记下原文写没写量级词——换算到属性
@@ -1454,6 +1475,25 @@ mod tests {
             Some(json!("CTO"))
         );
         assert_eq!(normalize_attr_value("text", &json!([1])), None);
+    }
+
+    /// 财报表里括号里的数是负数：从前整格读不出来，这个值就丢了
+    #[test]
+    fn an_accounting_negative_is_read_as_negative() {
+        use serde_json::json;
+        let n = |s: &str| normalize_attr_value("number", &json!(s));
+        assert_eq!(n("(1,234)"), Some(json!(-1234.0)));
+        assert_eq!(n("$(1.2) billion"), Some(json!(-1200000000.0)));
+        assert_eq!(n("(12.5%)"), Some(json!(-12.5)));
+        assert_eq!(
+            attribute_value("number", Some("万元"), &json!("(350)万元")),
+            Some(json!(-350.0))
+        );
+        // 括号里不是数、括号前不是货币的，照旧读不出
+        assert_eq!(n("(see note 4)"), None);
+        assert_eq!(n("Q3 (12)"), None);
+        // 宾语判定不跟着变：点了名的「(1984)」仍是一个东西
+        assert!(!literal_object("(1984)", true));
     }
 }
 
