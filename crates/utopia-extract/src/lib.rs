@@ -492,14 +492,18 @@ fn scan_quantity(s: &str, strict: bool) -> Option<Quantity> {
             }
         }
     }
-    // 2. 数字：前导的 [-+0-9.,_]
+    // 2. 数字：前导的 [-+0-9.,_]，负号也可以是排版用的 U+2212
     let num_end = rest
         .char_indices()
-        .find(|(_, c)| !matches!(c, '0'..='9' | '.' | ',' | '_' | '-' | '+'))
+        .find(|(_, c)| !matches!(c, '0'..='9' | '.' | ',' | '_' | '-' | '+' | '−'))
         .map(|(i, _)| i)
         .unwrap_or(rest.len());
     let (num, after) = rest.split_at(num_end);
-    let cleaned: String = num.chars().filter(|c| !matches!(c, ',' | '_')).collect();
+    let cleaned: String = num
+        .chars()
+        .filter(|c| !matches!(c, ',' | '_'))
+        .map(|c| if c == '−' { '-' } else { c })
+        .collect();
     let mut n: f64 = cleaned.parse().ok()?;
     // 3. 数字后面：紧贴或空格隔开的量级词、货币词，逐个吃；吃不动的就是「其余」
     let mut tail = after.trim_start();
@@ -1215,6 +1219,19 @@ mod tests {
         assert_eq!(
             normalize_attr_value("number", &json!("52%")),
             Some(json!(52.0))
+        );
+        // 排版过的负号是 U+2212（维基百科、排版出来的 PDF 都这么写），读法同 `-`
+        assert_eq!(
+            normalize_attr_value("number", &json!("−3.2%")),
+            Some(json!(-3.2))
+        );
+        assert_eq!(
+            normalize_attr_value("number", &json!("−1,250")),
+            Some(json!(-1250.0))
+        );
+        assert_eq!(
+            attribute_value("number", Some("万元"), &json!("−2.3亿元")),
+            Some(json!(-23000.0))
         );
         // 原来就认的两种写法不受影响
         assert_eq!(
