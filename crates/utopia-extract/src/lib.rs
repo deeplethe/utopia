@@ -492,6 +492,15 @@ fn scan_quantity(s: &str, strict: bool) -> Option<Quantity> {
             }
         }
     }
+    // 紧贴数字的多字符货币：`HK$300 million`、`US$5 billion`、`RMB5000万`
+    if currency.is_none() {
+        if let Some(at) = rest.find(|c: char| c.is_ascii_digit()) {
+            if let Some(u) = currency_unit(&rest[..at]) {
+                currency = Some(u);
+                rest = &rest[at..];
+            }
+        }
+    }
     // 2. 数字：前导的 [-+0-9.,_]
     let num_end = rest
         .char_indices()
@@ -1454,6 +1463,21 @@ mod tests {
             Some(json!("CTO"))
         );
         assert_eq!(normalize_attr_value("text", &json!([1])), None);
+    }
+
+    /// 港股、中概股的财报把币种紧贴着数字写：从前整格读不出来，这个值就丢了
+    #[test]
+    fn a_currency_code_written_against_the_number_is_read() {
+        use serde_json::json;
+        let n = |s: &str| normalize_attr_value("number", &json!(s));
+        assert_eq!(n("HK$300 million"), Some(json!(300000000.0)));
+        assert_eq!(n("US$5 billion"), Some(json!(5000000000.0)));
+        let wan = |s: &str| attribute_value("number", Some("万元"), &json!(s));
+        assert_eq!(wan("RMB5000万"), Some(json!(5000.0)));
+        // 币种对不上照旧不换
+        assert_eq!(wan("US$5000万"), None);
+        // 型号不是货币加数
+        assert!(!literal_object("A320", true));
     }
 }
 
