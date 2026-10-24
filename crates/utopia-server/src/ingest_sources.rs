@@ -38,6 +38,12 @@ pub struct SyncStats {
     pub discovered: usize,
     pub queued_for_content: usize,
     pub content_terminal: usize,
+    /// 这一轮因为触顶而没走完，`since` 不能前进（#1212 / ADR 0072 的 Custom）
+    ///
+    /// 上一条成功那一轮的 `started_at` 是下一次的下界；本轮要是记 `ok`，下界就跨过了
+    /// 这批还没读到的条目，之后每一轮都够不着它们。这里标出来，`sync_source` 据此把
+    /// 游标留在原处，本轮的 created / updated 照旧记进审计。
+    pub incomplete: bool,
 }
 
 #[derive(Debug)]
@@ -67,6 +73,9 @@ impl SyncStats {
 pub async fn sync_source(state: &AppState, source_id: Uuid) -> anyhow::Result<()> {
     let source = utopia_store::sources::get(&state.pool, source_id).await?;
     let kind = SourceKind::parse(&source.kind);
+    // #1212 / ADR 0072：下界取自**上一条完整读完的那一轮**的开始。`last_successful_sync_start`
+    // 只认 `status = 'ok'`，而触顶那一轮我们写成 `failed`，所以游标自然留在触顶之前
+    // 那一轮，下一轮用同一条 since 重发。
     let since = match kind {
         Some(SourceKind::Custom | SourceKind::GithubIssues | SourceKind::JiraIssues) => {
             utopia_store::sources::last_successful_sync_start(&state.pool, source_id).await?
@@ -103,6 +112,42 @@ pub async fn sync_source(state: &AppState, source_id: Uuid) -> anyhow::Result<()
     };
 
     match outcome {
+        // 没走完这一轮：游标留在原处，但这一轮已经做成的部分照旧记进审计
+        // （ADR 0072 的「Keep the committed counts visible for incomplete runs」）。
+        // run 写 `failed` 而不是 `ok`：`last_successful_sync_start` 只认 `ok`，
+        // 所以下界不会被这一轮的 started_at 推过去。
+        Ok(stats) if stats.incomplete => {
+            let err = format!(
+                "read {MAX_NEW_PER_SYNC} items and stopped with more behind; \
+                 the checkpoint stays where it was, so the next sync resumes here"
+            );
+            utopia_store::sources::finish_run(
+                &state.pool,
+                run_id,
+                source_id,
+                Some(&err),
+                stats.created as i32,
+                stats.updated as i32,
+            )
+            .await?;
+            utopia_store::sources::finish_sync(
+                &state.pool,
+                source_id,
+                Some(&err),
+                stats.total() as i32,
+            )
+            .await?;
+            state.emit_source(source.kb_id);
+            tracing::warn!(
+                %source_id,
+                kind = %source.kind,
+                created = stats.created,
+                updated = stats.updated,
+                discovered = stats.discovered,
+                "来源同步未读完，游标不前进"
+            );
+            Ok(())
+        }
         Ok(stats) => {
             utopia_store::sources::finish_run(
                 &state.pool,
@@ -1302,9 +1347,30 @@ async fn sync_custom(
         .as_array()
         .ok_or_else(|| anyhow::anyhow!("Response is missing the items[] array"))?;
 
-    let mut stats = SyncStats::default();
+    // `discovered` 记响应里的条数，不是跑进来的条数——否则日志与警告会读成 `(0 > 200)`
+    let mut stats = SyncStats {
+        discovered: items.len(),
+        ..Default::default()
+    };
     let mut seen_keys: Vec<String> = Vec::new();
-    for item in items.iter().take(MAX_NEW_PER_SYNC) {
+    // **走完整个响应，只把有变的条目记在预算上**（ADR 0072 的 Custom 一节）。
+    // `take(MAX_NEW_PER_SYNC)` 是 ADR 明写在 Rejected 里的那条：它取走的永远是同样的
+    // 前 200 条，重试一万次也够不到第 201 条。这里每条都先问 `ingest_item`，只有
+    // `Created` / `Updated` 才计入 `changed`；`Unchanged` / `Moved` / `Duplicate`
+    // 让预算不被消耗，于是重试能把没变的前缀让过去、走到剩下的那几条。
+    let mut changed = 0usize;
+    for item in items.iter() {
+        // 预算满了就不再往下走——剩下的留在下一轮，且本轮 `incomplete` 让游标留在原处
+        if changed >= MAX_NEW_PER_SYNC {
+            stats.incomplete = true;
+            tracing::warn!(
+                source_id = %source.id,
+                imported = changed,
+                remaining = items.len().saturating_sub(seen_keys.len()),
+                "custom 本轮用满 {MAX_NEW_PER_SYNC} 条预算，还有条目没读到；游标不前进，下一轮接着走"
+            );
+            break;
+        }
         let Some(id) = item["id"].as_str().map(str::trim).filter(|s| !s.is_empty()) else {
             tracing::warn!(source_id = %source.id, "custom item 缺少 id，跳过");
             continue;
@@ -1336,6 +1402,10 @@ async fn sync_custom(
             doc_time,
         )
         .await?;
+        match action {
+            IngestAction::Created | IngestAction::Updated => changed += 1,
+            _ => {}
+        }
         stats.absorb(action);
         seen_keys.push(key);
     }
