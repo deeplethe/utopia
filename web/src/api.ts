@@ -953,10 +953,12 @@ export interface ConflictItem {
   old_subject: string;
   old_object: string | null;
   old_valid_from: string | null;
+  old_valid_from_precision: string | null;
   new_fact_id: string;
   new_subject: string;
   new_object: string | null;
   new_valid_from: string | null;
+  new_valid_from_precision: string | null;
   new_confidence: number;
 }
 
@@ -2560,9 +2562,11 @@ export const api = {
     kbId: string,
     conflictId: string,
     body: {
-      action: "close" | "keep" | "reject_new";
+      action: "close" | "retime_new" | "keep" | "reject_new";
       close_at?: string;
       close_at_precision?: string;
+      new_from?: string;
+      new_from_precision?: string;
     },
   ) =>
     request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/conflicts/${conflictId}`, {

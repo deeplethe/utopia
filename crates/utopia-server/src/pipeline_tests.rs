@@ -7,7 +7,7 @@
 //! 1. **每个分块拿到自己正文的向量。** 40 条、三批、四路并发，批次乱序完成，读回来逐条对。
 //!    附带：末尾不足一批的余数照样送，空文档一个请求都不发。
 //! 2. **数量对不上整批放弃**：少回一条，那一批一条都不写。
-//! 3. **上限守得住**：十二批、每批延时 150ms，同一时刻在飞的从不超过 EMBED_JOBS，
+//! 3. **上限守得住**：十二批、每批延时 400ms，同一时刻在飞的从不超过 EMBED_JOBS，
 //!    总耗时明显短于串行。
 //! 4. **一批失败文档不悬着**：走完整的 process_document，第二批回 500，文档落在 failed
 //!    并带原因，不是停在 embedding。
@@ -306,7 +306,7 @@ async fn a_batch_that_answers_with_the_wrong_count_is_abandoned_whole() -> anyho
 
 #[tokio::test]
 async fn the_embedding_gate_is_never_held_beyond_its_ceiling() -> anyhow::Result<()> {
-    let delay = Duration::from_millis(150);
+    let delay = Duration::from_millis(400);
     let Some(f) = fixture(FakeEmbed::new(delay)).await? else {
         return Ok(());
     };
@@ -336,9 +336,9 @@ async fn the_embedding_gate_is_never_held_beyond_its_ceiling() -> anyhow::Result
     );
     assert!(peak >= 2, "batches actually overlap; peak was {peak}");
     // 总耗时只用来兜底「闸门把批次完全串行化了」，真正守上限和重叠的是上面两条。
-    // 这条不能卡得太紧：理想 450ms，可 CI 的 runner 只有 4 个 vCPU，同一进程里还有
-    // 三百多个测试在并行，dev 上有一次跑到 1.03s——超过串行的一半就红了，而那次
-    // 峰值并发完全正常。放到串行的四分之三：完全串行是 1.8s，仍能一眼分辨
+    // 延时要盖过数据库写入的固定开销：150ms 在两核、proot PostgreSQL 上跑到 1.51s，
+    // 峰值和重叠都正常，却超过了 1.35s 门槛。400ms 让网络等待主导耗时；仍用串行
+    // 的四分之三作上限（3.6s 对 4.8s），真正串行的回归仍会失败。
     let serial = delay * batches as u32;
     assert!(
         elapsed < serial * 3 / 4,

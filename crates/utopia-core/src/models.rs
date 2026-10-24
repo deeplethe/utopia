@@ -1114,10 +1114,12 @@ pub struct ConflictView {
     pub old_subject: String,
     pub old_object: Option<String>,
     pub old_valid_from: Option<DateTime<Utc>>,
+    pub old_valid_from_precision: Option<String>,
     pub new_fact_id: Uuid,
     pub new_subject: String,
     pub new_object: Option<String>,
     pub new_valid_from: Option<DateTime<Utc>>,
+    pub new_valid_from_precision: Option<String>,
     pub new_confidence: f32,
 }
 

@@ -26,7 +26,7 @@ import {
   type ReviewSide,
   type ViolationResolution,
 } from "../api";
-import { parseDateInput } from "../time";
+import { fmtTime, parseDateInput } from "../time";
 import { PendingFactRow, useCanDecide } from "./PendingFacts";
 import { ReviewOverview } from "./ReviewOverview";
 import { S } from "../i18n";
@@ -305,7 +305,7 @@ function ConflictRow({
   conflict: ConflictItem;
   busy: boolean;
   onResolve: (
-    action: "close" | "keep" | "reject_new",
+    action: "close" | "retime_new" | "keep" | "reject_new",
     closeAt?: string,
     closeAtPrecision?: string,
   ) => void;
@@ -316,6 +316,7 @@ function ConflictRow({
   // 写多少位就是多少精度（time.ts）：「2023-06」闭合在那个月，不编一个 1 日
   const closeParsed = parseDateInput(closeAt);
   const closeAtIso = closeParsed?.iso;
+  const invalidDate = closeAt.trim() !== "" && !closeParsed;
 
   return (
     <div className="glass rounded-panel p-4">
@@ -329,7 +330,7 @@ function ConflictRow({
         </span>
         {c.old_valid_from && (
           <span className="u-num text-small text-ink-2">
-            ({S.review.conflictSince(c.old_valid_from.slice(0, 10))})
+            ({S.review.conflictSince(fmtTime(c.old_valid_from, c.old_valid_from_precision)!)})
           </span>
         )}
         <span className="text-small text-ink-2">{S.review.conflictVs}</span>
@@ -342,7 +343,7 @@ function ConflictRow({
         </span>
         {c.new_valid_from && (
           <span className="u-num text-small text-ink-2">
-            ({S.review.conflictSince(c.new_valid_from.slice(0, 10))})
+            ({S.review.conflictSince(fmtTime(c.new_valid_from, c.new_valid_from_precision)!)})
           </span>
         )}
         <Status tone="warn" className="ml-auto shrink-0">
@@ -356,20 +357,27 @@ function ConflictRow({
         >
           {S.review.keepBoth}
         </Button>
-        {needsDate && (
-          <Input size="sm" className="u-num w-28 text-center"
-            placeholder={S.review.closeAtPlaceholder}
-            value={closeAt}
-            onChange={(e) => setCloseAt(e.target.value)}
-          />
-        )}
+        <Input size="sm" className="u-num w-28 text-center"
+          aria-label={S.review.conflictDate}
+          placeholder={S.review.closeAtPlaceholder}
+          value={closeAt}
+          onChange={(e) => setCloseAt(e.target.value)}
+        />
         <Button variant="secondary" size="sm"
-          disabled={busy || (needsDate && !closeAtIso)}
+          disabled={busy || invalidDate || (needsDate && !closeAtIso)}
           onClick={() => onResolve("close", closeAtIso, closeParsed?.precision)}
         >
-          {c.new_valid_from
-            ? S.review.closeOldAt(c.new_valid_from.slice(0, 10))
-            : S.review.closeOld}
+          {closeParsed
+            ? S.review.closeOldAt(fmtTime(closeParsed.iso, closeParsed.precision)!)
+            : c.new_valid_from
+              ? S.review.closeOldAt(fmtTime(c.new_valid_from, c.new_valid_from_precision)!)
+              : S.review.closeOld}
+        </Button>
+        <Button variant="secondary" size="sm"
+          disabled={busy || !closeParsed}
+          onClick={() => onResolve("retime_new", closeAtIso, closeParsed?.precision)}
+        >
+          {S.review.retimeNew}
         </Button>
         <Button variant="danger" size="sm"
           disabled={busy}
@@ -649,6 +657,7 @@ const DECISION_TONE: Record<string, ChipTone> = {
   "conflict.reject_new": "danger",
   "fact.close": "info",
   "conflict.close_old": "info",
+  "conflict.retime_new": "info",
   "conflict.keep_both": "neutral",
   "merge.revert": "warn",
 };
@@ -684,9 +693,12 @@ function DecisionRow({ e }: { e: ReviewHistoryEvent }) {
           {Math.round(d.confidence * 100)}%
         </span>
       )}
-      {typeof d.valid_to === "string" && (
+      {typeof (d.new_from ?? d.close_at ?? d.valid_to) === "string" && (
         <span className="u-num text-small text-ink-2 shrink-0">
-          → {d.valid_to.slice(0, 10)}
+          → {fmtTime(
+            d.new_from ?? d.close_at ?? d.valid_to,
+            d.new_from_precision ?? d.close_at_precision ?? d.valid_to_precision,
+          )}
         </span>
       )}
       <span className="ml-auto shrink-0 text-small text-ink-2">
@@ -1572,14 +1584,16 @@ export function Review() {
       closeAtPrecision,
     }: {
       id: string;
-      action: "close" | "keep" | "reject_new";
+      action: "close" | "retime_new" | "keep" | "reject_new";
       closeAt?: string;
       closeAtPrecision?: string;
     }) =>
       api.resolveConflict(kb!.id, id, {
         action,
-        close_at: closeAt,
-        close_at_precision: closeAtPrecision,
+        close_at: action === "close" ? closeAt : undefined,
+        close_at_precision: action === "close" ? closeAtPrecision : undefined,
+        new_from: action === "retime_new" ? closeAt : undefined,
+        new_from_precision: action === "retime_new" ? closeAtPrecision : undefined,
       }),
     onError: (e) => toast.error(e instanceof Error ? e.message : String(e)),
     onSettled: invalidate,
