@@ -55,6 +55,8 @@ pub struct UpdateKbReq {
     /// 打开那一刻就排一轮，关掉后任务在两簇之间看到就停。见 docs/decisions/0025
     #[serde(default)]
     pub governance: Option<bool>,
+    #[serde(default)]
+    pub auto_confirm_mappings: Option<bool>,
     /// 人写的数据约定（「测试单不算数」这类 schema 里没有的规则），问数与探索的
     /// 提示词都读它。探索生成的描述在另一个字段，PATCH 不了。见 #570
     #[serde(default)]
@@ -122,6 +124,7 @@ pub async fn create(
             None,
             None,
             Some(v),
+            None,
             None,
             None,
             None,
@@ -210,7 +213,29 @@ pub async fn update(
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateKbReq>,
 ) -> ApiResult<Json<KnowledgeBase>> {
-    kb_with_role(&state, &user, id, Role::Admin).await?;
+    // Editors may opt in; a mixed request still needs the usual Admin role.
+    let setting_only = req.auto_confirm_mappings.is_some()
+        && req.name.is_none()
+        && req.description.is_none()
+        && req.visibility.is_none()
+        && req.auto_extend_ontology.is_none()
+        && req.ontology_lang.is_none()
+        && req.materialize_inferences.is_none()
+        && req.inference_interval_minutes.is_none()
+        && req.auto_type_resolution.is_none()
+        && req.governance.is_none()
+        && req.data_conventions.is_none();
+    kb_with_role(
+        &state,
+        &user,
+        id,
+        if setting_only {
+            Role::Editor
+        } else {
+            Role::Admin
+        },
+    )
+    .await?;
     let kb = utopia_store::kbs::update(
         &state.pool,
         id,
@@ -224,6 +249,7 @@ pub async fn update(
         req.auto_type_resolution,
         req.governance,
         req.data_conventions.as_deref().map(str::trim),
+        req.auto_confirm_mappings,
     )
     .await?;
     // 打开开关就自动开始处理：排一轮，同库已排着的不重复
@@ -244,6 +270,7 @@ pub async fn update(
             "name": req.name,
             "visibility": req.visibility,
             "governance": req.governance,
+            "auto_confirm_mappings": req.auto_confirm_mappings,
             "data_conventions": req.data_conventions.is_some(),
         }),
     )
@@ -495,4 +522,83 @@ pub async fn list_packs(AuthUser(_): AuthUser) -> ApiResult<Json<serde_json::Val
         })
         .collect();
     Ok(Json(json!({ "packs": packs })))
+}
+
+#[cfg(test)]
+mod mapping_confirmation_tests {
+    use axum::body::{to_bytes, Body};
+    use axum::http::{Request, StatusCode};
+    use serde_json::json;
+    use std::sync::Arc;
+    use tower::ServiceExt;
+    use uuid::Uuid;
+
+    #[tokio::test]
+    async fn an_editor_can_opt_in_but_other_settings_still_need_an_admin() -> anyhow::Result<()> {
+        let Some(url) = utopia_store::test_db::url() else {
+            return Ok(());
+        };
+        let pool = sqlx::PgPool::connect(&url).await?;
+        utopia_store::db::migrate(&pool).await?;
+        let [org, ws, kb, other, admin, editor, viewer] = std::array::from_fn(|_| Uuid::now_v7());
+        sqlx::raw_sql(&format!(
+            "INSERT INTO organizations(id,name) VALUES ('{org}','auto-mapping-route');
+             INSERT INTO workspaces(id,org_id,name) VALUES ('{ws}','{org}','auto-mapping-route');
+             INSERT INTO knowledge_bases(id,workspace_id,name,visibility) VALUES
+               ('{kb}','{ws}','mappings','restricted'), ('{other}','{ws}','other','restricted');
+             INSERT INTO users(id,org_id,email,display_name,password_hash) VALUES
+               ('{admin}','{org}','{admin}@map.test','Admin','unused'),
+               ('{editor}','{org}','{editor}@map.test','Editor','unused'),
+               ('{viewer}','{org}','{viewer}@map.test','Viewer','unused');
+             INSERT INTO kb_members(kb_id,user_id,role) VALUES
+               ('{kb}','{admin}','admin'), ('{kb}','{editor}','editor'), ('{kb}','{viewer}','viewer');"
+        )).execute(&pool).await?;
+        let result = async {
+            let dir = tempfile::tempdir()?;
+            let cfg = utopia_core::config::AppConfig {
+                data_dir: dir.path().to_string_lossy().into_owned(), ..Default::default()
+            };
+            let state = crate::state::AppState::new(pool.clone(), &cfg,
+                Arc::new(utopia_search::SearchIndex::open(&dir.path().join("search"))?), "test-only".into());
+            let patch = |user, base, body: serde_json::Value| {
+                let state = state.clone();
+                let cfg = cfg.clone();
+                async move {
+                    let token = crate::auth::issue_token(&state, user)?;
+                    let response = crate::api::router(state, &cfg).oneshot(
+                        Request::patch(format!("/api/v1/kbs/{base}"))
+                            .header("authorization", format!("Bearer {token}"))
+                            .header("content-type", "application/json")
+                            .body(Body::from(body.to_string()))?
+                    ).await?;
+                    let status = response.status();
+                    let body: serde_json::Value = serde_json::from_slice(&to_bytes(response.into_body(), 1024*1024).await?)?;
+                    anyhow::Ok((status, body))
+                }
+            };
+            assert!(!utopia_store::kbs::get(&pool, kb).await?.auto_confirm_mappings);
+            let (status, body) = patch(editor, kb, json!({"auto_confirm_mappings": true})).await?;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(body["auto_confirm_mappings"], true);
+            assert_eq!(patch(viewer, kb, json!({"auto_confirm_mappings": false})).await?.0, StatusCode::FORBIDDEN);
+            assert_eq!(patch(editor, other, json!({"auto_confirm_mappings": true})).await?.0, StatusCode::NOT_FOUND);
+            assert_eq!(patch(editor, kb, json!({"auto_confirm_mappings": false, "name": "Changed"})).await?.0, StatusCode::FORBIDDEN);
+            assert!(utopia_store::kbs::get(&pool, kb).await?.auto_confirm_mappings);
+            assert_eq!(patch(admin, kb, json!({"description": "Changed"})).await?.0, StatusCode::OK);
+            assert!(utopia_store::kbs::get(&pool, kb).await?.auto_confirm_mappings);
+            assert_eq!(patch(editor, kb, json!({"auto_confirm_mappings": false})).await?.0, StatusCode::OK);
+            let events: Vec<serde_json::Value> = sqlx::query_scalar(
+                "SELECT detail FROM audit_events WHERE kb_id = $1 AND actor_id = $2 AND action = 'kb.updated' ORDER BY created_at"
+            ).bind(kb).bind(editor).fetch_all(&pool).await?;
+            assert_eq!(events.len(), 2);
+            assert_eq!(events[0]["auto_confirm_mappings"], true);
+            assert_eq!(events[1]["auto_confirm_mappings"], false);
+            anyhow::Ok(())
+        }.await;
+        sqlx::query("DELETE FROM knowledge_bases WHERE id = ANY($1)")
+            .bind(&[kb, other][..])
+            .execute(&pool)
+            .await?;
+        result
+    }
 }

@@ -1,13 +1,13 @@
 //! 问数语义映射的 Agentic 探索：读挂载源的 schema + KB 既有概念，让 LLM 提议
 //! "业务概念（Metric/Dimension 实体）→ 数据资产定义" 的映射。
 //!
-//! 提议写进 `concept_mappings`（status = proposed）→ Review 页自成一档，
-//! Confirm / Reject 之后 status 变 confirmed，问数只读确认过的那些。
+//! 提议写进 `concept_mappings`，数据映射页确认或拒绝；问数只读已确认的定义。
+//! 库可选择自动确认有置信度与理由支撑的定义（0011，#504，默认关）。
 //!
 //! **从前它是一条 0.6 置信的 `mapped_to` 事实**,借「低置信事实」那一档露面。
 //! 搬出来的理由见 0011:它不是关于世界的断言,是配置——而「确认」这个动作
 //! 当时是 `UPDATE facts SET confidence = 1.0`,原地改一张不许原地改的表。
-//! agent 只提议，口径生效权在人——与消解"宁分勿合"同一哲学。
+//! 人的决定与修改不会被后续探索覆盖；自动确认保留模型的理由与审计。
 
 use crate::llm_util;
 use crate::state::AppState;
@@ -311,9 +311,11 @@ async fn explore(state: &AppState, kb_id: Uuid, run: Uuid) -> anyhow::Result<()>
          \"definition\": {{\"table\": \"schema.table\", \"expr\": \"SQL expression\", \
          \"sql\": \"full SELECT if joins are needed (optional)\", \"unit\": \"optional\"}}, \
          \"summary\": \"one line: source + expression, shown to reviewers\", \
-         \"rationale\": \"why this mapping, citing column comments\"}}\n\
+         \"confidence\": 0.0, \"rationale\": \"why this mapping, citing column comments\"}}\n\
          Metrics are aggregatable quantities (use sum/count/avg in expr); dimensions are \
-         group-by columns. Propose at most {cap}, only well-grounded ones.",
+         group-by columns. Confidence is a number from 0 to 1 measuring whether the exact \
+         definition follows the schema and stated conventions; reduce it when business meaning \
+         is uncertain. Propose at most {cap}, only well-grounded ones.",
         if existing_names.is_empty() {
             "(none)".into()
         } else {
@@ -428,7 +430,7 @@ async fn explore(state: &AppState, kb_id: Uuid, run: Uuid) -> anyhow::Result<()>
         if let Some(t) = s("table") {
             covered.insert(t);
         }
-        let (_, written) = utopia_store::mappings::propose(
+        let (_, written) = utopia_store::mappings::propose_with_evidence(
             &state.pool,
             kb_id,
             resolved.entity_id,
@@ -440,6 +442,8 @@ async fn explore(state: &AppState, kb_id: Uuid, run: Uuid) -> anyhow::Result<()>
             // summary 是给人看的那句：Review 列表与问数 prompt 都靠它
             p["summary"].as_str().or(def["summary"].as_str()),
             def["derived"].as_bool().unwrap_or(false),
+            p["confidence"].as_f64(),
+            p["rationale"].as_str(),
         )
         .await?;
         if written {
@@ -618,5 +622,121 @@ mod tests {
         // 一张表都没扫见（源连不上、schema 是空的）也不该是 0——
         // **0 条上限会把「连不上」变成「模型什么都没提」**，两件事又混在一起了
         assert_eq!(proposal_cap(0), 12);
+    }
+    #[tokio::test]
+    async fn exploration_keeps_the_models_evidence_and_confirms_only_after_opt_in(
+    ) -> anyhow::Result<()> {
+        use serde_json::json;
+        use std::sync::Arc;
+        use uuid::Uuid;
+        use wiremock::{
+            matchers::{body_string_contains, method, path},
+            Mock, MockServer, ResponseTemplate,
+        };
+        let Some(url) = utopia_store::test_db::url() else {
+            return Ok(());
+        };
+        let pool = sqlx::PgPool::connect(&url).await?;
+        utopia_store::db::migrate(&pool).await?;
+        let [org, ws, kb, user] = std::array::from_fn(|_| Uuid::now_v7());
+        sqlx::raw_sql(&format!(
+            "INSERT INTO organizations(id,name) VALUES ('{org}','mapping-exploration');
+             INSERT INTO workspaces(id,org_id,name) VALUES ('{ws}','{org}','mapping-exploration');
+             INSERT INTO knowledge_bases(id,workspace_id,name) VALUES ('{kb}','{ws}','mapping-exploration');
+             INSERT INTO users(id,org_id,email,display_name,password_hash)
+               VALUES ('{user}','{org}','{user}@mapping.test','Editor','unused');"
+        )).execute(&pool).await?;
+        let model = MockServer::start().await;
+        let proposals = json!([{"name":"Source rows", "kind":"metric", "source":"test",
+            "definition":{"table":"public.entities", "expr":"COUNT(*)"},
+            "confidence":0.8, "rationale":"Count each entity row"}])
+        .to_string();
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(body_string_contains("ONLY a JSON array"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "choices":[{"message":{"role":"assistant","content":proposals}}]
+            })))
+            .mount(&model)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .and(body_string_contains("ONLY a JSON object"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "choices":[{"message":{"role":"assistant","content":"{}"}}]
+            })))
+            .mount(&model)
+            .await;
+        let source = utopia_store::datasources::create(
+            &pool,
+            &format!("mapping-{}", kb.simple()),
+            "postgres",
+            &url,
+            user,
+        )
+        .await?;
+        let result = async {
+            sqlx::query("INSERT INTO kb_data_sources(kb_id,data_source_id) VALUES ($1,$2)")
+                .bind(kb)
+                .bind(source)
+                .execute(&pool)
+                .await?;
+            utopia_store::settings::upsert(
+                &pool,
+                ws,
+                Some(&model.uri()),
+                None,
+                Some("scripted"),
+                None,
+                None,
+                None,
+                None,
+            )
+            .await?;
+            let dir = tempfile::tempdir()?;
+            let cfg = utopia_core::config::AppConfig {
+                data_dir: dir.path().to_string_lossy().into_owned(),
+                ..Default::default()
+            };
+            let state = crate::state::AppState::new(
+                pool.clone(),
+                &cfg,
+                Arc::new(utopia_search::SearchIndex::open(
+                    &dir.path().join("search"),
+                )?),
+                "test-only".into(),
+            );
+            super::explore_mappings(&state, kb).await?;
+            let pending = utopia_store::mappings::proposed(&pool, kb, 10, 0)
+                .await?
+                .remove(0);
+            assert_eq!(pending.confidence, Some(0.8));
+            assert_eq!(pending.rationale.as_deref(), Some("Count each entity row"));
+            sqlx::query("UPDATE knowledge_bases SET auto_confirm_mappings = true WHERE id = $1")
+                .bind(kb)
+                .execute(&pool)
+                .await?;
+            super::explore_mappings(&state, kb).await?;
+            let effective = utopia_store::mappings::confirmed(&pool, kb, 10)
+                .await?
+                .remove(0);
+            assert_eq!(effective.id, pending.id);
+            assert_eq!(effective.decided_by, None);
+            let requests = model.received_requests().await.unwrap();
+            let prompt = requests
+                .iter()
+                .find(|r| String::from_utf8_lossy(&r.body).contains("ONLY a JSON array"))
+                .unwrap();
+            assert!(String::from_utf8_lossy(&prompt.body).contains("confidence"));
+            assert_eq!(requests.len(), 4);
+            anyhow::Ok(())
+        }
+        .await;
+        sqlx::query("DELETE FROM knowledge_bases WHERE id = $1")
+            .bind(kb)
+            .execute(&pool)
+            .await?;
+        utopia_store::datasources::delete(&pool, source).await?;
+        result
     }
 }

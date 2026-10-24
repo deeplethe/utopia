@@ -187,3 +187,130 @@ async fn a_rejected_mapping_does_not_come_back() -> anyhow::Result<()> {
         .await?;
     run
 }
+
+#[tokio::test]
+async fn automatic_definitions_refresh_until_a_person_decides() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    utopia_store::db::migrate(&pool).await?;
+    let (org, kb, ent) = fixture(&pool).await?;
+    let run = async {
+        let user = Uuid::now_v7();
+        sqlx::query("INSERT INTO users (id, org_id, email, display_name, password_hash)
+                    VALUES ($1, $2, $1 || '@auto-map.test', 'Editor', 'unused')")
+            .bind(user).bind(org).execute(&pool).await?;
+        let p = |confidence, rationale, expr| utopia_store::mappings::propose_with_evidence(
+            &pool, kb, ent, "warehouse", Some("orders"), expr, None, None,
+            Some("Revenue"), false, confidence, rationale);
+        assert!(!utopia_store::kbs::get(&pool, kb).await?.auto_confirm_mappings);
+        let (id, _) = p(Some(1.0), Some("The schema states revenue"), Some("SUM(amount)")).await?;
+        assert_eq!(utopia_store::mappings::proposed(&pool, kb, 10, 0).await?.len(), 1);
+        sqlx::query("UPDATE knowledge_bases SET auto_confirm_mappings = true WHERE id = $1")
+            .bind(kb).execute(&pool).await?;
+        // Neither missing/invalid evidence nor a table name on its own is enough to
+        // turn configuration on. Boundary 0.8 is accepted in the next write.
+        for (conf, reason, expr) in [
+            (None, Some("Grounded"), Some("SUM(amount)")),
+            (Some(0.79), Some("Grounded"), Some("SUM(amount)")),
+            (Some(f64::NAN), Some("Grounded"), Some("SUM(amount)")),
+            (Some(1.1), Some("Grounded"), Some("SUM(amount)")),
+            (Some(0.9), Some("  "), Some("SUM(amount)")),
+            (Some(0.9), Some("Grounded"), None),
+        ] {
+            p(conf, reason, expr).await?;
+            assert!(utopia_store::mappings::confirmed(&pool, kb, 10).await?.is_empty());
+        }
+        // The trigger is scoped to this fixture's base, so other tests can run alongside it.
+        let fault = format!("auto_mapping_fault_{}", kb.simple());
+        sqlx::raw_sql(&format!(
+            "CREATE FUNCTION {fault}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+               IF NEW.kb_id = '{kb}' AND NEW.action = 'mapping.auto_confirmed' THEN
+                 RAISE EXCEPTION 'injected mapping audit failure'; END IF; RETURN NEW; END $$;
+             CREATE TRIGGER {fault} BEFORE INSERT ON audit_events
+               FOR EACH ROW EXECUTE FUNCTION {fault}();"
+        )).execute(&pool).await?;
+        let failed = p(Some(0.9), Some("Grounded"), Some("SUM(amount)")).await;
+        sqlx::raw_sql(&format!("DROP TRIGGER {fault} ON audit_events; DROP FUNCTION {fault}();"))
+            .execute(&pool).await?;
+        assert!(failed.is_err());
+        assert!(utopia_store::mappings::confirmed(&pool, kb, 10).await?.is_empty());
+        let pending = utopia_store::mappings::proposed(&pool, kb, 10, 0).await?.remove(0);
+        assert_eq!(pending.expr, None, "failed auto write must restore the preceding proposal");
+        assert_eq!(p(Some(0.8), Some("  The schema states revenue  "), Some("SUM(amount)")).await?, (id, true));
+        let auto = utopia_store::mappings::confirmed(&pool, kb, 10).await?.remove(0);
+        assert_eq!(auto.confidence, Some(0.8));
+        assert_eq!(auto.rationale.as_deref(), Some("The schema states revenue"));
+        assert_eq!(auto.decided_by, None);
+        assert_eq!(utopia_store::mappings::page(&pool, kb, None, None, 10, 0).await?.0[0].rationale, auto.rationale);
+        assert_eq!(utopia_store::mappings::by_ids(&pool, kb, &[id]).await?[0].confidence, Some(0.8));
+        let events: Vec<(Option<Uuid>, serde_json::Value)> = sqlx::query_as(
+            "SELECT actor_id, detail FROM audit_events WHERE target_id = $1 AND action = 'mapping.auto_confirmed'"
+        ).bind(id).fetch_all(&pool).await?;
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, None);
+        assert_eq!(events[0].1["definition"]["expr"], "SUM(amount)");
+        assert_eq!(p(Some(0.9), Some("Updated schema"), Some("SUM(net_amount)")).await?, (id, true));
+        assert_eq!(utopia_store::mappings::confirmed(&pool, kb, 10).await?[0].expr.as_deref(), Some("SUM(net_amount)"));
+        p(Some(0.7), Some("Uncertain"), Some("SUM(amount)")).await?;
+        assert!(utopia_store::mappings::confirmed(&pool, kb, 10).await?.is_empty());
+        p(Some(0.9), Some("Grounded"), Some("SUM(amount)")).await?;
+        sqlx::query("UPDATE knowledge_bases SET auto_confirm_mappings = false WHERE id = $1")
+            .bind(kb).execute(&pool).await?;
+        assert_eq!(utopia_store::mappings::confirmed(&pool, kb, 10).await?.len(), 1);
+        p(Some(0.9), Some("Grounded"), Some("SUM(amount)")).await?;
+        assert!(utopia_store::mappings::confirmed(&pool, kb, 10).await?.is_empty());
+        sqlx::query("UPDATE knowledge_bases SET auto_confirm_mappings = true WHERE id = $1")
+            .bind(kb).execute(&pool).await?;
+        // Editing a pending proposal also takes ownership. Its status remains pending.
+        utopia_store::mappings::revise(&pool, kb, id, Some("orders"), Some("SUM(human_amount)"),
+            None, None, None, false, user).await?;
+        assert_eq!(p(Some(1.0), Some("Grounded"), Some("SUM(amount)")).await?, (id, false));
+        let human = utopia_store::mappings::proposed(&pool, kb, 10, 0).await?.remove(0);
+        assert_eq!(human.expr.as_deref(), Some("SUM(human_amount)"));
+        assert_eq!(human.decided_by, Some(user));
+        assert_eq!(human.confidence, None, "model evidence described the preceding definition");
+        assert_eq!(human.rationale, None);
+        let revisions = utopia_store::mappings::revisions(&pool, kb, id).await?;
+        assert_eq!(revisions.len(), 1);
+        assert_eq!(revisions[0].before["decided_by"], serde_json::Value::Null);
+        for status in ["confirmed", "rejected"] {
+            utopia_store::mappings::decide(&pool, kb, id, status, user).await?;
+            assert_eq!(p(Some(1.0), Some("Grounded"), Some("SUM(amount)")).await?, (id, false));
+        }
+        anyhow::Ok(())
+    }.await;
+    sqlx::query("DELETE FROM knowledge_bases WHERE id = $1")
+        .bind(kb)
+        .execute(&pool)
+        .await?;
+    run
+}
+
+#[tokio::test]
+async fn concurrent_automatic_proposals_return_the_stored_id() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let (_, kb, ent) = fixture(&pool).await?;
+    let run = async {
+        sqlx::query("UPDATE knowledge_bases SET auto_confirm_mappings = true WHERE id = $1")
+            .bind(kb).execute(&pool).await?;
+        let p = || utopia_store::mappings::propose_with_evidence(&pool, kb, ent, "warehouse",
+            None, Some("COUNT(*)"), None, None, None, false, Some(0.9), Some("Count the rows"));
+        let (a, b) = tokio::join!(p(), p());
+        let (a, b) = (a?, b?);
+        assert_eq!(a, b);
+        let ids: Vec<Uuid> = sqlx::query_scalar("SELECT target_id FROM audit_events WHERE kb_id = $1 AND action = 'mapping.auto_confirmed'")
+            .bind(kb).fetch_all(&pool).await?;
+        assert_eq!(ids, vec![a.0, a.0]);
+        anyhow::Ok(())
+    }.await;
+    sqlx::query("DELETE FROM knowledge_bases WHERE id = $1")
+        .bind(kb)
+        .execute(&pool)
+        .await?;
+    run
+}

@@ -1958,6 +1958,9 @@ export const en = {
     colSource: "Source",
     colDefinition: "How it is computed",
     colStatus: "Status",
+    autoConfirmed: "Automatically confirmed",
+    confidence: (score: number) => `Confidence: ${Math.round(score * 100)}%`,
+    rationale: (text: string) => `Rationale: ${text}`,
     derivedBadge: "Derived",
     noDefinition: "(empty)",
     approve: "Confirm",
@@ -2410,6 +2413,8 @@ export const en = {
     autoResolveTypes: "Resolve entity types after extraction",
     autoResolveTypesNote:
       "After each document is extracted, run a round of type resolution on entities the engine has not looked at yet. Only refinements within the current class are applied on their own — a re-classification across the tree still waits for you on the Ontology page. Every batch is listed there and can be undone.",
+    autoConfirmMappings: "Automatically confirm mapping proposals",
+    autoConfirmMappingsNote: "Off by default. On exploration, definitions with confidence of at least 80%, a rationale and an expression or SQL become effective immediately. A wrong definition can produce a plausible wrong answer. Human decisions and edits are kept. Turning this off leaves existing definitions in place; refreshed automatic definitions return to review.",
     governance: "Let the agent work the duplicates queue",
     governanceNote:
       "First in, first out. Before deciding a pair the agent reads what people in this base decided on the same names and the same kinds of pairs. It merges only where that history supports it, keeps apart on confidence, and leaves a proposal for everything else. Every decision is listed under Agent on the Review page and can be reverted. Turning this off stops the queue.",

@@ -54,7 +54,7 @@ describe("record moments on the account pages", () => {
     const kb: Kb = {
       id: "kb1", workspace_id: "ws", name: "Research", kind: "knowledge", description: null,
       visibility: "restricted", is_default: false, auto_extend_ontology: true,
-      materialize_inferences: false, auto_type_resolution: false, governance: false,
+      materialize_inferences: false, auto_type_resolution: false, governance: false, auto_confirm_mappings: false,
       governance_since: null, inference_interval_minutes: 60, last_inference_at: null,
       ontology_lang: "en",
     };

@@ -70,6 +70,27 @@ rebuilding all three.
 
 ## Revisions
 
+- 2026-10-20 (#504): a base may opt into automatic confirmation of exploration's
+  definitions with `auto_confirm_mappings`, default off and independent of governance.
+  An Editor may change this setting; other base settings keep their existing Admin gate.
+  Exploration keeps `confidence` (0–1) and `rationale` separately from status. A score
+  of at least 0.8, a nonempty rationale and an expression or SQL definition are required;
+  missing or invalid evidence leaves the proposal waiting for a person. This threshold
+  is an opt-in gate, not a measured guarantee of correctness or a reason to enable it by
+  default. No live-model accuracy improvement is claimed.
+  A confirmed row with no `decided_by` is automatic. Exploration may refresh it and
+  re-evaluates the gate on each write: weaker evidence or a disabled switch returns that
+  refreshed definition to proposed. Turning the switch off alone does not revoke existing
+  definitions. Confirming, rejecting or revising a row records the person and protects it
+  from further exploration, including a person editing a still-pending proposal. An edit
+  clears model evidence from the current definition; its history snapshot keeps the evidence
+  for the preceding definition.
+  The upsert judges that protection while holding the row lock; human revision locks the
+  row before taking its history snapshot. Each automatic write and its system audit event
+  (`mapping.auto_confirmed`, including the definition and evidence) commit together, so
+  audit failure cannot leave an unrecorded effective definition. Readers expose the evidence
+  and decision actor, and the mappings page marks automatic definitions. This applies to
+  the existing concept definitions; table-alignment adoption in 0036 remains its own decision.
 - 2026-09-02: the status line said "planned" while the record arrived in the same commit as
   its implementation. The status line is the implementing PR's responsibility; now a README
   rule.

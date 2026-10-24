@@ -33,35 +33,65 @@ pub async fn propose(
     summary: Option<&str>,
     derived: bool,
 ) -> AppResult<(Uuid, bool)> {
-    // **`DO UPDATE ... WHERE` 不满足时 `RETURNING` 一行都不返回。**
-    //
-    // 这是 Postgres 的实情而不是直觉：条件挡住更新，那一行就不算被这条语句
-    // 动过，于是也不出现在 RETURNING 里。测试当场撞上——第二次提议一条已被
-    // 拒绝的映射，`fetch_one` 报「no rows returned」。
-    //
-    // 所以把 id 单独查出来：更新与否是一回事，「这条映射是哪一行」是另一回事。
-    let existing: Option<(Uuid,)> = sqlx::query_as(
-        "SELECT id FROM concept_mappings
-          WHERE kb_id = $1 AND concept_id = $2 AND source = $3",
+    propose_with_evidence(
+        pool, kb_id, concept_id, source, table_name, expr, sql, unit, summary, derived, None, None,
+    )
+    .await
+}
+
+/// Re-evaluate the opt-in on every exploration write. An automatic definition can improve;
+/// a human decision (even an edit of a pending proposal) cannot be replaced by exploration.
+#[allow(clippy::too_many_arguments)]
+pub async fn propose_with_evidence(
+    pool: &PgPool,
+    kb_id: Uuid,
+    concept_id: Uuid,
+    source: &str,
+    table_name: Option<&str>,
+    expr: Option<&str>,
+    sql: Option<&str>,
+    unit: Option<&str>,
+    summary: Option<&str>,
+    derived: bool,
+    confidence: Option<f64>,
+    rationale: Option<&str>,
+) -> AppResult<(Uuid, bool)> {
+    let confidence = confidence.filter(|c| c.is_finite() && (0.0..=1.0).contains(c));
+    let rationale = rationale.map(str::trim).filter(|s| !s.is_empty());
+    let mut tx = pool.begin().await?;
+    // A switch changed during a long model call must apply to its eventual write. SHARE
+    // also orders this write against a concurrent opt-out without serializing explorations.
+    let enabled: bool = sqlx::query_scalar(
+        "SELECT auto_confirm_mappings FROM knowledge_bases WHERE id = $1 FOR SHARE",
     )
     .bind(kb_id)
-    .bind(concept_id)
-    .bind(source)
-    .fetch_optional(pool)
+    .fetch_one(&mut *tx)
     .await?;
-    let id = existing.map(|(i,)| i).unwrap_or_else(Uuid::now_v7);
-    let written = sqlx::query(
+    let automatic = enabled
+        && confidence.is_some_and(|c| c >= 0.8)
+        && rationale.is_some()
+        && [expr, sql]
+            .into_iter()
+            .flatten()
+            .any(|s| !s.trim().is_empty());
+    let status = if automatic { "confirmed" } else { "proposed" };
+    let written: Option<Uuid> = sqlx::query_scalar(
         "INSERT INTO concept_mappings
-             (id, kb_id, concept_id, source, table_name, expr, sql, unit, summary, derived)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+             (id, kb_id, concept_id, source, table_name, expr, sql, unit, summary, derived,
+              confidence, rationale, status, decided_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+                 CASE WHEN $13 = 'confirmed' THEN now() END)
          ON CONFLICT (kb_id, concept_id, source) DO UPDATE
            SET table_name = EXCLUDED.table_name, expr = EXCLUDED.expr,
                sql = EXCLUDED.sql, unit = EXCLUDED.unit,
                summary = EXCLUDED.summary, derived = EXCLUDED.derived,
-               updated_at = now()
-           WHERE concept_mappings.status = 'proposed'",
+               confidence = EXCLUDED.confidence, rationale = EXCLUDED.rationale,
+               status = EXCLUDED.status, decided_at = EXCLUDED.decided_at, updated_at = now()
+           WHERE concept_mappings.decided_by IS NULL
+             AND concept_mappings.status IN ('proposed', 'confirmed')
+         RETURNING id",
     )
-    .bind(id)
+    .bind(Uuid::now_v7())
     .bind(kb_id)
     .bind(concept_id)
     .bind(source)
@@ -71,12 +101,45 @@ pub async fn propose(
     .bind(unit)
     .bind(summary)
     .bind(derived)
-    .execute(pool)
-    .await?
-    .rows_affected();
-    // 插入或刷新了算写入；撞上已确认 / 已拒绝的那一行，WHERE 挡下更新，写入数为零——
-    // 调用方靠这一位区分「进了待看」与「决定还在」
-    Ok((id, written > 0))
+    .bind(confidence)
+    .bind(rationale)
+    .bind(status)
+    .fetch_optional(&mut *tx)
+    .await?;
+    // RETURNING supplies the actual row id after concurrent inserts. A protected row
+    // returns nothing, so read its id separately without reporting a successful write.
+    let id = match written {
+        Some(id) => id,
+        None => sqlx::query_scalar(
+            "SELECT id FROM concept_mappings WHERE kb_id = $1 AND concept_id = $2 AND source = $3",
+        )
+        .bind(kb_id)
+        .bind(concept_id)
+        .bind(source)
+        .fetch_one(&mut *tx)
+        .await?,
+    };
+    if written.is_some() && automatic {
+        // Automation changes the effective definition: losing this event must roll back
+        // that change, rather than leave an effective definition nobody can account for.
+        sqlx::query(
+            "INSERT INTO audit_events (id, kb_id, actor_id, action, target_kind, target_id, detail)
+             VALUES ($1, $2, NULL, 'mapping.auto_confirmed', 'mapping', $3, $4)",
+        )
+        .bind(Uuid::now_v7())
+        .bind(kb_id)
+        .bind(id)
+        .bind(serde_json::json!({
+            "concept_id": concept_id, "source": source, "confidence": confidence,
+            "rationale": rationale, "threshold": 0.8,
+            "definition": { "table": table_name, "expr": expr, "sql": sql,
+                "unit": unit, "summary": summary, "derived": derived }
+        }))
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+    Ok((id, written.is_some()))
 }
 
 /// 人从零写一条口径（#562）。**落下来就是确认的**：写的人就是表态的人，
@@ -87,7 +150,7 @@ pub async fn propose(
 ///
 /// 同一个 (概念, 源) 已经有一条时报冲突，而不是悄悄覆盖：那一条可能是探索提的、
 /// 人已经确认过的，覆盖等于抹掉一次表态。要改用 `revise`。
-/// 探索反过来也盖不掉这条：`propose` 只刷新 `proposed` 的行。
+/// 探索反过来也盖不掉这条：`propose` 只刷新没有人工决定的行。
 #[allow(clippy::too_many_arguments)]
 pub async fn create(
     pool: &PgPool,
@@ -140,7 +203,8 @@ pub async fn proposed(
 ) -> AppResult<Vec<ConceptMapping>> {
     Ok(sqlx::query_as(
         "SELECT m.id, m.concept_id, e.canonical_name AS concept_name, m.source,
-                m.table_name, m.expr, m.sql, m.unit, m.summary, m.derived, m.status, m.written_by
+                m.table_name, m.expr, m.sql, m.unit, m.summary, m.derived, m.status, m.written_by,
+                m.decided_by, m.confidence, m.rationale
          FROM concept_mappings m
          JOIN entities e ON e.id = m.concept_id
          WHERE m.kb_id = $1 AND m.status = 'proposed'
@@ -154,12 +218,13 @@ pub async fn proposed(
     .await?)
 }
 
-/// 人确认过的。问数把它们注进 system prompt——**只用确认过的口径**，
+/// 已生效的（人工或自动确认）。问数把它们注进 system prompt——**只用确认过的口径**，
 /// 而不是每次从 schema 猜。
 pub async fn confirmed(pool: &PgPool, kb_id: Uuid, limit: i64) -> AppResult<Vec<ConceptMapping>> {
     Ok(sqlx::query_as(
         "SELECT m.id, m.concept_id, e.canonical_name AS concept_name, m.source,
-                m.table_name, m.expr, m.sql, m.unit, m.summary, m.derived, m.status, m.written_by
+                m.table_name, m.expr, m.sql, m.unit, m.summary, m.derived, m.status, m.written_by,
+                m.decided_by, m.confidence, m.rationale
          FROM concept_mappings m
          JOIN entities e ON e.id = m.concept_id
          WHERE m.kb_id = $1 AND m.status = 'confirmed'
@@ -221,7 +286,7 @@ pub async fn revise(
     let mut tx = pool.begin().await?;
     let before: Option<(serde_json::Value,)> = sqlx::query_as(
         "SELECT to_jsonb(m) - 'id' - 'kb_id' FROM concept_mappings m
-          WHERE m.id = $2 AND m.kb_id = $1",
+          WHERE m.id = $2 AND m.kb_id = $1 FOR UPDATE",
     )
     .bind(kb_id)
     .bind(mapping_id)
@@ -244,7 +309,8 @@ pub async fn revise(
     sqlx::query(
         "UPDATE concept_mappings
             SET table_name = $3, expr = $4, sql = $5, unit = $6, summary = $7,
-                derived = $8, updated_at = now()
+                derived = $8, decided_by = $9, decided_at = now(),
+                confidence = NULL, rationale = NULL, updated_at = now()
           WHERE id = $2 AND kb_id = $1",
     )
     .bind(kb_id)
@@ -255,6 +321,7 @@ pub async fn revise(
     .bind(unit)
     .bind(summary)
     .bind(derived)
+    .bind(actor)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;
@@ -284,7 +351,8 @@ pub async fn page(
                 OR m.table_name ILIKE '%' || $3 || '%')";
     let rows: Vec<ConceptMapping> = sqlx::query_as(&format!(
         "SELECT m.id, m.concept_id, e.canonical_name AS concept_name, m.source,
-                m.table_name, m.expr, m.sql, m.unit, m.summary, m.derived, m.status, m.written_by
+                m.table_name, m.expr, m.sql, m.unit, m.summary, m.derived, m.status, m.written_by,
+                m.decided_by, m.confidence, m.rationale
          FROM concept_mappings m
          JOIN entities e ON e.id = m.concept_id
          {WHERE}
@@ -497,7 +565,8 @@ pub async fn confirmed_texts(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<Mappin
 pub async fn by_ids(pool: &PgPool, kb_id: Uuid, ids: &[Uuid]) -> AppResult<Vec<ConceptMapping>> {
     let rows: Vec<ConceptMapping> = sqlx::query_as(
         "SELECT m.id, m.concept_id, e.canonical_name AS concept_name, m.source,
-                m.table_name, m.expr, m.sql, m.unit, m.summary, m.derived, m.status, m.written_by
+                m.table_name, m.expr, m.sql, m.unit, m.summary, m.derived, m.status, m.written_by,
+                m.decided_by, m.confidence, m.rationale
            FROM concept_mappings m JOIN entities e ON e.id = m.concept_id
           WHERE m.kb_id = $1 AND m.id = ANY($2)",
     )

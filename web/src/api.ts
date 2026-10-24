@@ -139,6 +139,7 @@ export interface Kb {
   /** 治理开关（0025，缺省关）：agent 按先进先出过等人的重复对，先读台账里人的
    *  先例再裁；打开就开始，关掉就停 */
   governance: boolean;
+  auto_confirm_mappings: boolean;
   /** 这次打开治理的时刻；保险丝只数它之后的撤回 */
   governance_since: string | null;
   /** 多久重推一次（分钟）。事实持续在变，只靠手点会让派生一直是缺的 */
@@ -731,6 +732,9 @@ export interface ConceptMapping {
   /** 派生指标：算出来的，不是表里的列 */
   derived: boolean;
   status: "proposed" | "confirmed" | "rejected";
+  decided_by: string | null;
+  confidence: number | null;
+  rationale: string | null;
 }
 /** 一条口径改动之前的样子。**整版快照而不是差异**（0006）：
  *  读的时候要回答的是「当时是什么」，差异得从头重放才答得出来 */

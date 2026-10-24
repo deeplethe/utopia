@@ -1702,6 +1702,9 @@ export const zh: Strings = {
     colSource: "数据源",
     colDefinition: "怎么算",
     colStatus: "状态",
+    autoConfirmed: "自动确认",
+    confidence: (score: number) => `置信度：${Math.round(score * 100)}%`,
+    rationale: (text: string) => `理由：${text}`,
     derivedBadge: "派生",
     noDefinition: "（未填）",
     approve: "确认",
@@ -2105,6 +2108,8 @@ export const zh: Strings = {
     autoResolveTypes: "抽取后自动消解实体类型",
     autoResolveTypesNote:
       "每篇文档抽完，对引擎还没看过的实体跑一轮类型消解。只有在现类子树里精化的才自动落地，跨轴的改判仍留在本体页等你。每一批都列在本体页，随时可以撤回。",
+    autoConfirmMappings: "自动确认映射提议",
+    autoConfirmMappingsNote: "默认关闭。探索时，置信度至少为 80%、有理由且有表达式或 SQL 的定义立即生效。错误定义可能产生看似合理的错误答案。人工决定和修改会保留。关闭后已有定义继续生效；重新探索刷新自动定义时会将其送回审核。",
     governance: "让 agent 处理重复项队列",
     governanceNote:
       "先进先出。裁一对之前，agent 先读这个库里的人对同样的名字、同样的类型对做过什么决定：有先例撑着才合并，有把握就分开，其余的写成建议留给你。每一笔都列在审核页的 Agent 里，可以撤回。关掉，队列就停。",

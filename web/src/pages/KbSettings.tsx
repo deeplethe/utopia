@@ -120,6 +120,7 @@ export function KbSettings() {
   const [autoResolve, setAutoResolve] = useState(false);
   // 治理（0025）：**缺省关**——它会合并实体，还没在哪个库上量过；打开就开始，关掉就停
   const [governance, setGovernance] = useState(false);
+  const [autoMappings, setAutoMappings] = useState(false);
   const [inferMins, setInferMins] = useState(60);
   const [ontoLang, setOntoLang] = useState<"en" | "zh">("en");
   const [confirmingDelete, setConfirmingDelete] = useState(false);
@@ -133,6 +134,7 @@ export function KbSettings() {
       setMaterialize(kb.data.materialize_inferences);
       setAutoResolve(kb.data.auto_type_resolution);
       setGovernance(kb.data.governance);
+      setAutoMappings(kb.data.auto_confirm_mappings);
       setInferMins(kb.data.inference_interval_minutes);
       setOntoLang(kb.data.ontology_lang);
     }
@@ -142,6 +144,7 @@ export function KbSettings() {
   const saveIdentity = useKbPatch(kbId!, setError);
   const saveVisibility = useKbPatch(kbId!, setError);
   const saveAutomation = useKbPatch(kbId!, setError);
+  const saveMappings = useKbPatch(kbId!, setError);
   const saveLang = useKbPatch(kbId!, setError);
 
   const removeKb = useMutation({
@@ -386,6 +389,25 @@ export function KbSettings() {
                     hint={S.kbset.governanceNote}
                   />
                 </div>
+              </SettingsCard>
+
+              <SettingsCard
+                title={S.kbset.autoConfirmMappings}
+                action={
+                  <Button variant="secondary" size="sm"
+                    disabled={autoMappings === kb.data.auto_confirm_mappings || saveMappings.isPending}
+                    onClick={() => saveMappings.mutate({ auto_confirm_mappings: autoMappings })}
+                  >
+                    {S.kbset.save}
+                  </Button>
+                }
+              >
+                <Checkbox
+                  checked={autoMappings}
+                  onChange={setAutoMappings}
+                  label={S.kbset.autoConfirmMappings}
+                  hint={S.kbset.autoConfirmMappingsNote}
+                />
               </SettingsCard>
 
               {/* 语料语言。**不是界面语言**——类描述逐字进抽取提示词，
