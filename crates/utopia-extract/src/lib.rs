@@ -581,8 +581,11 @@ fn strip_approx(s: &str) -> &str {
         "~",
         "≈",
     ] {
-        if let Some(rest) = s.strip_prefix(p) {
-            s = rest.trim_start();
+        // 句首的「About 350」「Approximately 1,200」：英文的约数词不分大小写
+        if s.get(..p.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(p))
+        {
+            s = s[p.len()..].trim_start();
             break;
         }
     }
@@ -1452,6 +1455,14 @@ mod an_attribute_value_is_read_in_its_declared_unit {
         // 光秃秃的数就是声明单位下的数
         assert_eq!(value("number", Some("万元"), "5000"), Some(json!(5000.0)));
         assert_eq!(value("number", Some("人"), "约350名"), Some(json!(350.0)));
+        assert_eq!(
+            value("number", Some("人"), "Approximately 1,200"),
+            Some(json!(1200.0))
+        );
+        assert_eq!(
+            value("number", Some("people"), "About 350 people"),
+            Some(json!(350.0))
+        );
         // 只写到年的日期按年
         assert_eq!(value("date", None, "1982年"), Some(json!("1982")));
     }
