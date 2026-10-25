@@ -665,6 +665,7 @@ async fn apply_open_extraction(
             utopia_store::graph::add_statement_qualifier(
                 pool,
                 fact_id,
+                chunk.id,
                 role,
                 value.as_ref(),
                 *entity,

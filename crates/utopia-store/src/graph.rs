@@ -199,12 +199,12 @@ pub async fn fact_qualifiers_for(
     Ok(out)
 }
 
-/// 往一条开放陈述上写一个按角色词记的属性。**先写者留着**：同一条陈述同一个角色词
-/// 再听到一次不覆盖（与 [`upsert_fact_qualifier`] 的 Conflict 一条规矩——两次观察
-/// 不一致该另立一行加一条冲突，这一刀还没走到那一步）。值与实体必须恰好给一个
+/// 往一条开放陈述上写一个按角色词记的属性，记在说它的那一块上（0070 决定 1）。
+/// 同一块再说一次不写新行；另一块说的另记一行，旧行不动。值与实体必须恰好给一个
 pub async fn add_statement_qualifier(
     pool: &PgPool,
     fact_id: Uuid,
+    chunk_id: Uuid,
     role: &str,
     value: Option<&serde_json::Value>,
     entity_id: Option<Uuid>,
@@ -223,19 +223,21 @@ pub async fn add_statement_qualifier(
         ));
     }
     sqlx::query(
-        "INSERT INTO statement_qualifiers (fact_id, role, value, entity_id)
-         VALUES ($1, $2, $3, $4) ON CONFLICT (fact_id, role) DO NOTHING",
+        "INSERT INTO statement_qualifiers (fact_id, role, value, entity_id, chunk_id)
+         VALUES ($1, $2, $3, $4, $5) ON CONFLICT (fact_id, role, chunk_id) DO NOTHING",
     )
     .bind(fact_id)
     .bind(role)
     .bind(value)
     .bind(entity_id)
+    .bind(chunk_id)
     .execute(pool)
     .await?;
     Ok(())
 }
 
-/// 一批开放陈述各自的角色词属性，按事实 id 取回；实体那一格连上显示名
+/// 一批开放陈述各自的角色词属性，按事实 id 取回；实体那一格连上显示名。
+/// 同一个值记在几块上只返回一次
 pub async fn statement_qualifiers_for(
     pool: &PgPool,
     fact_ids: &[Uuid],
@@ -253,7 +255,7 @@ pub async fn statement_qualifiers_for(
         entity_name: Option<String>,
     }
     let rows: Vec<Row> = sqlx::query_as(
-        "SELECT q.fact_id, q.role, q.value, q.entity_id, e.canonical_name AS entity_name
+        "SELECT DISTINCT q.fact_id, q.role, q.value, q.entity_id, e.canonical_name AS entity_name
          FROM statement_qualifiers q
          LEFT JOIN entities e ON e.id = q.entity_id
          WHERE q.fact_id = ANY($1)
