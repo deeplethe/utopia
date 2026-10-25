@@ -348,6 +348,63 @@ async fn the_embedding_gate_is_never_held_beyond_its_ceiling() -> anyhow::Result
 }
 
 #[tokio::test]
+async fn a_large_statements_payload_is_searchable_without_embedding() -> anyhow::Result<()> {
+    let Some(f) = fixture(FakeEmbed::new(Duration::ZERO)).await? else {
+        return Ok(());
+    };
+    f.server.reset().await;
+    Mock::given(method("POST"))
+        .and(path("/embeddings"))
+        .respond_with(
+            ResponseTemplate::new(400).set_body_string("maximum input length is 8192 tokens"),
+        )
+        .expect(0)
+        .mount(&f.server)
+        .await;
+
+    // 保持在 push 路由 64 KiB 上限以内，同时超过常见 embedding 模型的输入上限。
+    // 完整契约必须能进入确定性抽取，不能先被 embedding 拦住（#1375）。
+    let payload = serde_json::json!({
+        "external_id": "large-observation",
+        "e": [["cup-7", "cup", true], ["kitchen table", "table", true]],
+        "s": [[null, "cup-7", "is on", "kitchen table", null,
+               {"note": "sensor ".repeat(9000)}, null, null]],
+        "n": []
+    });
+    let doc = f
+        .document_with_bytes("observation.json", payload.to_string().as_bytes())
+        .await?;
+    let source = Uuid::now_v7();
+    sqlx::query("INSERT INTO sources(id,kb_id,kind,name) VALUES($1,$2,'statements','sensor')")
+        .bind(source)
+        .bind(f.kb)
+        .execute(&f.pool)
+        .await?;
+    sqlx::query("UPDATE documents SET source_id = $2 WHERE id = $1")
+        .bind(doc)
+        .bind(source)
+        .execute(&f.pool)
+        .await?;
+
+    super::process_document(&f.state, doc).await?;
+    let row = utopia_store::documents::get(&f.pool, doc).await?;
+    assert_eq!(row.status, "ready");
+    assert_eq!(row.graph_status, "queued");
+    let stored = f.stored(doc).await?;
+    assert_eq!(stored.len(), 1, "the contract stays in one chunk");
+    assert!(stored[0].1.is_none());
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&stored[0].0)?,
+        payload
+    );
+    let chunks = utopia_store::documents::chunks_full(&f.pool, doc).await?;
+    let hits = f.state.search.search(&f.kb.to_string(), "sensor", 1)?;
+    assert_eq!(hits.len(), 1, "the payload remains searchable by keyword");
+    assert_eq!(hits[0].chunk_id, chunks[0].id.to_string());
+    f.cleanup().await
+}
+
+#[tokio::test]
 async fn a_failed_batch_does_not_strand_the_document() -> anyhow::Result<()> {
     let mut fake = FakeEmbed::new(Duration::from_millis(20));
     fake.fail_request = Some(2);

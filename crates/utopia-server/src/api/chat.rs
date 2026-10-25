@@ -430,8 +430,9 @@ pub(super) fn base_tools() -> serde_json::Value {
                     The best tool for who/when/history questions. Use after find_entities. \
                     Pass `at` to see the world as of that date (server-side filter) — \
                     always do this for \"who was X in <year/month>\" questions. \
-                    Conclusions a business rule reached about this entity come back too, \
-                    marked `[rule: <name>]` with the readings that made them true — take \
+                    Conclusions from business rules and ontology axioms come back too, \
+                    marked `[rule: <name>]`; an axiom names its defining property. \
+                    The readings that made them true are included — take \
                     those as given rather than re-deriving them from the readings yourself. \
                     Output is grouped by predicate and cut at `limit`; use `offset` to continue. \
                     Narrow with predicate, object_type, since / until, or use timeline / neighbors / paths_between.",
@@ -524,12 +525,14 @@ pub(super) fn base_tools() -> serde_json::Value {
             "type": "function",
             "function": {
                 "name": "list_rules",
-                "description": "The business rules this base runs: what each one concludes and \
-                    the exact conditions it tests, thresholds included. A rule is written by a \
-                    person, and its conclusions are already in the graph — read the rule to \
+                "description": "The business rules and declared ontology axioms of this base. \
+                    Business rules show what each one concludes and the exact conditions it \
+                    tests, thresholds included. Ontology axioms name the defining properties \
+                    and the relations they imply, and say when derivation is off for this base. Read the rule to \
                     explain WHY something was concluded, or to answer \"what counts as X here\". \
                     Do not re-implement a rule's comparison yourself; ask entity_facts or \
-                    rule_matches for what it actually concluded.",
+                    rule_matches for what it actually concluded. rule_matches takes business \
+                    rule ids only.",
                 "parameters": { "type": "object", "properties": {} }
             }
         },

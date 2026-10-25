@@ -246,6 +246,15 @@ export interface SourceView {
     base_url?: string;
     /** jira_issues：项目 key，如 KAFKA；gitlab_repo：项目路径，如 group/subgroup/name */
     project?: string;
+    /** google_drive：选中的文件夹（名字只给界面看，同步只认 id） */
+    folders?: { id: string; name: string }[];
+    /** google_drive：连上的 Google 账号；`connected_at` 有值即已连接（令牌从不下发） */
+    account_email?: string | null;
+    connected_at?: string;
+    /** google_drive：连上的那个 Utopia 用户；浏览与选文件夹只给他 */
+    connected_by?: string;
+    /** google_drive：连上的那个人连接时的名字，断开前的确认里用 */
+    connected_by_name?: string;
     /** false = 这个来源下的文档只检索、不抽取（schema 文档，0035 决定 7）；缺省抽取 */
     extract?: boolean;
   } | null;
@@ -2506,6 +2515,32 @@ export const api = {
       {
         method: "POST",
       },
+    ),
+  googleDriveStatus: () =>
+    request<{ enabled: boolean }>(`/api/v1/google-drive/status`),
+  googleDriveConnect: (kbId: string, sourceId: string) =>
+    request<{ url: string }>(
+      `/api/v1/kbs/${kbId}/sources/${sourceId}/google-drive/connect`,
+      { method: "POST" },
+    ),
+  googleDriveDisconnect: (kbId: string, sourceId: string) =>
+    request<{ ok: boolean }>(
+      `/api/v1/kbs/${kbId}/sources/${sourceId}/google-drive/connection`,
+      { method: "DELETE" },
+    ),
+  googleDriveFolders: (kbId: string, sourceId: string, parent?: string) =>
+    request<{ folders: { id: string; name: string }[] }>(
+      `/api/v1/kbs/${kbId}/sources/${sourceId}/google-drive/folders` +
+        (parent ? `?parent=${encodeURIComponent(parent)}` : ""),
+    ),
+  googleDriveSelect: (
+    kbId: string,
+    sourceId: string,
+    folders: { id: string; name: string }[],
+  ) =>
+    request<{ source: SourceView }>(
+      `/api/v1/kbs/${kbId}/sources/${sourceId}/google-drive/folders`,
+      { method: "PUT", body: JSON.stringify({ folders }) },
     ),
   syncSource: (kbId: string, sourceId: string) =>
     request<{ queued: boolean }>(

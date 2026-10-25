@@ -45,10 +45,18 @@ Three methods are served:
 | `timeline` | One entity's dated facts in world-time order; `since` / `until` narrow the window |
 | `paths_between` | The chains of facts joining two entities, up to three hops, shortest first. With `at`, every edge must hold at that moment; with `as_of`, the chains as the base held them then |
 | `changes` | What the graph learned or revised in a window of **record** time: asserted, corrected, rejected, merged. Needs no entity; use it when the question names a period, not a subject. Returns up to 40 events per call; use `offset` to continue |
+| `list_rules` | Business rules with their conditions and conclusions, followed by declared ontology axioms (transitive, symmetric, inverse and sub-property) with the properties and relations they imply; the section says when derivation is off for this base |
+| `rule_matches` | The entities a business rule currently marks, with its premises. Takes a business rule ID from `list_rules` |
 | `search_docs` | Utopia's own manual, for questions about how the platform works. Never the user's documents |
 | `remember` | Record one sentence into the base's memory. **Needs a `write` token held by an editor**; a token without it does not see this tool in `tools/list`, and calling it anyway says why |
 
 The two time axes matter here. `at` reads **world time** (when something was true); `as_of` reads **record time** (what Utopia held at that moment, before it revised it), and `changes` lists what moved on that axis in a window. They are separate parameters on purpose: folded into one they would answer "what happened in March" with "what we learned in March", and both look plausible.
+
+A derived fact returned by `entity_facts` names the rule that produced it. For an ontology
+axiom, the text includes its defining property, such as `[rule: inverse of works_at]`.
+The structured result's `rule_name` carries the same explanation. That property can
+differ from the relation in the derived fact itself, including for historical facts
+whose axiom has since been withdrawn.
 
 ## The external read contract
 
@@ -115,7 +123,13 @@ is a successful read, not an error.
 | `find_entities` | `matched_entities`, `truncated`, `entities[]`, in the same ranked order as the text: `id`, `name`, `type_key`, `type_label`, `disambiguator`, `fact_count`. The count is for the partial-name lookup, or `null` when the fallback combined individual words without counting all matches. `truncated` reports the partial-name cap; this is a candidate list, not an exhaustive entity export |
 | `search_chunks` | `as_of`, `limit`, `limit_reached`, `chunks[]`. Each chunk has `chunk_id`, `document_id`, zero-based `seq`, `filename`, `text`, `truncated`. The text uses the same 800-character cutoff as the prose |
 | `entity_facts` | `entity` (`id`, `name`, `type_key`, `type_label`), effective `at`/`as_of`/`before`, `total_facts`, `matched_facts`, `limit`, `offset`, `next_offset`, `truncated`, `facts[]`, `derived_facts[]` |
-| `changes` | Effective `since` (inclusive) and `until` (exclusive), `limit`, `offset`, `next_offset`, `limit_reached`, `changes[]`. Events carry `fact_id`, `at`, `kind`, `subject_id`, `subject_name`, `predicate_label`, `object_name`, `object_value`, `confidence`, `valid_from`, `valid_to`, both validity precisions, `document_id`, `filename`, `quote` |
+| `changes` | Effective `since` (inclusive) and `until` (exclusive), `limit`, `offset`, `next_offset`, `limit_reached`, `changes[]`. Events carry `fact_id`, `at`, `kind`, `subject_id`, `subject_name`, `predicate_label`, `object_name`, `object_value`, `previous_object_name`, `previous_object_value`, `confidence`, `valid_from`, `valid_to`, both validity precisions, `document_id`, `filename`, `quote` |
+
+For a `corrected` event, `object_name` / `object_value` describe the new object;
+`previous_object_name` / `previous_object_value` describe the superseded one,
+even when that assertion lies outside the requested window. For other event
+kinds, both previous fields are `null`. Value fields retain raw JSON, including
+units.
 
 An asserted `facts[]` entry contains `id`, `direction`, `predicate_key`,
 `predicate_label`, `inferred`, `temporal`, `other_id`, `other_name`, `object_value`,

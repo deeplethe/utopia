@@ -2510,7 +2510,7 @@ pub async fn graph_changes(
     // 一条 2 月写入、8 月被推翻的事实，在"3–4 月"窗口里两个事件都不该出现
     const EVENTS: &str = "
         WITH ev AS (
-            SELECT f.id, f.subject_id, f.predicate_id, f.object_id, f.object_value,
+            SELECT f.id, f.subject_id, f.predicate_id, f.object_id, f.object_value, f.supersedes,
                    f.valid_from, f.valid_from_precision, f.valid_to, f.valid_to_precision, f.confidence,
                    f.recorded_at AS at,
                    CASE WHEN f.supersedes IS NULL THEN 'asserted' ELSE 'corrected' END AS kind
@@ -2518,7 +2518,7 @@ pub async fn graph_changes(
             WHERE f.kb_id = $1 AND f.recorded_at >= $2 AND f.recorded_at < $3
               AND ($4::uuid IS NULL OR f.subject_id = $4 OR f.object_id = $4)
             UNION ALL
-            SELECT f.id, f.subject_id, f.predicate_id, f.object_id, f.object_value,
+            SELECT f.id, f.subject_id, f.predicate_id, f.object_id, f.object_value, f.supersedes,
                    f.valid_from, f.valid_from_precision, f.valid_to, f.valid_to_precision, f.confidence,
                    f.invalidated_at AS at,
                    CASE WHEN EXISTS (SELECT 1 FROM fact_adoptions fa
@@ -2537,11 +2537,16 @@ pub async fn graph_changes(
                 COALESCE(r.label, fact_surface_predicate(ev.id)) AS predicate_label, o.canonical_name AS object_name,
                 ev.object_value, ev.valid_from, ev.valid_from_precision,
                 ev.valid_to, ev.valid_to_precision,
-                ev.confidence, src.document_id, src.filename, src.quote, src.quote_origin
+                ev.confidence, src.document_id, src.filename, src.quote, src.quote_origin,
+                po.canonical_name AS previous_object_name, previous.object_value AS previous_object_value
          FROM ev
          LEFT JOIN relation_types r ON r.id = ev.predicate_id
          JOIN entities s ON s.id = ev.subject_id
          LEFT JOIN entities o ON o.id = ev.object_id
+         -- 前一次断言可能不在本次窗口里，不能靠相邻事件猜订正方向（#1348）。
+         LEFT JOIN facts previous ON ev.kind = 'corrected' AND previous.id = ev.supersedes
+                                    AND previous.kb_id = $1
+         LEFT JOIN entities po ON po.id = previous.object_id
          LEFT JOIN LATERAL (
              SELECT d.id AS document_id, d.filename, fe.quote, c.origin AS quote_origin
              FROM fact_evidence fe
