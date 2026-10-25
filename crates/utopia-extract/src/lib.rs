@@ -493,15 +493,37 @@ fn scan_quantity(s: &str, strict: bool) -> Option<Quantity> {
         }
     }
     // 2. 数字：前导的 [-+0-9.,_]，负号也可以是排版用的 U+2212
-    let num_end = rest
+    let numeric = |c: char| matches!(c, '0'..='9' | '.' | ',' | '_' | '-' | '+' | '−');
+    let mut num_end = rest
         .char_indices()
-        .find(|(_, c)| !matches!(c, '0'..='9' | '.' | ',' | '_' | '-' | '+' | '−'))
+        .find(|&(_, c)| !numeric(c))
         .map(|(i, _)| i)
         .unwrap_or(rest.len());
+    // 按三位一组用空格分开的千分位（「1 234 567」「12 000」，常是不断行空格）：打头一组
+    // 一到三位，其后每组正好三位，组间那一个空格才算数里的
+    let lead = rest[..num_end].trim_start_matches(['-', '+', '−']);
+    if (1..=3).contains(&lead.len()) && lead.bytes().all(|b| b.is_ascii_digit()) {
+        while let Some(sep) = rest[num_end..]
+            .chars()
+            .next()
+            .filter(|c| matches!(c, ' ' | '\u{a0}' | '\u{202f}' | '\u{2009}'))
+        {
+            let group = &rest[num_end + sep.len_utf8()..];
+            let digits = group.bytes().take_while(u8::is_ascii_digit).count();
+            if digits != 3 {
+                break;
+            }
+            num_end += sep.len_utf8()
+                + group
+                    .char_indices()
+                    .find(|&(i, c)| i >= 3 && !matches!(c, '0'..='9' | '.'))
+                    .map_or(group.len(), |(i, _)| i);
+        }
+    }
     let (num, after) = rest.split_at(num_end);
     let cleaned: String = num
         .chars()
-        .filter(|c| !matches!(c, ',' | '_'))
+        .filter(|c| !matches!(c, ',' | '_' | ' ' | '\u{a0}' | '\u{202f}' | '\u{2009}'))
         .map(|c| if c == '−' { '-' } else { c })
         .collect();
     let mut n: f64 = cleaned.parse().ok()?;
@@ -1533,6 +1555,35 @@ mod an_attribute_value_is_read_in_its_declared_unit {
         );
         // 只写到年的日期按年
         assert_eq!(value("date", None, "1982年"), Some(json!("1982")));
+    }
+
+    /// 三位一组用空格（常是不断行空格）分开的千分位，读成整个数，有没有声明单位都一样
+    #[test]
+    fn a_number_grouped_by_spaces_keeps_all_its_digits() {
+        for (raw, n) in [
+            ("1 234 567", 1234567.0),
+            ("1\u{a0}234\u{a0}567", 1234567.0),
+            ("12\u{202f}000", 12000.0),
+            ("-1 250.5", -1250.5),
+        ] {
+            assert_eq!(value("number", None, raw), Some(json!(n)), "{raw:?}");
+            assert_eq!(value("number", Some("元"), raw), Some(json!(n)), "{raw:?}");
+        }
+        assert_eq!(
+            value("number", Some("people"), "12 000 people"),
+            Some(json!(12000.0))
+        );
+        assert_eq!(
+            value("number", Some("万元"), "5 000万元"),
+            Some(json!(5000.0))
+        );
+        // 打头一组超过三位、或其后一组不是三位的，空格不是千分位
+        assert_eq!(super::parse_quantity("2024 350"), None);
+        assert_eq!(super::parse_quantity("12 34"), None);
+        assert_eq!(
+            super::parse_leading_quantity("3 1234 units"),
+            Some((3.0, Some("1234".into())))
+        );
     }
 
     /// 财报的单位常把币种写在量级前面：「USD million」「€ million」，同「million dollars」
