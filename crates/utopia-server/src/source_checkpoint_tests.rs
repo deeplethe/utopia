@@ -135,3 +135,136 @@ async fn retry_keeps_updates_from_the_previous_successful_run_window() -> anyhow
 async fn updates_during_a_successful_sync_remain_in_the_next_window() -> anyhow::Result<()> {
     retry_reads_the_uncovered_window(true, false).await
 }
+
+/// #1212 / ADR 0072（Custom 一节）：201 条全都变了，第一轮装下 200 条就停，
+/// 第二轮把没变的前缀让过去、走到第 201 条。
+///
+/// 关键的两条性质都在这里：
+///
+/// 1. 触顶那一轮 `incomplete` → run 写 `failed` → 下界不前进 → 第二轮拿到的还是同一条
+///    since，因此前 200 条原样回来、但它们现在都是 `Unchanged` 不占预算，第 201 条
+///    这次够得着了。ADR 把「取走同样的前 200 条」列在 Rejected 里说的就是这条。
+/// 2. `stats.discovered` 记的是响应里的条数（201），不是跑进来的条数（200）——
+///    否则日志与那条警告会读成 `(0 > 200)`。
+#[tokio::test]
+async fn a_truncated_custom_batch_resumes_on_the_next_run() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = sqlx::PgPool::connect(&url).await?;
+    let (org, ws, kb, source) = (
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+    );
+    sqlx::query("INSERT INTO organizations(id,name) VALUES($1,'truncation-test')")
+        .bind(org)
+        .execute(&pool)
+        .await?;
+    sqlx::query("INSERT INTO workspaces(id,org_id,name) VALUES($1,$2,'truncation-test')")
+        .bind(ws)
+        .bind(org)
+        .execute(&pool)
+        .await?;
+    sqlx::query(
+        "INSERT INTO knowledge_bases(id,workspace_id,name) VALUES($1,$2,'truncation-test')",
+    )
+    .bind(kb)
+    .bind(ws)
+    .execute(&pool)
+    .await?;
+
+    // **来源先插，`start_run` 后跑**：source_sync_runs.source_id 上有外键，
+    // 反过来插会以 `source_sync_runs_source_id_fkey` 失败。
+    let server = MockServer::start().await;
+    sqlx::query(
+        "INSERT INTO sources(id,kb_id,kind,name,config) VALUES($1,$2,'custom','fixture',$3)",
+    )
+    .bind(source)
+    .bind(kb)
+    .bind(serde_json::json!({ "endpoint": server.uri() }))
+    .execute(&pool)
+    .await?;
+
+    // 201 条，全部是新的：每一轮都会重新拿到它们
+    let all: Vec<serde_json::Value> = (0..201u32)
+        .map(|i| {
+            serde_json::json!({
+                "id": format!("item-{i}"),
+                "title": format!("Item {i}"),
+                "content": format!("Body {i}"),
+            })
+        })
+        .collect();
+    let served = all.clone();
+    Mock::given(method("GET"))
+        .respond_with(move |_req: &Request| {
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({ "items": served }))
+        })
+        .mount(&server)
+        .await;
+
+    let dir = std::env::temp_dir().join(format!("utopia-truncation-{source}"));
+    let cfg = utopia_core::config::AppConfig {
+        data_dir: dir.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let search = Arc::new(utopia_search::SearchIndex::open(&dir.join("search"))?);
+    let state = crate::state::AppState::new(pool.clone(), &cfg, search, "test-only".into());
+
+    let result = async {
+        // 第一轮：201 > 200，触顶
+        sync_source(&state, source).await?;
+        let first = utopia_store::sources::get(&pool, source).await?;
+        assert_eq!(
+            first.last_sync_status, "failed",
+            "触顶的那一轮不能记为 'ok'，否则下界会越过还没读到的条目"
+        );
+        assert!(
+            first
+                .last_sync_error
+                .as_deref()
+                .unwrap_or_default()
+                .contains("stopped with more"),
+            "错误要说明为什么停：{:?}",
+            first.last_sync_error
+        );
+        let imported: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM documents WHERE source_id=$1 AND deleted_at IS NULL",
+        )
+        .bind(source)
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(imported, 200, "第一轮装得下 200 条，第 201 条得等下一轮");
+
+        // 第二轮：同一批原样回来，前 200 条是 Unchanged 不占预算，第 201 条这次够得着
+        sync_source(&state, source).await?;
+        let imported: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM documents WHERE source_id=$1 AND deleted_at IS NULL",
+        )
+        .bind(source)
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(imported, 201, "第二轮之后 201 条都在库里了");
+        let last = utopia_store::sources::get(&pool, source).await?;
+        assert_eq!(
+            last.last_sync_status, "ok",
+            "这一轮走完了，可以记 ok 让游标前进"
+        );
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+
+    sqlx::query("DELETE FROM knowledge_bases WHERE id=$1")
+        .bind(kb)
+        .execute(&pool)
+        .await?;
+    sqlx::query("DELETE FROM organizations WHERE id=$1")
+        .bind(org)
+        .execute(&pool)
+        .await?;
+    drop(state);
+    let _ = std::fs::remove_dir_all(dir);
+    result
+}
