@@ -10,7 +10,7 @@ use std::sync::Mutex;
 
 use anyhow::Context;
 use tantivy::collector::TopDocs;
-use tantivy::query::{BooleanQuery, Occur, Query, TermQuery};
+use tantivy::query::{BooleanQuery, Occur, Query, TermQuery, TermSetQuery};
 use tantivy::schema::{
     Field, IndexRecordOption, Schema, TextFieldIndexing, TextOptions, Value, STORED, STRING,
 };
@@ -134,7 +134,15 @@ impl SearchIndex {
     /// BM25 检索（限定 kb）。
     /// 查询用与索引完全一致的 jieba analyzer 切词后按 OR 组合——
     /// 不能走 QueryParser：CJK 整句会被当成短语查询（要求词连续出现），召回归零。
-    pub fn search(&self, kb_id: &str, query: &str, limit: usize) -> anyhow::Result<Vec<Hit>> {
+    ///
+    /// `documents`：只在这些文档里找。它和 kb 一样是 `Must`，`limit` 数的就只是允许的块
+    pub fn search(
+        &self,
+        kb_id: &str,
+        query: &str,
+        limit: usize,
+        documents: Option<&[String]>,
+    ) -> anyhow::Result<Vec<Hit>> {
         let mut analyzer = self.analyzer.clone();
         let mut stream = analyzer.token_stream(query);
         let mut term_queries: Vec<(Occur, Box<dyn Query>)> = Vec::new();
@@ -161,7 +169,14 @@ impl SearchIndex {
             IndexRecordOption::Basic,
         ));
         let text_query: Box<dyn Query> = Box::new(BooleanQuery::new(term_queries));
-        let combined = BooleanQuery::new(vec![(Occur::Must, kb_filter), (Occur::Must, text_query)]);
+        let mut clauses = vec![(Occur::Must, kb_filter), (Occur::Must, text_query)];
+        if let Some(documents) = documents {
+            let terms = documents
+                .iter()
+                .map(|id| Term::from_field_text(self.f_document_id, id));
+            clauses.push((Occur::Must, Box::new(TermSetQuery::new(terms))));
+        }
+        let combined = BooleanQuery::new(clauses);
 
         let searcher = self.reader.searcher();
         let collector = TopDocs::with_limit(limit).order_by_score();

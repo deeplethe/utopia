@@ -10,7 +10,7 @@ use crate::error::ApiResult;
 use crate::retrieval;
 use crate::state::AppState;
 
-/// 不认识的字段答 422：过滤条件还没做，悄悄忽略一个 `filters` 会让调用方以为它生效了
+/// 不认识的字段答 422：悄悄忽略一个拼错的过滤条件，调用方会以为它生效了
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SearchReq {
@@ -23,6 +23,44 @@ pub struct SearchReq {
     /// 命中的是当时活着的块、当时还没被删的文档
     #[serde(default)]
     pub as_of: Option<String>,
+    /// 只检索本库这个来源的文档；别的库的来源答 404
+    #[serde(default)]
+    pub source_id: Option<Uuid>,
+    /// 只检索 `external_id` 以它开头的文档。identity 是推送来源里的，所以要 `source_id`
+    /// 且它是推送来源，否则 422
+    #[serde(default)]
+    pub external_id_prefix: Option<String>,
+}
+
+async fn source_filter(
+    state: &AppState,
+    kb_id: Uuid,
+    req: &SearchReq,
+) -> ApiResult<Option<retrieval::SourceFilter>> {
+    let source = match req.source_id {
+        Some(source_id) => {
+            Some(super::sources_routes::source_in_kb(state, kb_id, source_id).await?)
+        }
+        None => None,
+    };
+    let Some(prefix) = &req.external_id_prefix else {
+        return Ok(source.map(|source| retrieval::SourceFilter {
+            source_id: source.id,
+            key_prefix: None,
+        }));
+    };
+    let Some(source) = source.filter(|source| crate::pushed_keys::is_push_kind(&source.kind))
+    else {
+        return Err(AppError::invalid(
+            "prefix_needs_push_source",
+            "external_id_prefix needs the source_id of an API or Statements source",
+        )
+        .into());
+    };
+    Ok(Some(retrieval::SourceFilter {
+        source_id: source.id,
+        key_prefix: Some(crate::pushed_keys::pushed_key(&source, prefix)),
+    }))
 }
 
 pub async fn search(
@@ -50,6 +88,7 @@ pub async fn search(
         top_k,
         offset: req.offset,
         as_of,
+        filter: source_filter(&state, kb_id, &req).await?,
     };
     let page = retrieval::hybrid_scored(&state, kb_id, kb.workspace_id, q, opts, None).await?;
     Ok(Json(json!({
