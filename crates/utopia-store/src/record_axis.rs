@@ -102,6 +102,61 @@ pub fn chunk_live_at(alias: &str, as_of: Option<usize>) -> String {
     }
 }
 
+/// 一条事实的证据，选成 `rw_ee`（证据）、`rw_ec`（块）、`rw_ed`（文档），供 [`role_word_fact_ends`] 聚合
+pub const ROLE_WORD_EVIDENCE: &str = "fact_evidence rw_ee
+         JOIN chunks rw_ec ON rw_ec.id = rw_ee.chunk_id
+         JOIN documents rw_ed ON rw_ed.id = rw_ec.document_id";
+
+/// 按事实聚合 [`ROLE_WORD_EVIDENCE`]：T 时刻有没有活块（`any_live`），T 时刻已有的块里
+/// 最晚的终点（`last_end`）。块的终点是 `superseded_at` 与文档 `deleted_at` 里早的那个
+pub fn role_word_fact_ends(as_of: Option<usize>) -> String {
+    format!(
+        "bool_or({} AND {}) AS any_live,
+         max(least(rw_ec.superseded_at, rw_ed.deleted_at)) FILTER (WHERE {}) AS last_end",
+        chunk_live_at("rw_ec", as_of),
+        document_live_at("rw_ed", as_of),
+        chunk_existed_at("rw_ec", as_of),
+    )
+}
+
+fn chunk_existed_at(alias: &str, as_of: Option<usize>) -> String {
+    match as_of {
+        None => "true".into(),
+        Some(param) => format!("{alias}.created_at <= coalesce(${param}, now())"),
+    }
+}
+
+/// 角色词在 T 时刻替它的事实说话吗（0070 决定 2、3），给定它那块 `c`、那块的文档 `d`
+/// 和它事实的 [`role_word_fact_ends`] 一行 `f`。
+///
+/// 它那块与那块的文档在 T 时刻都还活着，就说话；活着的几块值不同，都说话。
+/// 事实在 T 时刻一块活证据都没有时，最后到头的那几块说话（同一时刻到头的都算），
+/// 只看 T 时刻已有的块。每条事实的证据只聚合一次：重推几百次的陈述不按行重扫
+pub fn role_word_speaks_given(c: &str, d: &str, f: &str, as_of: Option<usize>) -> String {
+    format!(
+        "(({c_live} AND {d_live})
+          OR (NOT {f}.any_live AND {existed}
+              AND least({c}.superseded_at, {d}.deleted_at) = {f}.last_end))",
+        c_live = chunk_live_at(c, as_of),
+        d_live = document_live_at(d, as_of),
+        existed = chunk_existed_at(c, as_of),
+    )
+}
+
+/// `statement_qualifiers`：这一行 `q` 在 T 时刻说话吗，[`role_word_speaks_given`] 的单行形状。
+/// 别名都带 `rw_` 前缀，不和调用方的撞
+pub fn role_word_speaks_at(q: &str, as_of: Option<usize>) -> String {
+    format!(
+        "EXISTS (SELECT 1 FROM chunks rw_c JOIN documents rw_d ON rw_d.id = rw_c.document_id
+                  CROSS JOIN LATERAL (SELECT {ends} FROM {evidence}
+                                       WHERE rw_ee.fact_id = {q}.fact_id) rw_f
+                  WHERE rw_c.id = {q}.chunk_id AND {speaks})",
+        ends = role_word_fact_ends(as_of),
+        evidence = ROLE_WORD_EVIDENCE,
+        speaks = role_word_speaks_given("rw_c", "rw_d", "rw_f", as_of),
+    )
+}
+
 /// `entity_merges`：这次合并在 T 时刻**生效着**吗（0019 第二刀 / #336）。
 ///
 /// 实体身上没有记录轴——`merged_into` 只说合并发生过，不说何时。时刻在这张表上，

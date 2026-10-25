@@ -237,10 +237,11 @@ pub async fn add_statement_qualifier(
 }
 
 /// 一批开放陈述各自的角色词属性，按事实 id 取回；实体那一格连上显示名。
-/// 同一个值记在几块上只返回一次
+/// 只取 `as_of` 时刻说话的行（0070 决定 2、3）；同一个值记在几块上返回一次，带上那几块
 pub async fn statement_qualifiers_for(
     pool: &PgPool,
     fact_ids: &[Uuid],
+    as_of: Option<chrono::DateTime<chrono::Utc>>,
 ) -> AppResult<HashMap<Uuid, Vec<StatementQualifier>>> {
     let mut out: HashMap<Uuid, Vec<StatementQualifier>> = HashMap::new();
     if fact_ids.is_empty() {
@@ -253,23 +254,37 @@ pub async fn statement_qualifiers_for(
         value: Option<serde_json::Value>,
         entity_id: Option<Uuid>,
         entity_name: Option<String>,
+        chunk_ids: Vec<Uuid>,
     }
-    let rows: Vec<Row> = sqlx::query_as(
-        "SELECT DISTINCT q.fact_id, q.role, q.value, q.entity_id, e.canonical_name AS entity_name
+    let as_of_param = as_of.map(|_| 2);
+    let sql = format!(
+        "WITH rw_f AS (SELECT rw_ee.fact_id, {ends} FROM {evidence}
+                        WHERE rw_ee.fact_id = ANY($1) GROUP BY rw_ee.fact_id)
+         SELECT q.fact_id, q.role, q.value, q.entity_id, e.canonical_name AS entity_name,
+                array_agg(q.chunk_id ORDER BY q.chunk_id) AS chunk_ids
          FROM statement_qualifiers q
+         JOIN rw_f ON rw_f.fact_id = q.fact_id
+         JOIN chunks rw_c ON rw_c.id = q.chunk_id
+         JOIN documents rw_d ON rw_d.id = rw_c.document_id
          LEFT JOIN entities e ON e.id = q.entity_id
-         WHERE q.fact_id = ANY($1)
-         ORDER BY q.fact_id, q.role",
-    )
-    .bind(fact_ids)
-    .fetch_all(pool)
-    .await?;
-    for r in rows {
+         WHERE q.fact_id = ANY($1) AND {speaks}
+         GROUP BY q.fact_id, q.role, q.value, q.entity_id, e.canonical_name
+         ORDER BY q.fact_id, q.role, chunk_ids",
+        ends = crate::record_axis::role_word_fact_ends(as_of_param),
+        evidence = crate::record_axis::ROLE_WORD_EVIDENCE,
+        speaks = crate::record_axis::role_word_speaks_given("rw_c", "rw_d", "rw_f", as_of_param),
+    );
+    let mut query = sqlx::query_as::<_, Row>(&sql).bind(fact_ids);
+    if let Some(at) = as_of {
+        query = query.bind(at);
+    }
+    for r in query.fetch_all(pool).await? {
         out.entry(r.fact_id).or_default().push(StatementQualifier {
             role: r.role,
             value: r.value,
             entity_id: r.entity_id,
             entity_name: r.entity_name,
+            chunk_ids: r.chunk_ids,
         });
     }
     Ok(out)
@@ -1519,7 +1534,7 @@ async fn edges_among(
         let ids: Vec<Uuid> = edges.iter().map(|x| x.id).collect();
         let (mut typed, mut worded) = tokio::try_join!(
             fact_qualifiers_for(pool, &ids),
-            statement_qualifiers_for(pool, &ids)
+            statement_qualifiers_for(pool, &ids, as_of)
         )?;
         for x in edges.iter_mut() {
             x.qualifiers = typed.remove(&x.id).unwrap_or_default();
@@ -1868,7 +1883,7 @@ pub async fn entity_detail(
         let ids: Vec<Uuid> = facts.iter().map(|x| x.id).collect();
         let (mut typed, mut worded) = tokio::try_join!(
             fact_qualifiers_for(pool, &ids),
-            statement_qualifiers_for(pool, &ids)
+            statement_qualifiers_for(pool, &ids, as_of)
         )?;
         for x in facts.iter_mut() {
             x.qualifiers = typed.remove(&x.id).unwrap_or_default();

@@ -5,7 +5,8 @@
 //! place) 绑到 headquartered_in：算出一条类型化行，谓词是它，证据与限定抄过来，
 //! `from_statement_id` 指回陈述；再跑一遍什么都不动；带 mood 的陈述不算；另一份文档
 //! 的同一句并进同一行（两条来源、两条证据），它说的另一个 since 不跟进来，行只读建行那条的；作废其中一条陈述，行还在、来源少一条；
-//! 绑定翻成 reverse，旧行作废、新行主宾对调；绑定改成 none，行作废、不再补。
+//! 绑定翻成 reverse，旧行作废、新行主宾对调；绑定改成 none，行作废、不再补；
+//! 带 mood 的陈述重推、新块不再说 mood，就成一行。
 //!
 //! 没有 `UTOPIA_DATABASE_URL` 时跳过而不是失败。自建自拆，绝不碰已有的库。
 
@@ -272,6 +273,15 @@ async fn a_bound_statement_becomes_a_typed_fact() -> anyhow::Result<()> {
         .await?;
         assert_eq!(materialize(&pool, kb).await?, Outcome { retired: 1, added: 0, merged: 0, implied: 0, corrected: 0, conflicts: 0 });
         assert_eq!(utopia_store::materialize::count(&pool, kb).await?, 0);
+
+        // 带 mood 的那条重推、新块不再说 mood：旧块上的 mood 不再拦着，它成一行（0070 决定 2）
+        sqlx::query("UPDATE chunks SET superseded_at = now() WHERE id = $1")
+            .bind(planned_chunk)
+            .execute(&pool)
+            .await?;
+        evidence_of(planned, "bakery-plan-2.txt").await?;
+        assert_eq!(materialize(&pool, kb).await?.added, 1);
+        assert_eq!(utopia_store::materialize::count(&pool, kb).await?, 1);
         anyhow::Ok(())
     }
     .await;

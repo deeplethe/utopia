@@ -4,6 +4,7 @@
 //! 空谓词的读路径（图、实体面板、邻域、路径、导出）要按短语显示它；同一句话再听到
 //! 一次是同一行、证据累积；它的短语永远不出现在等着被采纳的说法里；角色词属性与
 //! 时间词各自取得回来；证据带着引文在块里的偏移；库拒绝没有短语的开放行。
+//! 角色词只在它那块活着时说话，没有活块时最后被取代的那块说话（0070）。
 //!
 //! 没有 `UTOPIA_DATABASE_URL` 时跳过而不是失败。自建自拆，绝不碰已有的库。
 
@@ -24,7 +25,7 @@ struct Fixture {
     chunk_b: Uuid,
 }
 
-async fn seed(pool: &PgPool) -> anyhow::Result<Fixture> {
+async fn seed(pool: &PgPool, org_name: &str) -> anyhow::Result<Fixture> {
     let (org, ws, kb) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
     let etype = Uuid::now_v7();
     let (acme, beta) = (Uuid::now_v7(), Uuid::now_v7());
@@ -36,19 +37,19 @@ async fn seed(pool: &PgPool) -> anyhow::Result<Fixture> {
     );
     sqlx::query("INSERT INTO organizations (id, name) VALUES ($1, $2)")
         .bind(org)
-        .bind(ORG)
+        .bind(org_name)
         .execute(pool)
         .await?;
     sqlx::query("INSERT INTO workspaces (id, org_id, name) VALUES ($1, $2, $3)")
         .bind(ws)
         .bind(org)
-        .bind(ORG)
+        .bind(org_name)
         .execute(pool)
         .await?;
     sqlx::query("INSERT INTO knowledge_bases (id, workspace_id, name) VALUES ($1, $2, $3)")
         .bind(kb)
         .bind(ws)
-        .bind(ORG)
+        .bind(org_name)
         .execute(pool)
         .await?;
     sqlx::query("INSERT INTO entity_types (id, kb_id, key, label) VALUES ($1, $2, 'org', '组织')")
@@ -119,7 +120,7 @@ async fn an_open_statement_shows_under_its_phrase_and_reuses_its_row() -> anyhow
         .bind(ORG)
         .execute(&pool)
         .await?;
-    let f = seed(&pool).await?;
+    let f = seed(&pool, ORG).await?;
 
     let run = async {
         // 1. 落一条开放陈述：Acme —acquired→ Beta，短语照写、谓词为空、没有 valid_*
@@ -199,7 +200,8 @@ async fn an_open_statement_shows_under_its_phrase_and_reuses_its_row() -> anyhow
         let amount = |q: &[utopia_core::models::StatementQualifier]| {
             serde_json::to_value(q).unwrap()
                 == serde_json::json!([{ "role": "amount",
-                    "value": { "value": "$1.2 billion" }, "entity_id": null, "entity_name": null }])
+                    "value": { "value": "$1.2 billion" }, "entity_id": null, "entity_name": null,
+                    "chunk_ids": [f.chunk_a] }])
         };
         assert!(
             amount(&e.statement_qualifiers),
@@ -310,7 +312,7 @@ async fn an_open_statement_shows_under_its_phrase_and_reuses_its_row() -> anyhow
         assert!(created && other != fact);
 
         // 4. 角色词属性与时间词各自取得回来
-        let qualifiers = graph::statement_qualifiers_for(&pool, &[fact]).await?;
+        let qualifiers = graph::statement_qualifiers_for(&pool, &[fact], None).await?;
         let q = &qualifiers[&fact];
         assert_eq!(q.len(), 1);
         assert_eq!(q[0].role, "amount");
@@ -352,7 +354,7 @@ async fn an_open_statement_shows_under_its_phrase_and_reuses_its_row() -> anyhow
                 .is_err()
         );
         graph::add_statement_qualifier(&pool, fact, f.chunk_a, "buyer", None, Some(f.acme)).await?;
-        let q = &graph::statement_qualifiers_for(&pool, &[fact]).await?[&fact];
+        let q = &graph::statement_qualifiers_for(&pool, &[fact], None).await?[&fact];
         let buyer = q.iter().find(|x| x.role == "buyer").unwrap();
         assert_eq!(buyer.entity_id, Some(f.acme));
         assert_eq!(buyer.entity_name.as_deref(), Some("Acme"));
@@ -416,4 +418,309 @@ async fn an_open_statement_shows_under_its_phrase_and_reuses_its_row() -> anyhow
         .execute(&pool)
         .await?;
     run
+}
+
+/// 一条陈述，两块都是它的证据；每块记下自己说的角色词
+async fn stated(pool: &PgPool, f: &Fixture, words: &[(Uuid, &str, &str)]) -> anyhow::Result<Uuid> {
+    let (fact, _) = graph::insert_open_statement(
+        pool,
+        f.kb,
+        f.acme,
+        "covers",
+        FactObject::Entity(f.beta),
+        None,
+        0.9,
+    )
+    .await?;
+    for chunk in [f.chunk_a, f.chunk_b] {
+        graph::add_evidence(pool, fact, chunk, None, None).await?;
+    }
+    for (chunk, role, value) in words {
+        graph::add_statement_qualifier(
+            pool,
+            fact,
+            *chunk,
+            role,
+            Some(&serde_json::json!(value)),
+            None,
+        )
+        .await?;
+    }
+    Ok(fact)
+}
+
+async fn supersede(pool: &PgPool, chunk: Uuid, at: &str) -> anyhow::Result<()> {
+    sqlx::query("UPDATE chunks SET superseded_at = $2::timestamptz WHERE id = $1")
+        .bind(chunk)
+        .bind(at)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// 现在说话的角色词：(角色, 值, 说它的块)
+async fn speaking(
+    pool: &PgPool,
+    fact: Uuid,
+) -> anyhow::Result<Vec<(String, serde_json::Value, Vec<Uuid>)>> {
+    let read = graph::statement_qualifiers_for(pool, &[fact], None).await?;
+    Ok(read
+        .get(&fact)
+        .into_iter()
+        .flatten()
+        .map(|q| {
+            (
+                q.role.clone(),
+                q.value.clone().unwrap_or_default(),
+                q.chunk_ids.clone(),
+            )
+        })
+        .collect())
+}
+
+/// 每个测试自己的组织：建库、跑完、拆掉
+async fn with_fixture<F, Fut>(org_name: &str, run: F) -> anyhow::Result<()>
+where
+    F: FnOnce(PgPool, Fixture) -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<()>>,
+{
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let clean = |pool: PgPool| async move {
+        sqlx::query("DELETE FROM organizations WHERE name = $1")
+            .bind(org_name)
+            .execute(&pool)
+            .await
+    };
+    clean(pool.clone()).await?;
+    let f = seed(&pool, org_name).await?;
+    let outcome = run(pool.clone(), f).await;
+    clean(pool).await?;
+    outcome
+}
+
+fn lines(value: &str, chunk: Uuid) -> (String, serde_json::Value, Vec<Uuid>) {
+    ("lines".into(), serde_json::json!(value), vec![chunk])
+}
+
+#[tokio::test]
+async fn a_superseded_chunk_stops_speaking_once_a_live_chunk_says_58_70() -> anyhow::Result<()> {
+    with_fixture("role-word-superseded-test", |pool, f| async move {
+        let fact = stated(
+            &pool,
+            &f,
+            &[(f.chunk_a, "lines", "40-52"), (f.chunk_b, "lines", "58-70")],
+        )
+        .await?;
+        supersede(&pool, f.chunk_a, "2026-03-01").await?;
+        assert_eq!(
+            speaking(&pool, fact).await?,
+            vec![lines("58-70", f.chunk_b)]
+        );
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test]
+async fn two_live_chunks_that_disagree_both_speak_with_their_chunk() -> anyhow::Result<()> {
+    with_fixture("role-word-disagree-test", |pool, f| async move {
+        let fact = stated(
+            &pool,
+            &f,
+            &[(f.chunk_a, "lines", "40-52"), (f.chunk_b, "lines", "58-70")],
+        )
+        .await?;
+        assert_eq!(
+            speaking(&pool, fact).await?,
+            vec![lines("40-52", f.chunk_a), lines("58-70", f.chunk_b)]
+        );
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test]
+async fn a_status_the_live_chunk_does_not_repeat_is_gone() -> anyhow::Result<()> {
+    with_fixture("role-word-dropped-test", |pool, f| async move {
+        let fact = stated(
+            &pool,
+            &f,
+            &[
+                (f.chunk_a, "lines", "40-52"),
+                (f.chunk_a, "status", "failing"),
+                (f.chunk_b, "lines", "58-70"),
+            ],
+        )
+        .await?;
+        supersede(&pool, f.chunk_a, "2026-03-01").await?;
+        assert_eq!(
+            speaking(&pool, fact).await?,
+            vec![lines("58-70", f.chunk_b)]
+        );
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test]
+async fn a_stale_statement_shows_58_70_from_its_last_superseded_chunk() -> anyhow::Result<()> {
+    with_fixture("role-word-stale-test", |pool, f| async move {
+        let fact = stated(
+            &pool,
+            &f,
+            &[(f.chunk_a, "lines", "40-52"), (f.chunk_b, "lines", "58-70")],
+        )
+        .await?;
+        supersede(&pool, f.chunk_a, "2026-03-01").await?;
+        supersede(&pool, f.chunk_b, "2026-04-01").await?;
+        assert_eq!(
+            speaking(&pool, fact).await?,
+            vec![lines("58-70", f.chunk_b)]
+        );
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test]
+async fn a_deleted_documents_chunk_is_dated_by_its_deleted_at() -> anyhow::Result<()> {
+    with_fixture("role-word-deleted-test", |pool, f| async move {
+        let fact = stated(
+            &pool,
+            &f,
+            &[(f.chunk_a, "lines", "40-52"), (f.chunk_b, "lines", "58-70")],
+        )
+        .await?;
+        supersede(&pool, f.chunk_a, "2026-03-01").await?;
+        sqlx::query("UPDATE documents SET deleted_at = now() WHERE kb_id = $1")
+            .bind(f.kb)
+            .execute(&pool)
+            .await?;
+        assert_eq!(
+            speaking(&pool, fact).await?,
+            vec![lines("58-70", f.chunk_b)]
+        );
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test]
+async fn a_restored_document_lets_its_live_chunk_speak_58_70_alone_again() -> anyhow::Result<()> {
+    with_fixture("role-word-restored-test", |pool, f| async move {
+        let fact = stated(
+            &pool,
+            &f,
+            &[(f.chunk_a, "lines", "40-52"), (f.chunk_b, "lines", "58-70")],
+        )
+        .await?;
+        supersede(&pool, f.chunk_a, "2026-03-01").await?;
+        let deleted_at = |at: Option<&'static str>| {
+            sqlx::query("UPDATE documents SET deleted_at = $2::timestamptz WHERE kb_id = $1")
+                .bind(f.kb)
+                .bind(at)
+                .execute(&pool)
+        };
+        // 删在取代之前：两块同一刻到头，都说话
+        deleted_at(Some("2026-02-01")).await?;
+        assert_eq!(
+            speaking(&pool, fact).await?,
+            vec![lines("40-52", f.chunk_a), lines("58-70", f.chunk_b)]
+        );
+        deleted_at(None).await?;
+        assert_eq!(
+            speaking(&pool, fact).await?,
+            vec![lines("58-70", f.chunk_b)]
+        );
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test]
+async fn a_stale_read_as_of_february_shows_40_52_before_the_latest_chunk_existed(
+) -> anyhow::Result<()> {
+    with_fixture("role-word-stale-as-of-test", |pool, f| async move {
+        let fact = stated(
+            &pool,
+            &f,
+            &[(f.chunk_a, "lines", "40-52"), (f.chunk_b, "lines", "58-70")],
+        )
+        .await?;
+        sqlx::raw_sql(&format!(
+            "UPDATE documents SET created_at = '2026-01-01' WHERE kb_id = '{kb}';
+             UPDATE chunks SET created_at = '2026-01-01', superseded_at = '2026-02-01'
+              WHERE id = '{a}';
+             UPDATE chunks SET created_at = '2026-03-01', superseded_at = '2026-04-01'
+              WHERE id = '{b}';",
+            kb = f.kb,
+            a = f.chunk_a,
+            b = f.chunk_b,
+        ))
+        .execute(&pool)
+        .await?;
+        let as_of = "2026-02-15T00:00:00Z".parse::<chrono::DateTime<chrono::Utc>>()?;
+        let read = graph::statement_qualifiers_for(&pool, &[fact], Some(as_of)).await?;
+        assert_eq!(
+            read[&fact]
+                .iter()
+                .map(|q| q.value.clone())
+                .collect::<Vec<_>>(),
+            vec![Some(serde_json::json!("40-52"))]
+        );
+        Ok(())
+    })
+    .await
+}
+
+#[tokio::test]
+async fn a_read_as_of_february_shows_40_52_said_before_the_march_push() -> anyhow::Result<()> {
+    with_fixture("role-word-as-of-test", |pool, f| async move {
+        let fact = stated(
+            &pool,
+            &f,
+            &[(f.chunk_a, "lines", "40-52"), (f.chunk_b, "lines", "58-70")],
+        )
+        .await?;
+        sqlx::raw_sql(&format!(
+            "UPDATE entities SET created_at = '2026-01-01' WHERE kb_id = '{kb}';
+             UPDATE documents SET created_at = '2026-01-01' WHERE kb_id = '{kb}';
+             UPDATE facts SET recorded_at = '2026-01-01' WHERE id = '{fact}';
+             UPDATE chunks SET created_at = '2026-01-01', superseded_at = '2026-03-01'
+              WHERE id = '{a}';
+             UPDATE chunks SET created_at = '2026-03-01' WHERE id = '{b}';",
+            kb = f.kb,
+            a = f.chunk_a,
+            b = f.chunk_b,
+        ))
+        .execute(&pool)
+        .await?;
+        let read_at = |as_of: Option<&str>| {
+            let pool = pool.clone();
+            let as_of = as_of.map(|t| t.parse::<chrono::DateTime<chrono::Utc>>().unwrap());
+            async move {
+                let (_, facts) = graph::entity_detail(&pool, f.kb, f.acme, None, as_of).await?;
+                let row = facts
+                    .into_iter()
+                    .find(|x| x.id == fact)
+                    .expect("the statement");
+                anyhow::Ok(
+                    row.statement_qualifiers
+                        .into_iter()
+                        .map(|q| q.value)
+                        .collect::<Vec<_>>(),
+                )
+            }
+        };
+        assert_eq!(
+            read_at(Some("2026-02-01T00:00:00Z")).await?,
+            vec![Some(serde_json::json!("40-52"))]
+        );
+        assert_eq!(read_at(None).await?, vec![Some(serde_json::json!("58-70"))]);
+        Ok(())
+    })
+    .await
 }

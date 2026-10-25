@@ -36,7 +36,7 @@ declared attribute for typed rows, converted by the attribute's datatype, the un
 text (`$4 billion` becomes 4000000000 with unit `$`) and the declared unit only when the text
 carries none; a qualifier is not part of the edge's identity; every superseding writer copies
 qualifiers with the evidence [0037, #731]. Entity detail, graph edges and the MCP `entity_facts`
-tool return both: typed ones in `qualifiers`, role words in `statement_qualifiers` [#1267].
+tool return both: typed ones in `qualifiers`, role words in `statement_qualifiers`, each with the live chunks that say it [#1267, 0070].
 `time_mentions (fact, chunk, text, char_start)` hold verbatim time words [#731]. Names are value facts on `known_as` [0041]. `entities.description`
 marks a described, unnamed thing [#731].
 

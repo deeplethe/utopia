@@ -437,6 +437,42 @@ async fn a_second_push_under_the_same_identity_updates_in_place() -> anyhow::Res
     f.cleanup().await
 }
 
+/// 0070 的例子：再推一次把 `lines` 从 40-52 改成 58-70，读回来只有新的范围
+#[tokio::test]
+async fn a_re_push_that_moves_lines_to_58_70_reads_back_only_58_70() -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    for lines in ["40-52", "58-70"] {
+        let mut body = observation("08:14:03", "kitchen table");
+        body["s"][0][5] = json!({ "lines": lines });
+        let (status, body) = f.push(f.source, &f.token, &body).await?;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let doc = documents::find_by_external_key(&f.pool, f.source, "statements:obs-000412")
+            .await?
+            .expect("the push has a document");
+        crate::pipeline::process_document(&f.state, doc.id).await?;
+        let proposer = Proposer {
+            user_id: None,
+            token_id: None,
+        };
+        crate::extraction::extract_document(&f.state, doc.id, proposer).await?;
+    }
+    let (cup,): (Uuid,) =
+        sqlx::query_as("SELECT id FROM entities WHERE kb_id = $1 AND canonical_name = 'cup-7'")
+            .bind(f.kb)
+            .fetch_one(&f.pool)
+            .await?;
+    let (_, facts) = utopia_store::graph::entity_detail(&f.pool, f.kb, cup, None, None).await?;
+    let said: Vec<_> = facts
+        .iter()
+        .flat_map(|x| &x.statement_qualifiers)
+        .map(|q| (q.role.as_str(), q.value.clone()))
+        .collect();
+    assert_eq!(said, vec![("lines", Some(json!("58-70")))]);
+    f.cleanup().await
+}
+
 /// 门口的拒绝走到 HTTP 是 422（`AppError::Validation`，与 `api` 推送被拒时同一个码），
 /// 并且这次推送留在 run 历史里；`api` 来源不认这条路由（404），钥匙不对是 401
 #[tokio::test]

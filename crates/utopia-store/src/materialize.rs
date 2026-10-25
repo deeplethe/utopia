@@ -208,8 +208,8 @@ async fn materialize_in_tx(
                    AND b.relation_type_id = t.predicate_id
                    AND ((b.direction = 'forward' AND t.subject_id = s.subject_id)
                      OR (b.direction = 'reverse' AND t.subject_id = s.object_id))
-                   AND NOT EXISTS (SELECT 1 FROM statement_qualifiers q
-                                    WHERE q.fact_id = s.id AND q.role = 'mood'))"
+                   AND {NO_MOOD})",
+        NO_MOOD = no_mood_spoken(),
     ))
     .persistent(false)
     .bind(kb_id)
@@ -274,8 +274,7 @@ async fn materialize_in_tx(
           WHERE s.kb_id = $1 AND s.layer = 'open' AND s.invalidated_at IS NULL
             AND b.status = 'bound'
             AND (b.direction = 'forward' OR s.object_id IS NOT NULL)
-            AND NOT EXISTS (SELECT 1 FROM statement_qualifiers q
-                             WHERE q.fact_id = s.id AND q.role = 'mood')
+            AND {NO_MOOD}
             -- 勘误撤过的（陈述, 属性）不再算（0044 决定 7）：撤销要站得住
             AND NOT EXISTS (SELECT 1 FROM errata_actions ea
                              WHERE ea.statement_id = s.id AND ea.predicate_id = b.relation_type_id
@@ -283,7 +282,8 @@ async fn materialize_in_tx(
             AND NOT EXISTS (SELECT 1 FROM typed_fact_sources src JOIN facts t ON t.id = src.fact_id
                              WHERE src.statement_id = s.id AND t.invalidated_at IS NULL
                                AND t.predicate_id = b.relation_type_id)
-          ORDER BY s.id"
+          ORDER BY s.id",
+        NO_MOOD = no_mood_spoken(),
     ))
     .persistent(false)
     .bind(kb_id)
@@ -560,7 +560,7 @@ async fn imply_in_tx(
                                    AND pr.reading = r.reading AND pr.phrase = {TEXT}
           WHERE r.kb_id = $1 AND r.status = 'approved' AND r.trigger = 'phrase'
             AND {RULE_MATCH}
-            AND NOT EXISTS (SELECT 1 FROM statement_qualifiers q WHERE q.fact_id = s.id AND q.role = 'mood')
+            AND {NO_MOOD}
             AND (r.reading IS NULL OR pr.entity_id IS NOT NULL OR pr.value IS NOT NULL)
             AND NOT EXISTS (SELECT 1 FROM errata_actions ea
                              WHERE ea.statement_id = s.id AND ea.predicate_id = r.conclude_property_id
@@ -570,6 +570,7 @@ async fn imply_in_tx(
           ORDER BY s.id",
         TEXT = crate::implication_rules::object_text_sql(),
         RULE_MATCH = crate::implication_rules::RULE_MATCH,
+        NO_MOOD = no_mood_spoken(),
     ))
     .persistent(false)
     .bind(kb_id)
@@ -831,6 +832,14 @@ fn attribute_value(raw: &Value, datatype: Option<&str>, unit: Option<&str>) -> O
     };
     out["value"] = read;
     Some(out)
+}
+
+/// 陈述 `s` 没有一个说着话的 `mood`（0070 决定 2）：重推丢掉了 mood，旧块上的 mood 就不再拦着
+fn no_mood_spoken() -> String {
+    format!(
+        "NOT EXISTS (SELECT 1 FROM statement_qualifiers q WHERE q.fact_id = s.id AND q.role = 'mood' AND {})",
+        crate::record_axis::role_word_speaks_at("q", None)
+    )
 }
 
 /// 类别词的归一（同 type_bindings）：这里要在 SQL 里对上实体的 specific_type

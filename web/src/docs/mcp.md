@@ -143,7 +143,9 @@ unaccepted predicate name; it does **not** mean the fact is derived.
 `qualifier_type_id`, `key`, `label`, raw `value`, `entity_id`, and `entity_name`.
 `statement_qualifiers[]` holds the document's own role words for the statement
 (such as `amount` or `lines`), which are not declared attributes: each has `role`,
-raw `value`, `entity_id`, and `entity_name`.
+raw `value`, `entity_id`, `entity_name`, and the `chunk_ids` that say it. Only
+chunks live at the read's time speak, so a re-pushed value replaces the old one;
+two live chunks that disagree give two entries.
 
 A `derived_facts[]` entry contains `id`, `subject_id`, `subject`, `predicate_id`,
 `predicate`, `object_id`, `object`, raw `object_value`, `rule`, `rule_name`,

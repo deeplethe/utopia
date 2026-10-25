@@ -676,6 +676,8 @@ pub struct StatementQualifier {
     pub value: Option<serde_json::Value>,
     pub entity_id: Option<Uuid>,
     pub entity_name: Option<String>,
+    /// 说这个值的那几块（0070）：两块活着的块说法不同，各自一条
+    pub chunk_ids: Vec<Uuid>,
 }
 
 /// 一次 OWL 导入的记录。原文按内容寻址存在 blob 里，这行只是账。

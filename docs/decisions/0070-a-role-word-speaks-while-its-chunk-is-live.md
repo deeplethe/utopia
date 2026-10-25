@@ -1,6 +1,6 @@
 # 0070 · A role word speaks while its chunk is live
 
-- **Status**: In progress · 2026-10-25 · [#1267](https://github.com/deeplethe/utopia/issues/1267) · decision 1 built (migration 0121) · open: decisions 2 to 4
+- **Status**: In progress · 2026-10-25 · [#1267](https://github.com/deeplethe/utopia/issues/1267) · decision 1 built (migration 0121), decisions 2 and 3 built (`record_axis::role_word_speaks_at`, the three `mood` checks included) · open: decision 4
 - **Written**: 2026-10-16 (conventions in the [README](README.md))
 - **Related**: [0037](0037-a-relation-carries-its-own-attributes.md) decided that a qualifier is not part of a fact's identity and that the first value stays; [0044](0044-the-ontology-is-a-view-over-what-documents-say.md) owns the open statement and the role words on it; [0054](0054-a-source-may-push-statements-in-the-open-contract.md) decision 7 is the re-push that supersedes a chunk; migration `0061` created `statement_qualifiers`; [0048](0048-provenance-references-stay-inside-the-knowledge-base.md) gets one more edge to keep inside the base; [0019](0019-the-second-clock-can-be-rewound.md) is the record axis `as_of` reads on; [#1267](https://github.com/deeplethe/utopia/issues/1267), [#1272](https://github.com/deeplethe/utopia/issues/1272)
 
