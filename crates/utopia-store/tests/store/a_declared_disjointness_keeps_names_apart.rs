@@ -208,12 +208,11 @@ async fn an_undeclared_class_pair_queues_a_drift_review() -> anyhow::Result<()> 
     let f = seed(&pool).await?;
 
     let run = async {
-        let thing: Uuid = sqlx::query_scalar(
-            "SELECT id FROM entity_types WHERE kb_id = $1 AND key = 'thing'",
-        )
-        .bind(f.kb)
-        .fetch_one(&pool)
-        .await?;
+        let thing: Uuid =
+            sqlx::query_scalar("SELECT id FROM entity_types WHERE kb_id = $1 AND key = 'thing'")
+                .bind(f.kb)
+                .fetch_one(&pool)
+                .await?;
         let (ticket, work_item) = (Uuid::now_v7(), Uuid::now_v7());
         for (id, key) in [(ticket, "ticket"), (work_item, "work_item")] {
             sqlx::query("INSERT INTO entity_types (id, kb_id, key, label) VALUES ($1, $2, $3, $3)")
