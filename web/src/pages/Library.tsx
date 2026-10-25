@@ -51,6 +51,7 @@ import {
   SYNCING_KINDS,
   type LibrarySelection,
 } from "./SourcesRail";
+import { GoogleDrivePanel } from "./GoogleDrivePanel";
 
 const PAGE_SIZE = 15;
 
@@ -801,8 +802,10 @@ export function Library() {
           onDone={(id, pushKind) => {
             setAdding(false);
             if (id) setSelection(id);
+            // Google Drive 建好直接打开设置：连接账号、选文件夹都在那里
+            if (id && pushKind === "google_drive") setEditing(true);
             // 推送来源建好直接打开密钥弹窗（onboarding：端点 + 密钥一步拿全）
-            if (id && pushKind) setTokenReveal({ sourceId: id, kind: pushKind });
+            else if (id && pushKind) setTokenReveal({ sourceId: id, kind: pushKind });
             invalidate();
           }}
         />
@@ -1330,7 +1333,8 @@ function SourceModal({
 }: {
   kbId: string;
   /** isApi=true 时父级紧接着打开密钥弹窗 */
-  /** 第二个参数：建的是推送来源时它的 kind（`api` / `statements`），别的不给 */
+  /** 第二个参数：建的是推送来源时它的 kind（`api` / `statements`）、或 `google_drive`
+   *  （建好还得连账号、选文件夹），别的不给 */
   onDone: (id?: string, pushKind?: string) => void;
 }) {
   const [kind, setKind] = useState<CreatableSourceKind>("folder");
@@ -1381,7 +1385,14 @@ function SourceModal({
     kind === "azure_blob" ||
     kind === "gcs" ||
     kind === "webdav" ||
-    kind === "notion";
+    kind === "notion" ||
+    kind === "google_drive";
+  // 部署没配 OAuth 客户端时建出来也连不上，不让建
+  const driveStatus = useQuery({
+    queryKey: ["google-drive-status"],
+    queryFn: api.googleDriveStatus,
+    enabled: kind === "google_drive",
+  });
 
   const create = useMutation({
     mutationFn: () => {
@@ -1469,7 +1480,10 @@ function SourceModal({
       });
     },
     onSuccess: (data) =>
-      onDone(data.source.id, kind === "api" || kind === "statements" ? kind : undefined),
+      onDone(
+        data.source.id,
+        kind === "api" || kind === "statements" || kind === "google_drive" ? kind : undefined,
+      ),
   });
 
   const valid =
@@ -1482,6 +1496,8 @@ function SourceModal({
           ? endpoint.trim()
           : kind === "notion"
             ? notionToken.trim()
+            : kind === "google_drive"
+              ? driveStatus.data?.enabled
             : kind === "webdav"
               ? davUrl.trim()
             : kind === "s3" || kind === "azure_blob" || kind === "gcs"
@@ -1793,6 +1809,13 @@ function SourceModal({
                 />,
               )}
             </>
+          )}
+          {kind === "google_drive" && (
+            <p className="mb-3 text-fine leading-relaxed text-ink-2">
+              {driveStatus.data && !driveStatus.data.enabled
+                ? S.library.googleDrive.notConfigured
+                : S.library.googleDrive.createHint}
+            </p>
           )}
           {kind === "notion" && (
             <>
@@ -2140,6 +2163,8 @@ function SourceEditModal({
               )}
             </>
           )}
+
+          {kind === "google_drive" && <GoogleDrivePanel kbId={kbId} source={source} />}
 
           {ingestChanged && (
             <p className="mb-3 text-fine leading-relaxed text-ink-2">
