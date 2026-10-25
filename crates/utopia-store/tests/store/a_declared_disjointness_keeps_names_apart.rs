@@ -197,6 +197,64 @@ async fn a_declared_disjointness_keeps_names_apart() -> anyhow::Result<()> {
     run
 }
 
+/// 0041 d4：只有声明的互斥才排除候选（#1338）。两个类既没声明互斥、也不是一家、
+/// 也不在硬表里，同名照样新建，但要进审阅队列，不能被当成互斥静默分开
+#[tokio::test]
+async fn an_undeclared_class_pair_queues_a_drift_review() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let f = seed(&pool).await?;
+
+    let run = async {
+        let thing: Uuid = sqlx::query_scalar(
+            "SELECT id FROM entity_types WHERE kb_id = $1 AND key = 'thing'",
+        )
+        .bind(f.kb)
+        .fetch_one(&pool)
+        .await?;
+        let (ticket, work_item) = (Uuid::now_v7(), Uuid::now_v7());
+        for (id, key) in [(ticket, "ticket"), (work_item, "work_item")] {
+            sqlx::query("INSERT INTO entity_types (id, kb_id, key, label) VALUES ($1, $2, $3, $3)")
+                .bind(id)
+                .bind(f.kb)
+                .bind(key)
+                .execute(&pool)
+                .await?;
+            sqlx::query("INSERT INTO entity_type_parents (child_id, parent_id) VALUES ($1, $2)")
+                .bind(id)
+                .bind(thing)
+                .execute(&pool)
+                .await?;
+        }
+
+        let acme = entity(&pool, &f, "ACME-1", ticket).await?;
+        assert_eq!(
+            drift_reviews(&pool, &f, "ACME-1", work_item).await?,
+            vec![acme],
+            "nothing declares ticket disjoint from work_item: the namesake goes to Review"
+        );
+
+        ontology::set_disjoint_for(&pool, f.kb, ticket, &[work_item]).await?;
+        let _acme2 = entity(&pool, &f, "ACME-2", ticket).await?;
+        assert!(
+            drift_reviews(&pool, &f, "ACME-2", work_item)
+                .await?
+                .is_empty(),
+            "once declared disjoint, the pair stays apart"
+        );
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+
+    let _ = sqlx::query("DELETE FROM organizations WHERE id = $1")
+        .bind(f.org)
+        .execute(&pool)
+        .await;
+    run
+}
+
 /// 名字向量那条通道也听声明（#1293）：project 认不出大类，从前声明了互斥照样排对
 #[tokio::test]
 async fn a_declared_disjointness_keeps_near_names_apart() -> anyhow::Result<()> {
