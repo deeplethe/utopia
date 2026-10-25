@@ -906,6 +906,12 @@ pub fn written_date(s: &str) -> Option<(NaiveDate, &'static str)> {
     if year.len() != 4 || day.is_some_and(|d| d.len() > 2) {
         return None;
     }
+    // 美联社写法把九月缩成四个字母的「Sept.」，chrono 的 `%b` 只认三个字母
+    let month = if month.eq_ignore_ascii_case("sept") {
+        "Sep"
+    } else {
+        month
+    };
     let month = ["%B", "%b"].iter().find_map(|f| {
         NaiveDate::parse_from_str(&format!("1 {month} 2000"), &format!("%d {f} %Y"))
             .ok()
@@ -1345,6 +1351,25 @@ mod tests {
         assert_eq!(
             read_time("17 Mar 2020").map(|(t, p)| (t.date_naive().to_string(), p)),
             Some(("2020-03-17".to_string(), "day"))
+        );
+    }
+
+    #[test]
+    fn september_abbreviated_as_sept_is_read() {
+        use serde_json::json;
+        let day = |s: &str| normalize_attr_value("date", &json!(s));
+        for written in [
+            "Sept. 17, 2020",
+            "Sept 17, 2020",
+            "17 Sept. 2020",
+            "SEPT. 17, 2020",
+        ] {
+            assert_eq!(day(written), Some(json!("2020-09-17")), "{written}");
+        }
+        assert_eq!(day("Sept. 2020"), Some(json!("2020-09")));
+        assert_eq!(
+            read_time("Sept. 30, 2025").map(|(t, p)| (t.date_naive().to_string(), p)),
+            Some(("2025-09-30".to_string(), "day"))
         );
     }
 
