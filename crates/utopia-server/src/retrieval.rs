@@ -16,11 +16,41 @@
 
 use crate::llm_util;
 use crate::state::AppState;
-use utopia_core::models::ChunkView;
+use serde::Serialize;
+use std::collections::HashMap;
+use utopia_core::models::{ChunkView, SourcedChunk};
 use utopia_core::AppResult;
 use uuid::Uuid;
 
 const RECALL_PER_CHANNEL: usize = 24;
+
+/// 翻页最深到第几条（#1271）：再深就是在拿检索当导出用
+pub const MAX_DEPTH: usize = 100;
+
+pub struct SearchOpts {
+    pub top_k: usize,
+    pub offset: usize,
+    pub as_of: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// 一条命中连同它的分数（#1271）。`score` 是 RRF 总分，只在同一次查询里能排先后，
+/// 跨查询不可比；两个名次从 1 数，没进那一路是 None
+#[derive(Debug, Serialize)]
+pub struct ScoredChunk {
+    #[serde(flatten)]
+    pub chunk: SourcedChunk,
+    pub score: f64,
+    pub bm25_rank: Option<u32>,
+    pub vector_rank: Option<u32>,
+}
+
+#[derive(Debug)]
+pub struct SearchPage {
+    pub results: Vec<ScoredChunk>,
+    pub has_more: bool,
+    /// 向量那一路跑了没有；false 就是模块头说的静默降级
+    pub vector_used: bool,
+}
 
 pub async fn hybrid(
     state: &AppState,
@@ -31,32 +61,128 @@ pub async fn hybrid(
     as_of: Option<chrono::DateTime<chrono::Utc>>,
     embeddings: Option<&mut llm_util::EmbedCache>,
 ) -> AppResult<Vec<ChunkView>> {
+    let (hits, _) = fused_hits(
+        state,
+        kb_id,
+        workspace_id,
+        query,
+        RECALL_PER_CHANNEL,
+        as_of,
+        embeddings,
+    )
+    .await?;
+    Ok(hits
+        .into_iter()
+        .take(top_k)
+        .map(|hit| hit.chunk.chunk)
+        .collect())
+}
+
+/// 一页命中（#1271）。每一页都向每路要同样的 `MAX_DEPTH` 条，所以各页切的是
+/// 同一张融合表：页与页不重不漏。到了 `MAX_DEPTH` 的那一页没有下一页（再翻就是 422），
+/// `has_more` 是 false
+pub async fn hybrid_scored(
+    state: &AppState,
+    kb_id: Uuid,
+    workspace_id: Uuid,
+    query: &str,
+    opts: SearchOpts,
+    embeddings: Option<&mut llm_util::EmbedCache>,
+) -> AppResult<SearchPage> {
+    let (hits, vector_used) = fused_hits(
+        state,
+        kb_id,
+        workspace_id,
+        query,
+        MAX_DEPTH,
+        opts.as_of,
+        embeddings,
+    )
+    .await?;
+    let end = opts.offset + opts.top_k;
+    let has_more = end < MAX_DEPTH && hits.len() > end;
+    let results = hits
+        .into_iter()
+        .skip(opts.offset)
+        .take(opts.top_k)
+        .collect();
+    Ok(SearchPage {
+        results,
+        has_more,
+        vector_used,
+    })
+}
+
+/// 两路各取 `per_channel` 条、RRF 融合、按记录轴过滤后的整张表，连同向量那一路跑了没有
+async fn fused_hits(
+    state: &AppState,
+    kb_id: Uuid,
+    workspace_id: Uuid,
+    query: &str,
+    per_channel: usize,
+    as_of: Option<chrono::DateTime<chrono::Utc>>,
+    embeddings: Option<&mut llm_util::EmbedCache>,
+) -> AppResult<(Vec<ScoredChunk>, bool)> {
     let bm25 = {
         let search = state.search.clone();
         let kb = kb_id.to_string();
         let query = query.to_string();
-        tokio::task::spawn_blocking(move || search.search(&kb, &query, RECALL_PER_CHANNEL))
+        tokio::task::spawn_blocking(move || search.search(&kb, &query, per_channel))
     };
     // `join!` 不是 `try_join!`：向量那一路失败是降级不是错误（见 vector_channel），
     // `try_join!` 会把模型故障变成检索报错
     let (bm25, vector) = tokio::join!(
         bm25,
-        vector_channel(state, kb_id, workspace_id, query, as_of, embeddings)
+        vector_channel(
+            state,
+            kb_id,
+            workspace_id,
+            query,
+            per_channel,
+            as_of,
+            embeddings
+        )
     );
     let bm25 = bm25
         .map_err(|e| utopia_core::AppError::Other(anyhow::anyhow!("BM25 检索线程退出：{e}")))?
         .map_err(utopia_core::AppError::Other)?;
-    let lists = channel_lists(bm25.into_iter().map(|h| h.chunk_id).collect(), vector?);
+    let vector = vector?;
+    let vector_used = vector.is_some();
+    let lists = channel_lists(bm25.into_iter().map(|h| h.chunk_id).collect(), vector);
 
     // Keep the bounded channel candidates until their record-time and document
     // filters have run: newer hits must not consume a historical query's limit.
     let candidate_limit = lists.iter().map(Vec::len).sum();
-    let fused = utopia_search::rrf_fuse(&lists, candidate_limit);
-    let ids: Vec<Uuid> = fused.iter().filter_map(|s| s.parse().ok()).collect();
-    let mut chunks =
-        utopia_store::documents::chunks_by_ids(&state.pool, kb_id, &ids, as_of).await?;
-    chunks.truncate(top_k);
-    Ok(chunks)
+    let fused: Vec<(Uuid, utopia_search::Fused)> =
+        utopia_search::rrf_fuse_scored(&lists, candidate_limit)
+            .into_iter()
+            .filter_map(|f| Some((f.id.parse().ok()?, f)))
+            .collect();
+    let ids: Vec<Uuid> = fused.iter().map(|(id, _)| *id).collect();
+    let live = utopia_store::documents::chunks_by_ids(&state.pool, kb_id, &ids, as_of).await?;
+    let mut fused: HashMap<Uuid, utopia_search::Fused> = fused.into_iter().collect();
+    let hits = live
+        .into_iter()
+        .filter_map(|chunk| {
+            let f = fused.remove(&chunk.chunk.id)?;
+            Some(ScoredChunk {
+                chunk,
+                score: f.score,
+                bm25_rank: position(&f.ranks, 0),
+                vector_rank: position(&f.ranks, 1),
+            })
+        })
+        .collect();
+    Ok((hits, vector_used))
+}
+
+/// 第 `channel` 路里的名次，从 1 数
+fn position(ranks: &[Option<usize>], channel: usize) -> Option<u32> {
+    ranks
+        .get(channel)
+        .copied()
+        .flatten()
+        .map(|rank| rank as u32 + 1)
 }
 
 /// 向量那一路。没配嵌入模型、嵌入请求失败、回了空，都是 `Ok(None)`：检索照常，
@@ -70,6 +196,7 @@ async fn vector_channel(
     kb_id: Uuid,
     workspace_id: Uuid,
     query: &str,
+    per_channel: usize,
     as_of: Option<chrono::DateTime<chrono::Utc>>,
     cache: Option<&mut llm_util::EmbedCache>,
 ) -> AppResult<Option<Vec<String>>> {
@@ -101,7 +228,7 @@ async fn vector_channel(
         &state.pool,
         kb_id,
         &vector,
-        RECALL_PER_CHANNEL as i64,
+        per_channel as i64,
         as_of,
     )
     .await?;

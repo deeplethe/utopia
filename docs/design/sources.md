@@ -1,6 +1,6 @@
 # A source hands over its history
 
-Records: [0013] (connectors), [0023] and [0033] (RSS), [0039] (chunks), [0040] (origin and media),
+Records: [0013] (connectors), [0074] (Google Drive), [0023] and [0033] (RSS), [0039] (chunks), [0040] (origin and media),
 [0035] (vector index), [0036] d7 (schema documents), [0005] (sync alerts), [0022] and [0045] d3
 (document dates), [0016] E.
 
@@ -14,7 +14,7 @@ source, upload_time, none) is the document's own date; upload time is recorded t
 document date, so an upload-dated document counts as undated for attestation and ordering
 [0022, 0045, #714].
 
-**Connectors.** GitHub issues, Jira, Notion, RSS, WebDAV, S3 / Azure / GCS, and custom push with an
+**Connectors.** GitHub issues, Jira, Notion, Google Drive, RSS, WebDAV, S3 / Azure / GCS, and custom push with an
 `ingest_token`; the kinds come from one `SourceKind` enum that the allowlist, the dispatcher and the
 web list derive from; credentials never leave the server (`SOURCE_SECRET_KEYS`) and a blank field
 keeps the stored value; a truncated round says so [0013]. A ticket is one document whose body
@@ -25,6 +25,8 @@ changed is not fetched again, and identical files at several paths go in once [#
 (gitlab.com; self-managed is not verified) takes the same shape; its tree is paged, so a tree that
 runs past the page cap is a truncated round, and its entries carry no size, so the size cap is read
 from a `HEAD` on the file before anything is downloaded [#1327].
+
+**Google Drive.** A person connects it with OAuth and it reads Drive as them; the refresh token is a sealed source secret and the browser never holds a Google token; the flow is bound to the session that started it; only the person who connected picks folders, subfolders come along, and a sync stops once that person is no longer an editor; a run downloads at most 2000 files and says so when it stops there; Docs, Sheets and Slides are exported to DOCX, XLSX and PPTX; change is Drive's marker (`md5Checksum`, or `modifiedTime` for Google formats) because an export's bytes differ every time; "not in source" only after a complete walk [0074].
 
 **Statements.** A `statements` source takes the open extraction contract itself (`e`, `s`, `n`) on `POST /sources/{id}/statements`, with the `api` push's identity, versions, tombstones and run history; the payload is the document and its single chunk, and extraction parses the chunk instead of prompting a model, then runs the unchanged path, so a pushed statement is an open statement with the item as its evidence (null offsets) and reaches the typed graph only through alignment. The contract has no slot for a property or a class and unknown keys are refused; a second push under the same identity marks the earlier statements stale rather than closing them; tables belong on a mount, not here [0054].
 
