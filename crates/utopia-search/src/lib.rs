@@ -180,28 +180,53 @@ impl SearchIndex {
     }
 }
 
+/// 融合后的一条：RRF 总分，和它在每一路里的名次（0 起；没进那一路是 None）。
+/// 分数只在同一次查询里可比，换一句话就是另一把尺子
+#[derive(Debug, Clone, PartialEq)]
+pub struct Fused {
+    pub id: String,
+    pub score: f64,
+    pub ranks: Vec<Option<usize>>,
+}
+
 /// Reciprocal Rank Fusion：融合多路召回的排名（k=60 为经验常数）。
 pub fn rrf_fuse(lists: &[Vec<String>], limit: usize) -> Vec<String> {
+    rrf_fuse_scored(lists, limit)
+        .into_iter()
+        .map(|fused| fused.id)
+        .collect()
+}
+
+/// 同 [`rrf_fuse`]，但把分数和各路名次一并交回来
+pub fn rrf_fuse_scored(lists: &[Vec<String>], limit: usize) -> Vec<Fused> {
     const K: f64 = 60.0;
-    let mut scores: HashMap<String, f64> = HashMap::new();
-    for list in lists {
+    let mut by_id: HashMap<String, Fused> = HashMap::new();
+    for (channel, list) in lists.iter().enumerate() {
         for (rank, id) in list.iter().enumerate() {
-            *scores.entry(id.clone()).or_default() += 1.0 / (K + rank as f64 + 1.0);
+            let fused = by_id.entry(id.clone()).or_insert_with(|| Fused {
+                id: id.clone(),
+                score: 0.0,
+                ranks: vec![None; lists.len()],
+            });
+            fused.score += 1.0 / (K + rank as f64 + 1.0);
+            fused.ranks[channel] = Some(rank);
         }
     }
-    let mut ranked: Vec<(String, f64)> = scores.into_iter().collect();
+    let mut ranked: Vec<Fused> = by_id.into_values().collect();
     // 同分按 id 定序，否则 HashMap 的随机顺序会改变上限内保留的证据和口径。
     ranked.sort_by(|a, b| {
-        b.1.partial_cmp(&a.1)
+        b.score
+            .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.0.cmp(&b.0))
+            .then_with(|| a.id.cmp(&b.id))
     });
-    ranked.into_iter().take(limit).map(|(id, _)| id).collect()
+    ranked.truncate(limit);
+    ranked
 }
 
 #[cfg(test)]
 mod rrf_tests {
-    use super::rrf_fuse;
+    use super::{rrf_fuse, rrf_fuse_scored, Fused};
 
     fn ids(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
@@ -220,6 +245,33 @@ mod rrf_tests {
     fn two_lists_follow_the_reciprocal_rank_arithmetic() {
         let lists = vec![ids(&["a", "b", "c"]), ids(&["c", "a"])];
         assert_eq!(rrf_fuse(&lists, 10), ids(&["a", "c", "b"]));
+    }
+
+    /// 分数就是各路名次倒数之和，名次记在各自那一路的位置上（#1271）
+    #[test]
+    fn scored_fusion_reports_the_sum_and_each_channels_rank() {
+        let lists = vec![ids(&["a", "b", "c"]), ids(&["c", "a"])];
+        let fused = rrf_fuse_scored(&lists, 10);
+        assert_eq!(
+            fused,
+            vec![
+                Fused {
+                    id: "a".into(),
+                    score: 1.0 / 61.0 + 1.0 / 62.0,
+                    ranks: vec![Some(0), Some(1)],
+                },
+                Fused {
+                    id: "c".into(),
+                    score: 1.0 / 63.0 + 1.0 / 61.0,
+                    ranks: vec![Some(2), Some(0)],
+                },
+                Fused {
+                    id: "b".into(),
+                    score: 1.0 / 62.0,
+                    ranks: vec![Some(1), None],
+                },
+            ]
+        );
     }
 
     /// 空的那一路不是失败的那一路：它什么分都不加，也不影响别人

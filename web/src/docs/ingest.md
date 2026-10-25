@@ -197,6 +197,37 @@ The credential is a personal access token (or a signed-in session) of someone wh
 
 `content` is the current version's text; older versions are at `GET /api/v1/documents/{id}/content?version=N`. An identity marked "Not in source", a document in the trash or purged, and an identity this source never pushed are all `404`.
 
+## Searching what you pushed
+
+A service can search the base's chunks with the same personal access token. The push token is not accepted here either.
+
+```
+POST {your-utopia-base}/api/v1/kbs/{kb_id}/search
+Authorization: Bearer utp_pat_…
+Content-Type: application/json
+
+{ "q": "harvest report", "top_k": 20, "offset": 0 }
+```
+
+`q` is required. `top_k` defaults to 10 and is capped at 50; `offset` defaults to 0. `as_of` (an RFC 3339 instant) reads the base as it was then; ranks are counted before `as_of` filters the hits. Any other field is a `422`.
+
+```json
+{
+  "results": [
+    {
+      "id": "0199…", "document_id": "0199…", "seq": 3, "text": "…", "filename": "obs-000412.json",
+      "source_id": "0199…", "external_id": "obs-000412",
+      "score": 0.0328, "bm25_rank": 1, "vector_rank": 2
+    }
+  ],
+  "offset": 0, "top_k": 20, "has_more": true, "vector_used": true
+}
+```
+
+`external_id` is the identity you pushed the document under, so you can match a hit to your own record; it is `null` for documents that did not come from an API or Statements push. `score` orders hits within this one query and means nothing across queries. `bm25_rank` and `vector_rank` count from 1 and are `null` when the hit was not in that channel. `vector_used` is `false` when no embedding model answered and the hits are keyword-only.
+
+Page by raising `offset` by `top_k` while `has_more` is `true`. Pages stop at a depth of 100: a request with `offset + top_k` above 100 is a `422` (`page_too_deep`), and the page that reaches 100 has `has_more: false`. Pages join without repeats only while the base does not change between requests.
+
 ---
 
 ## Shared semantics
