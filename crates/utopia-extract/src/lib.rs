@@ -926,9 +926,11 @@ fn year_first_date(s: &str) -> Option<Option<(NaiveDate, &'static str)>> {
     if !marked && !separated {
         return None;
     }
+    // PDF 抽出来的中文日期常在数字与年月日之间带空格：「2024 年 3 月 15 日」
     let parts: Vec<&str> = s
         .trim_end_matches('日')
         .split(['/', '.', '年', '月'])
+        .map(str::trim)
         .filter(|p| !p.is_empty())
         .collect();
     if !parts.iter().all(|p| p.chars().all(|c| c.is_ascii_digit())) {
@@ -1346,6 +1348,24 @@ mod tests {
             read_time("17 Mar 2020").map(|(t, p)| (t.date_naive().to_string(), p)),
             Some(("2020-03-17".to_string(), "day"))
         );
+    }
+
+    /// PDF 抽出来的中文日期，数字和年月日之间常带空格；写法说得清是哪天，照样读
+    #[test]
+    fn a_chinese_date_with_spaces_around_its_parts_is_read() {
+        use serde_json::json;
+        let day = |s: &str| normalize_attr_value("date", &json!(s));
+        assert_eq!(day("2024 年 3 月 15 日"), Some(json!("2024-03-15")));
+        assert_eq!(day("2024年 3月 15日"), Some(json!("2024-03-15")));
+        assert_eq!(day("2024 年 3 月"), Some(json!("2024-03")));
+        assert_eq!(day("1982 年"), Some(json!("1982")));
+        assert_eq!(
+            read_time("2024 年 3 月 15 日").map(|(t, p)| (t.date_naive().to_string(), p)),
+            Some(("2024-03-15".to_string(), "day"))
+        );
+        // 年不在前、或不是真实的日子，照旧不收
+        assert_eq!(day("3 月 15 日"), None);
+        assert_eq!(day("2024 年 2 月 30 日"), None);
     }
 
     #[test]
