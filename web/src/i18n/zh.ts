@@ -116,6 +116,15 @@ export const zh: Strings = {
     source_not_granted:
       "这个数据源没有授权给本工作区。请部署管理员在「管理 → 数据源」里授权。",
     memory_source_permanent: "「记忆」是知识库自带的来源，会一直在。",
+    google_drive_not_configured:
+      "这台服务器没有配置 Google Drive。需要管理员设置 UTOPIA_GOOGLE_DRIVE_CLIENT_ID、_CLIENT_SECRET 与 _REDIRECT_URI。",
+    google_drive_connected_by_someone_else: "这个来源读的是别人的 Google Drive。先断开，再连你自己的。",
+    google_drive_not_connector: "只有连上这个 Google Drive 的人能选它的文件夹。",
+    google_drive_not_connected: "先连接一个 Google 账号。",
+    google_drive_unavailable: "读不了 Google Drive。",
+    google_drive_busy: "同时进行的 Google Drive 连接太多，过几分钟再试。",
+    google_drive_too_many_folders: "最多选 50 个文件夹，可以改选它们共同的上级。",
+    google_drive_invalid_folder: "这不是一个 Google Drive 文件夹 id。",
     source_name_required: "给这个来源起个名字。",
     bad_cron: "这个 cron 表达式解析不了。",
     bad_cron_fields: "cron 表达式有五段：分 时 日 月 周。",
@@ -590,6 +599,7 @@ export const zh: Strings = {
       gcs: "Google Cloud Storage",
       webdav: "WebDAV",
       notion: "Notion",
+      google_drive: "Google Drive",
     },
     sourceKindHints: {
       folder: "可在文件夹中管理上传的文件：上传、拖入、删除都在这里。",
@@ -624,6 +634,10 @@ export const zh: Strings = {
       notion:
         "同步一个 Notion 集成能看见的页面——把页面分享给集成，它就会出现在这里。" +
         "日期取页面最后一次编辑的时刻，那是页面自己的时钟，不是我们抓它的时刻。",
+      google_drive:
+        "同步你在 Google Drive 里选的文件夹，共享云端硬盘也算。" +
+        "**用你自己的 Google 账号连接**，只读；Docs、Sheets、Slides 以 Word、Excel、PowerPoint " +
+        "文件进来。日期取每个文件最后一次修改的时刻。",
       api: "外部系统把 JSON 文档推送到这里，用这个来源自己的令牌认证。",
       statements:
         "外部系统把已经是抽取契约形状的陈述推送到这里，不经模型；发事件，别发整张表的状态。",
@@ -699,6 +713,39 @@ export const zh: Strings = {
     davPassField: "密码",
     notionTokenField: "内部集成令牌",
     notionQueryField: "搜索词（可选——留空则取全部已分享页面）",
+    googleDrive: {
+      createHint: "建好来源之后，连接一个 Google 账号并选择文件夹。",
+      notConfigured:
+        "这台服务器没有配置 Google Drive。需要管理员设置 UTOPIA_GOOGLE_DRIVE_CLIENT_ID、_CLIENT_SECRET 与 _REDIRECT_URI。",
+      account: "Google 账号",
+      connect: "连接 Google Drive",
+      reconnect: "重新连接",
+      disconnect: "断开",
+      waiting: "请在 Google 的窗口里完成……",
+      connectedAs: (email: string) => `已连接：${email}`,
+      connectedNoEmail: "已连接",
+      notConnected: "尚未连接。同步以连接者的权限读取 Drive。",
+      folders: "要同步的文件夹",
+      onlyConnector: "只有连上这个 Google Drive 的人能选文件夹：这些是他自己 Drive 里的文件夹。",
+      foldersHint: "包含子文件夹。这些文件夹之外的文件一概不读。",
+      myDrive: "我的云端硬盘",
+      sharedWithMe: "与我共享",
+      top: "Google Drive",
+      empty: "这里没有文件夹。",
+      open: "打开",
+      noneSelected: "还没有选文件夹。",
+      remove: "移除",
+      saveFolders: "保存并同步",
+      saved: "文件夹已保存，同步已开始。",
+      disconnectConfirm: (account: string, mine: boolean, connector: string) =>
+        mine
+          ? `停止读取你的 Google Drive（${account}）？这里会删掉它的授权和选好的文件夹，再连接要从头选。`
+          : `停止读取 ${connector} 连上的 Google Drive（${account}）？文件夹只有 ${connector} 选过。这里会删掉它的授权和那些文件夹。`,
+      unnamedAccount: "已连接的账号",
+      someoneElse: "别人",
+      cancel: "取消",
+      disconnected: "Google Drive 已断开。",
+    },
     tokenField: "GitHub 令牌（可选，不再显示）",
     gitlabTokenField: "带 read_api 的 GitLab 令牌（可选，不再显示）",
     includePullRequests: "把 PR 也当工单收进来",

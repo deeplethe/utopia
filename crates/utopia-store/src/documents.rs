@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use pgvector::Vector;
 use serde::Serialize;
 use sqlx::{PgPool, Postgres, Transaction};
-use utopia_core::models::{ChunkView, Document, DocumentPage};
+use utopia_core::models::{ChunkView, Document, DocumentPage, SourcedChunk};
 use utopia_core::{AppError, AppResult};
 use utopia_ingest::ChunkPiece;
 use uuid::Uuid;
@@ -1928,7 +1928,7 @@ pub async fn vector_search(
     Ok(rows.into_iter().map(|(id,)| id).collect())
 }
 
-/// 按 id 集合取分块（带文档名），保持传入顺序。
+/// 按 id 集合取分块（带文档名与来源），保持传入顺序。
 ///
 /// `as_of`：记录轴（0019）——那一刻还活着的块、还没被删的文档。文档的删除
 /// 同样是记录轴上的事件（#268 留了墓碑），所以两个条件一起倒。
@@ -1937,10 +1937,13 @@ pub async fn chunks_by_ids(
     kb_id: Uuid,
     ids: &[Uuid],
     as_of: Option<DateTime<Utc>>,
-) -> AppResult<Vec<ChunkView>> {
-    let rows: Vec<ChunkView> = sqlx::query_as(&format!(
-        "SELECT c.id, c.document_id, c.seq, c.text, d.filename
+) -> AppResult<Vec<SourcedChunk>> {
+    let rows: Vec<SourcedChunk> = sqlx::query_as(&format!(
+        "SELECT c.id, c.document_id, c.seq, c.text, d.filename, d.source_id,
+                CASE WHEN s.kind IN ('api', 'statements')
+                     THEN substr(d.external_key, length(s.kind) + 2) END AS external_id
          FROM chunks c JOIN documents d ON d.id = c.document_id
+         LEFT JOIN sources s ON s.id = d.source_id
          WHERE c.kb_id = $1 AND c.id = ANY($2)
            AND {live} AND {doc_live}",
         live = crate::record_axis::chunk_live_at("c", as_of.map(|_| 3)),
@@ -1952,8 +1955,8 @@ pub async fn chunks_by_ids(
     .fetch_all(pool)
     .await?;
     // 恢复 RRF 排名顺序
-    let mut by_id: std::collections::HashMap<Uuid, ChunkView> =
-        rows.into_iter().map(|c| (c.id, c)).collect();
+    let mut by_id: std::collections::HashMap<Uuid, SourcedChunk> =
+        rows.into_iter().map(|c| (c.chunk.id, c)).collect();
     Ok(ids.iter().filter_map(|id| by_id.remove(id)).collect())
 }
 

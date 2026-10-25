@@ -181,6 +181,7 @@ impl FromRequestParts<AppState> for AuthUser {
 /// 整库导出（决定 7）。
 ///
 /// 按推送时的 `external_id` 读回一篇文档（#1276）也是文档原件，开给令牌的理由写在决定 7。
+/// 分块检索（#1271）同样按决定 7 开给令牌。
 ///
 /// 令牌只收窄：`pat` 在的时候，路由先问 [`Self::require_write`] 或
 /// [`Self::reaches`]，角色照旧由 `require_kb` 与工作区角色判。

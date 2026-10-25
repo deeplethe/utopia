@@ -1,6 +1,6 @@
 # 0014 · Identity from the person, scope from the token
 
-- **Status**: Implemented · 2026-10-16 · #180, #318, #1243, #1262 · open: tokens across workspaces
+- **Status**: Implemented · 2026-10-16 · #180, #318, #1243, #1262, #1271 · open: tokens across workspaces
 - **Written**: 2026-09-01 · condensed into English 2026-09-03
 - **Related**: migration `0014_data_source_grants` gave data sources a grant layer; this is the same question where a machine knocks. [0004](0004-language-and-localization.md) has the server speak English only, MCP error codes included. [0015](0015-recording-a-sentence-is-not-asserting-a-fact.md) removes the main objection to opening `remember` over MCP.
 
@@ -120,6 +120,10 @@ push documents in.
    mirror to hold a write token for a read-only job. The control is the `kb.exported` audit row,
    which names the owner and, through `via_token`, the token.
 
+   Chunk search (`POST /kbs/{id}/search`, added 2026-10-24, #1271) takes a token on the same
+   terms, so the service can ask the base about what it mirrored. Each hit carries its score, its
+   BM25 and vector ranks and its source; `offset` pages through one fused list, at most 100 deep.
+
 ## Dead ends
 
 - **Base-level machine tokens**, one per base and unrelated to a person. It would be a third
@@ -148,7 +152,7 @@ push documents in.
   and document content" now also counts them. 2026-10-19: the graph overview and neighbourhood
   join them, and so does reading a pushed document back by its `external_id` (#1276). The
   ontology and a class's instances follow (#1265), then a document's extractions and the
-  base's export (#1266).
+  base's export (#1266). 2026-10-24: chunk search joins them (#1271).
 
 ## Open questions
 
