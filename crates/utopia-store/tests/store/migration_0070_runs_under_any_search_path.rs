@@ -430,6 +430,11 @@ const TRIGGER_EDGES: &[(&str, &str, &str)] = &[
     ),
     (
         "statement_qualifiers",
+        "chunk_id",
+        "statement_qualifiers_same_kb",
+    ),
+    (
+        "statement_qualifiers",
         "entity_id",
         "statement_qualifiers_same_kb",
     ),
@@ -619,7 +624,7 @@ struct Coverage {
 impl Coverage {
     /// 完备 = 没有未归类的边、没有腐掉的登记、面与机制互证得上,
     /// 每条受保护边都进了导出体检、体检里没有腐掉的分支,
-    /// 且两类已覆盖边的数量与当前迁移链的 44/16 一致。
+    /// 且两类已覆盖边的数量与当前迁移链的 44/17 一致。
     fn assert_complete(&self) -> anyhow::Result<()> {
         let mut problems = String::new();
         let mut dump = |name: &str, xs: &[String]| {
@@ -641,9 +646,10 @@ impl Coverage {
                 self.declarative.len()
             ));
         }
-        if self.trigger_covered.len() != 16 {
+        // 0121 adds the chunk a role word is recorded against.
+        if self.trigger_covered.len() != 17 {
             problems.push_str(&format!(
-                "  TRIGGER_EDGES = {} (expected 16)\n",
+                "  TRIGGER_EDGES = {} (expected 17)\n",
                 self.trigger_covered.len()
             ));
         }
@@ -1062,8 +1068,8 @@ async fn a_protected_edge_missing_from_preflight_fails_the_guard() -> anyhow::Re
 #[test]
 fn the_preflight_check_notices_a_dropped_or_stray_edge() -> anyhow::Result<()> {
     let surface = preflight_surface()?;
-    // 同一份文件两个方向各数一次:60 条结构边 + 5 条 merged 过滤检查
-    assert_eq!(surface.edges.len(), 60, "preflight 必须覆盖全部保护边");
+    // 同一份文件两个方向各数一次:61 条结构边 + 5 条 merged 过滤检查
+    assert_eq!(surface.edges.len(), 61, "preflight 必须覆盖全部保护边");
     assert_eq!(
         surface.filters,
         [
