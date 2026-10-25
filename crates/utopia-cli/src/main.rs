@@ -603,6 +603,7 @@ fn run_restore(args: RestoreArgs) -> anyhow::Result<()> {
         &target_data_dir,
         &stage,
         &manifest,
+        args.force,
     ) {
         let _ = std::fs::remove_dir_all(&stage);
         return Err(e);
@@ -678,6 +679,7 @@ fn apply_restore(
     target_data_dir: &Path,
     stage: &Path,
     manifest: &Manifest,
+    force: bool,
 ) -> anyhow::Result<()> {
     let pg_dump_path = stage.join(&manifest.components.pg_dump.path);
     if !pg_dump_path.exists() {
@@ -712,15 +714,16 @@ fn apply_restore(
                 target = %target_data_dir.display(),
                 "restoring data dir"
             );
-            // Drop the existing target dir if it's non-empty so the copy
-            // below doesn't merge two worlds. This is what `--force`
-            // guards upstream — if `--force` is missing and the target
-            // already has files, fail loud.
+            // A non-empty target would merge two data dirs. `--force` replaces
+            // it; without that flag, refuse and leave the old files alone.
             if target_data_dir.exists() && std::fs::read_dir(target_data_dir)?.next().is_some() {
-                anyhow::bail!(
-                    "target data dir {} is non-empty; pass --force to overwrite",
-                    target_data_dir.display()
-                );
+                if !force {
+                    anyhow::bail!(
+                        "target data dir {} is non-empty; pass --force to overwrite",
+                        target_data_dir.display()
+                    );
+                }
+                std::fs::remove_dir_all(target_data_dir)?;
             }
             // 恢复时照搬压缩包里有的：包里没有密钥，是打包那一步的决定，不是这里的
             copy_dir_recursive(&archive_data_dir, target_data_dir, true)?;
@@ -1067,6 +1070,88 @@ mod tests {
             err.contains("checksum mismatch"),
             "want a checksum error, got: {err}"
         );
+    }
+
+    /// `--force` is the switch that says a non-empty data dir may be replaced.
+    /// Without it the restore must stop and leave the old files. With it the
+    /// old files are gone and the archive's files are what remains — not a mix
+    /// of the two.
+    #[test]
+    fn force_replaces_a_non_empty_data_dir() {
+        let src = tempdir_for_test("force_src");
+        let target = tempdir_for_test("force_target");
+        std::fs::create_dir_all(src.join("data")).unwrap();
+        std::fs::write(src.join("pg_dump.custom"), b"dump-bytes").unwrap();
+        std::fs::write(src.join("data").join("new.txt"), b"from the archive").unwrap();
+        std::fs::write(target.join("old.txt"), b"already there").unwrap();
+        let digest = sha256_file(&src.join("pg_dump.custom")).unwrap();
+        let manifest = serde_json::json!({
+            "schema_version": CURRENT_SCHEMA_VERSION,
+            "utopia_version": "0.1.0",
+            "created_at": "2026-10-25T00:00:00Z",
+            "components": {
+                "pg_dump": {
+                    "path": "pg_dump.custom",
+                    "format": "pg_dump -Fc",
+                    "bytes": 10
+                },
+                "data_dir": { "path": "data", "present": true, "secret_key": false }
+            },
+            "checksums": { "pg_dump.custom": format!("sha256:{digest}") }
+        });
+        std::fs::write(
+            src.join("manifest.json"),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        let archive = src.join("backup.tar.gz");
+        let status = Command::new("tar")
+            .arg("-czf")
+            .arg(&archive)
+            .arg("-C")
+            .arg(&src)
+            .arg("manifest.json")
+            .arg("pg_dump.custom")
+            .arg("data")
+            .stdin(Stdio::null())
+            .status()
+            .expect("tar available");
+        assert!(status.success(), "host tar is required for this test");
+
+        let restore = |force: bool| {
+            run_restore(RestoreArgs {
+                from: Some(archive.clone()),
+                target_data_dir: Some(target.clone()),
+                pg_restore: Some(PathBuf::from("/usr/bin/true")),
+                dry_run: false,
+                force,
+                yes: true,
+            })
+        };
+
+        let refused = restore(false).unwrap_err().to_string();
+        assert!(
+            refused.contains("pass --force to overwrite"),
+            "a non-empty data dir without --force must be refused, got: {refused}"
+        );
+        assert_eq!(
+            std::fs::read(target.join("old.txt")).unwrap(),
+            b"already there"
+        );
+        assert!(!target.join("new.txt").exists());
+
+        restore(true).expect("--force should replace the data dir");
+        assert_eq!(
+            std::fs::read(target.join("new.txt")).unwrap(),
+            b"from the archive"
+        );
+        assert!(
+            !target.join("old.txt").exists(),
+            "the old data dir was merged into the restore instead of replaced"
+        );
+
+        let _ = std::fs::remove_dir_all(&src);
+        let _ = std::fs::remove_dir_all(&target);
     }
 
     /// Create a uniquely-named temp directory under the process's CWD. Test
