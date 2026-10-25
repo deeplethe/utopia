@@ -123,8 +123,10 @@ pub fn name_stem(name: &str) -> Option<String> {
     if words.len() >= 2 {
         if generic(words[words.len() - 1]) {
             let stem = words[..words.len() - 1].join(" ");
-            if !generic(&stem) {
-                return Some(stem);
+            // 「Acme, Inc.」：后缀前那个逗号是写法，不是名字
+            let stem = stem.trim_end_matches(',');
+            if !stem.is_empty() && !generic(stem) {
+                return Some(stem.to_string());
             }
         }
         if generic(words[0]) {
@@ -2776,6 +2778,17 @@ mod tests {
         let k = recall_keys("Project Phoenix");
         assert!(k.contains(&"phoenix".to_string()));
         assert!(recall_keys("张三").len() <= 10);
+    }
+
+    /// 英文公司名常在后缀前加逗号：「Acme, Inc.」与「Acme」「Acme Inc」是同一个召回
+    #[test]
+    fn a_comma_before_the_generic_suffix_is_not_part_of_the_stem() {
+        assert_eq!(name_stem("Acme, Inc.").as_deref(), Some("acme"));
+        assert_eq!(name_stem("Orion Labs, Inc").as_deref(), Some("orion labs"));
+        let k = recall_keys("Acme, Inc.");
+        assert!(k.contains(&"acme".to_string()), "{k:?}");
+        assert!(k.contains(&"acme inc".to_string()), "{k:?}");
+        assert_eq!(name_stem(", Inc."), None);
     }
 
     #[test]
