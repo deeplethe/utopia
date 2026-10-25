@@ -170,6 +170,10 @@ pub fn check_ontology(
             let mut cur = start;
             for _ in 0..MAX_ANCESTRY {
                 if seen.contains(&cur) {
+                    // 走进的是别处的环，start 不在环上：等环上的成员自己那一轮报
+                    if cur != start {
+                        break;
+                    }
                     // 环上每个成员都标记过，整条环只报一次
                     for m in &seen {
                         reported.insert(*m);
@@ -589,6 +593,23 @@ mod inverse_and_sub_property_tests {
             .collect();
         assert_eq!(ring.len(), 1, "**整条环只报一次**，不是每个成员报一遍");
         assert_eq!(ring[0].path.len(), 3);
+    }
+
+    /// 1 ⊑ 2 ⊑ 3 ⊑ 2：环只有 2 和 3，1 只是挂在环上。
+    #[test]
+    fn a_predicate_that_leads_into_a_ring_is_not_on_it() {
+        let mk = |parent: u8| Axioms {
+            sub_property_of: Some(c(parent)),
+            ..Default::default()
+        };
+        let ax = HashMap::from([(c(1), mk(2)), (c(2), mk(3)), (c(3), mk(2))]);
+        let ring: Vec<OntologyDefect> = check_ontology(&ax, &[], &[])
+            .into_iter()
+            .filter(|x| x.kind == Defect::SubPropertyCycle)
+            .collect();
+        assert_eq!(ring.len(), 1);
+        assert_eq!(ring[0].subject, c(2));
+        assert_eq!(ring[0].path, vec![c(2), c(3)]);
     }
 
     /// 一条不成环的链不该被误报。
