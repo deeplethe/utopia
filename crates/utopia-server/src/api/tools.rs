@@ -21,7 +21,7 @@ const TOOL_CHUNK_CHARS: usize = 800;
 const DOCUMENT_CHARS: usize = 24_000;
 /// 一次 changes 最多回多少条。刚灌完的库里 asserted 是成百上千条，全发出去
 /// 只会把上下文填满而不增加信息——有信息量的是 corrected/rejected，那类事件
-/// 本来就稀少。截断时正文末尾写明，模型据此收窄窗口：界面上那一步的 "40+"
+/// 本来就稀少。截断时正文末尾给出下一页，模型据此续读：界面上那一步的 "40+"
 /// 只给人看，模型读不到
 const CHANGES_LIMIT: i64 = 40;
 
@@ -558,9 +558,19 @@ pub async fn list_rules(ctx: &ToolCtx<'_>) -> ToolResult {
         )
         .error();
     };
-    if rules.is_empty() {
+    let Ok(axioms) = utopia_store::reasoning::active_axiom_rules(&ctx.state.pool, ctx.kb_id).await
+    else {
         return ToolResult::new(
-            "This base has no business rules.".to_string(),
+            "Could not read the rules.".to_string(),
+            Step::new("tool", "list_rules", "failed")
+                .status("failed")
+                .json(),
+        )
+        .error();
+    };
+    if rules.is_empty() && axioms.is_empty() {
+        return ToolResult::new(
+            "This base has no business rules or active ontology axioms.".to_string(),
             Step::new("tool", "list_rules", "none").count(0).json(),
         );
     }
@@ -585,7 +595,7 @@ pub async fn list_rules(ctx: &ToolCtx<'_>) -> ToolResult {
         .error();
     };
     let mut descriptions = descriptions.into_iter();
-    let text = rules
+    let mut text = rules
         .iter()
         .map(|r| {
             let conditions = r["conditions"]
@@ -668,7 +678,40 @@ pub async fn list_rules(ctx: &ToolCtx<'_>) -> ToolResult {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    let n = rules.len();
+    if rules.is_empty() {
+        text = "This base has no business rules.".to_string();
+    }
+    if !axioms.is_empty() {
+        // 声明存在不等于本库正在据此派生；关闭开关时仍列定义，但必须说明没有执行。
+        let Ok(kb) = utopia_store::kbs::get(&ctx.state.pool, ctx.kb_id).await else {
+            return ToolResult::new(
+                "Could not read the rules.".to_string(),
+                Step::new("tool", "list_rules", "failed")
+                    .status("failed")
+                    .json(),
+            )
+            .error();
+        };
+        text.push_str(if kb.materialize_inferences {
+            "\n\nOntology axioms (from property declarations):\n"
+        } else {
+            "\n\nOntology axioms (derivation is off for this base; nothing is derived from these):\n"
+        });
+        let lines: Vec<_> = axioms
+            .iter()
+            .map(|a| {
+                let (p, q) = (&a.predicate, &a.target);
+                let conclusion = match a.kind {
+                    "transitive" => format!("X {p} Y AND Y {p} Z ⇒ X {p} Z"),
+                    "symmetric" | "inverse" => format!("X {p} Y ⇒ Y {q} X"),
+                    _ => format!("X {p} Y ⇒ X {q} Y"),
+                };
+                format!("{} of {p}: {conclusion}", a.kind)
+            })
+            .collect();
+        text.push_str(&lines.join("\n"));
+    }
+    let n = rules.len() + axioms.len();
     ToolResult::new(
         text,
         Step::new("tool", "list_rules", format!("{n} rules"))
@@ -768,7 +811,30 @@ pub async fn rule_matches(ctx: &ToolCtx<'_>, args: &serde_json::Value) -> ToolRe
     )
 }
 
+/// 两个按行分页的工具共用边界：数据库 OFFSET 收 i64，内存分页收 usize。
+pub(super) fn page_offset(args: &serde_json::Value, kind: &str) -> Result<usize, ToolResult> {
+    match args.get("offset") {
+        None => Ok(0),
+        Some(value) => value
+            .as_i64()
+            .and_then(|n| usize::try_from(n).ok())
+            .ok_or_else(|| {
+                ToolResult::new(
+                    "Expected `offset` to be a non-negative integer row position.".into(),
+                    Step::new(kind, "?", "invalid offset")
+                        .invalid("offset")
+                        .json(),
+                )
+                .error()
+            }),
+    }
+}
+
 pub async fn changes(ctx: &ToolCtx<'_>, args: &serde_json::Value) -> ToolResult {
+    let offset = match page_offset(args, "changes") {
+        Ok(offset) => offset,
+        Err(result) => return result,
+    };
     // 两端与 `at` 同一种写法：YYYY / YYYY-MM / YYYY-MM-DD。`since` 取那一段的第一天，
     // `until` 取最后一天——「2023 年有什么变化」不该逼模型编一个 12 月 31 日
     let since = args["since"]
@@ -799,14 +865,15 @@ pub async fn changes(ctx: &ToolCtx<'_>, args: &serde_json::Value) -> ToolResult 
             .collect()
     });
     let kinds = kinds.filter(|k: &Vec<String>| !k.is_empty());
-    let rows = match utopia_store::graph::graph_changes(
+    let mut rows = match utopia_store::graph::graph_changes(
         &ctx.state.pool,
         ctx.kb_id,
         since,
         until,
         entity,
         kinds.as_deref(),
-        CHANGES_LIMIT,
+        CHANGES_LIMIT + 1,
+        offset as i64,
     )
     .await
     {
@@ -822,29 +889,38 @@ pub async fn changes(ctx: &ToolCtx<'_>, args: &serde_json::Value) -> ToolResult 
             .error();
         }
     };
-    let text = if rows.is_empty() {
+    // 满一页不等于还有下一页；多读的一条只用来给出续读位置。
+    let more = rows.len() as i64 > CHANGES_LIMIT;
+    rows.truncate(CHANGES_LIMIT as usize);
+    let next_offset = more.then(|| offset + rows.len());
+    let text = if rows.is_empty() && offset > 0 {
+        format!("No recorded changes remaining in {window} at offset {offset}.")
+    } else if rows.is_empty() {
         format!("No recorded changes in {window}.")
     } else {
         let mut lines: Vec<String> = rows.iter().map(change_line).collect();
         // 取的是**最近**的四十条，更早的被截掉。不说的话模型会把这四十条当成窗口的
         // 全部，而要找的那次更正可能正好在更早的地方
-        if rows.len() as i64 == CHANGES_LIMIT {
+        if let Some(next) = next_offset {
+            let page = if offset == 0 {
+                format!("Only the {CHANGES_LIMIT} most recent changes in this window are listed")
+            } else {
+                format!("{CHANGES_LIMIT} changes at offset {offset} are listed")
+            };
             lines.push(format!(
-                "(Only the {CHANGES_LIMIT} most recent changes in this window are listed; it may \
-                 hold more. Narrow since/until, or pass kinds such as [\"corrected\", \
-                 \"rejected\"], to see the rest.)"
+                "({page}; call changes with offset={next} and the same window and filters to continue.)"
             ));
         }
         lines.join("\n")
     };
-    let detail = if rows.len() as i64 == CHANGES_LIMIT {
+    let detail = if more {
         format!("{CHANGES_LIMIT}+ changes")
     } else {
         format!("{} changes", rows.len())
     };
     let mut step = Step::new("changes", window.as_str(), detail)
         .count(rows.len())
-        .more(rows.len() as i64 == CHANGES_LIMIT);
+        .more(more);
     if let Some(day) = since_day {
         step = step.field("since", day.to_string());
     }
@@ -854,11 +930,14 @@ pub async fn changes(ctx: &ToolCtx<'_>, args: &serde_json::Value) -> ToolResult 
     ToolResult::new(text, step.json()).structured(json!({
         "kb_id": ctx.kb_id, "since": since, "until": until,
         "limit": CHANGES_LIMIT, "limit_reached": rows.len() as i64 == CHANGES_LIMIT,
+        "offset": offset, "next_offset": next_offset,
         "changes": rows.iter().map(|r| json!({
             "fact_id": r.fact_id, "at": r.at, "kind": r.kind,
             "subject_id": r.subject_id, "subject_name": r.subject_name,
             "predicate_label": r.predicate_label, "object_name": r.object_name,
             "object_value": r.object_value, "confidence": r.confidence,
+            "previous_object_name": r.previous_object_name,
+            "previous_object_value": r.previous_object_value,
             "valid_from": r.valid_from, "valid_to": r.valid_to,
             "valid_from_precision": r.valid_from_precision,
             "valid_to_precision": r.valid_to_precision,
@@ -1280,10 +1359,20 @@ fn changes_window(
 fn change_line(c: &GraphChange) -> String {
     // 字面值宾语与 `fact_line` 同一条规则（`literal_text`）：两个工具看到的
     // 不能是两种写法，否则 `{value, unit}` 在这里会印成一段 JSON
-    let object = match (&c.object_name, &c.object_value) {
+    let object_text = |name: &Option<String>, value: &Option<serde_json::Value>| match (name, value)
+    {
         (Some(name), _) => name.clone(),
         (None, Some(v)) => literal_text(v).unwrap_or_else(|| "?".to_string()),
         (None, None) => "?".to_string(),
+    };
+    let object = object_text(&c.object_name, &c.object_value);
+    let object = if c.kind == "corrected" {
+        format!(
+            "old: {} → new: {object}",
+            object_text(&c.previous_object_name, &c.previous_object_value)
+        )
+    } else {
+        object
     };
     // 世界轴两端按自己的精度写（time_text）；事件行上没有锚点，结束未知只能写成话
     let range = crate::time_text::span(crate::time_text::Span {
@@ -1395,6 +1484,25 @@ mod tests {
 
     // --- change_line --------------------------------------------------------
 
+    #[test]
+    fn a_correction_labels_the_old_value_before_the_new_value() {
+        let mut c = change("corrected");
+        c.subject_name = "acme-api".into();
+        c.predicate_label = Some("owned by".into());
+        c.previous_object_name = Some("team-a".into());
+        c.object_name = Some("team-b".into());
+        assert_eq!(
+            change_line(&c),
+            "2026-08-28T10:00:00Z corrected: acme-api owned by old: team-a → new: team-b"
+        );
+
+        c.previous_object_name = None;
+        c.object_name = None;
+        c.previous_object_value = Some(serde_json::json!({"value": 7, "unit": "kg"}));
+        c.object_value = Some(serde_json::json!({"value": 8, "unit": "kg"}));
+        assert!(change_line(&c).ends_with("old: 7 kg → new: 8 kg"));
+    }
+
     /// 年精度的起点写成年，不再印成 1 月 1 日；结束了不知哪天绝不写 now
     #[test]
     fn a_change_line_shows_each_end_at_its_precision() {
@@ -1435,6 +1543,8 @@ mod tests {
             predicate_label: Some("founded in".to_string()),
             object_name: None,
             object_value: None,
+            previous_object_name: None,
+            previous_object_value: None,
             valid_from: None,
             valid_to: None,
             // 两端都没日期就没有精度——夹具也得守这条不变量（见 `facts.valid_from_precision`）

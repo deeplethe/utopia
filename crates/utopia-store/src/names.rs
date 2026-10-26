@@ -277,6 +277,89 @@ fn digit_runs(name: &str) -> Vec<String> {
     runs
 }
 
+/// 拉丁词字符。范围逐一列出：UTF-8 locale 下 Postgres 的 `\w` 与 `[[:alnum:]]` 把汉字也算作字母。
+const LATIN_WORD: &[(char, char)] = &[
+    ('0', '9'),
+    ('A', 'Z'),
+    ('_', '_'),
+    ('a', 'z'),
+    ('\u{C0}', '\u{D6}'),
+    // 组合附加符，用于分解写法的 `é`
+    ('\u{300}', '\u{36F}'),
+    ('\u{D8}', '\u{F6}'),
+    ('\u{F8}', '\u{24F}'),
+    ('\u{1E00}', '\u{1EFF}'),
+];
+
+fn is_latin_word(c: char) -> bool {
+    LATIN_WORD.iter().any(|&(lo, hi)| (lo..=hi).contains(&c))
+}
+
+/// `shorter` 在 `longer` 里，且它以拉丁字符开头或结尾时，那一侧不挨着拉丁词字符（#1104）。
+/// `token` 不在 `service_token` 里，`holmes` 在 `sherlock holmes` 里；汉字边不设规则。
+pub fn contains_at_word_edges(longer: &str, shorter: &str) -> bool {
+    // 与 SQL 一致：空名字在任何名字里
+    let (Some(first), Some(last)) = (shorter.chars().next(), shorter.chars().last()) else {
+        return true;
+    };
+    // 不用 `match_indices`：一处命中可能与前一处没过边界检查的命中重叠
+    longer.char_indices().any(|(at, _)| {
+        if !longer[at..].starts_with(shorter) {
+            return false;
+        }
+        let before = longer[..at].chars().next_back();
+        let after = longer[at + shorter.len()..].chars().next();
+        let joins_before = is_latin_word(first) && before.is_some_and(is_latin_word);
+        let joins_after = is_latin_word(last) && after.is_some_and(is_latin_word);
+        !(joins_before || joins_after)
+    })
+}
+
+fn word_class() -> String {
+    LATIN_WORD
+        .iter()
+        .map(|&(lo, hi)| {
+            if lo == hi {
+                lo.to_string()
+            } else {
+                format!("{lo}-{hi}")
+            }
+        })
+        .collect()
+}
+
+/// 同一条规则，写成给 `name` 用的 Postgres 正则。
+pub fn word_edges_pattern(name: &str) -> String {
+    let (Some(first), Some(last)) = (name.chars().next(), name.chars().last()) else {
+        return String::new();
+    };
+    let class = word_class();
+    let mut p = String::new();
+    if is_latin_word(first) {
+        p.push_str(&format!("(^|[^{class}])"));
+    }
+    for c in name.chars() {
+        if r"\.^$|?*+()[]{}".contains(c) {
+            p.push('\\');
+        }
+        p.push(c);
+    }
+    if is_latin_word(last) {
+        p.push_str(&format!("($|[^{class}])"));
+    }
+    p
+}
+
+/// 同一条规则，写成 SQL，给某一列里的名字。`expr` 必须是可信的 SQL。
+pub(crate) fn word_edges_sql(expr: &str) -> String {
+    let class = word_class();
+    format!(
+        r"(CASE WHEN {expr} ~ '^[{class}]' THEN '(^|[^{class}])' ELSE '' END
+          || regexp_replace({expr}, '([\\.^$|?*+()[\]{{}}])', '\\\1', 'g')
+          || CASE WHEN {expr} ~ '[{class}]$' THEN '($|[^{class}])' ELSE '' END)"
+    )
+}
+
 /// 本名以外的现行名字，按首次记下的先后。给裁决器与审阅卡的「又名」那一行
 pub async fn other_names(pool: &PgPool, entity_id: Uuid) -> AppResult<Vec<String>> {
     Ok(other_names_many(pool, &[entity_id])
@@ -320,7 +403,63 @@ pub(crate) async fn other_names_many(
 
 #[cfg(test)]
 mod tests {
-    use super::numbers_differ;
+    use super::{contains_at_word_edges, numbers_differ, word_edges_pattern, word_edges_sql};
+
+    /// (longer, shorter, 是否包含)，Rust 与两种 SQL 写法共用
+    const WORD_EDGES: &[(&str, &str, bool)] = &[
+        ("service_token", "token", false),
+        ("install_scheduled_task.ps1", "task", false),
+        ("areascorecard", "area", false),
+        ("pumpkin soup", "pump", false),
+        ("sherlock holmes", "holmes", true),
+        ("mr. holmes", "holmes", true),
+        ("install_scheduled_task.ps1", "install_scheduled_task", true),
+        ("api/main.py", "main.py", true),
+        ("café royal", "café", true),
+        ("cafés", "café", false),
+        ("zürich ag", "rich", false),
+        ("issue#440", "#440", true),
+        ("a.b+c (x) d", "b+c (x)", true),
+        ("axb", "a.b", false),
+        ("星云科技上海研究院", "上海研究院", true),
+        ("nebula上海研究院", "上海研究院", true),
+        ("openai中国", "openai", true),
+        ("tokens token", "token", true),
+        ("cafe\u{301}s", "cafe\u{301}", false),
+        ("anything", "", true),
+        ("x1.1.1", "1.1", true),
+        (r"x [a]{2}\b|c? y", r"[a]{2}\b|c?", true),
+    ];
+
+    #[test]
+    fn the_rust_rule_contains_a_latin_name_only_at_word_edges() {
+        for &(longer, shorter, want) in WORD_EDGES {
+            assert_eq!(
+                contains_at_word_edges(longer, shorter),
+                want,
+                "{shorter} in {longer}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn the_sql_rule_agrees_with_the_rust_rule() -> anyhow::Result<()> {
+        let Some(url) = crate::test_db::url() else {
+            return Ok(());
+        };
+        let pool = sqlx::PgPool::connect(&url).await?;
+        let sql = format!("SELECT $1 ~ $2, $1 ~ {}", word_edges_sql("$3"));
+        for &(longer, shorter, want) in WORD_EDGES {
+            let (by_pattern, by_sql): (bool, bool) = sqlx::query_as(&sql)
+                .bind(longer)
+                .bind(word_edges_pattern(shorter))
+                .bind(shorter)
+                .fetch_one(&pool)
+                .await?;
+            assert_eq!((by_pattern, by_sql), (want, want), "{shorter} in {longer}");
+        }
+        Ok(())
+    }
 
     #[test]
     fn names_with_different_numbers_are_not_a_pair() {

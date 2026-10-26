@@ -281,7 +281,7 @@ pub async fn update(
         && old_full
         && new_full
         && rss_feed_url(&previous.config) != rss_feed_url(&next_config);
-    let source = sqlx::query_as(
+    let source: Source = sqlx::query_as(
         "UPDATE sources SET
             name = COALESCE($2, name),
             config = COALESCE($3, config),
@@ -303,7 +303,34 @@ pub async fn update(
     if (!old_full && new_full) || feed_url_changed {
         crate::rss_full_content::enable_source(&mut tx, id).await?;
     }
+    if !previous.names_are_identities() && source.names_are_identities() {
+        crate::name_vectors::drop_for_source(&mut tx, id).await?;
+    }
     tx.commit().await?;
+    opened(source)
+}
+
+/// 只动配置里的几个键：`set` 里的写进去（密钥照样封印），`remove` 里的删掉，别的键原样。
+/// 一条语句完成，不先读后写——两个请求同时改不同的键时，谁也不会把对方刚写的盖掉
+pub async fn patch_config(
+    pool: &PgPool,
+    id: Uuid,
+    set: &serde_json::Value,
+    remove: &[&str],
+) -> AppResult<Source> {
+    let mut set = set.clone();
+    secrets::seal_json_keys(&mut set, SOURCE_SECRET_KEYS);
+    let source = sqlx::query_as(
+        "UPDATE sources SET config =
+            (CASE WHEN jsonb_typeof(config) = 'object' THEN config ELSE '{}'::jsonb END - $3::text[]) || $2
+         WHERE id = $1 RETURNING *",
+    )
+    .bind(id)
+    .bind(set)
+    .bind(remove)
+    .fetch_optional(pool)
+    .await?
+    .ok_or(AppError::NotFound)?;
     opened(source)
 }
 

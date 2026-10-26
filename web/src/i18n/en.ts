@@ -47,6 +47,8 @@ export const en = {
   /** 服务端校验错误的措辞。key = 服务端给的 code；缺一条就退回英文原句，不会崩。
       契约守卫（调错接口才碰得到）刻意不在这里——它们的读者是开发者 */
   err: {
+    bad_case_expectation: "Choose a property and direction, or expect no binding.",
+
     bad_email: "That doesn't look like an email address.",
     password_too_short: "Password must be at least 8 characters.",
     bad_display_name: "Display name must be 1-64 characters.",
@@ -125,6 +127,17 @@ export const en = {
       "This data source is not granted to this workspace. Ask a deployment admin to grant it in Administration → Data sources.",
     memory_source_permanent:
       "The Memory source is part of the knowledge base and stays.",
+    google_drive_not_configured:
+      "Google Drive is not set up on this server. An administrator sets UTOPIA_GOOGLE_DRIVE_CLIENT_ID, _CLIENT_SECRET and _REDIRECT_URI.",
+    google_drive_connected_by_someone_else:
+      "This source reads someone else's Google Drive. Disconnect it first, then connect your own.",
+    google_drive_not_connector:
+      "Only the person who connected this Google Drive can choose its folders.",
+    google_drive_not_connected: "Connect a Google account first.",
+    google_drive_unavailable: "Google Drive could not be read.",
+    google_drive_busy: "Too many Google Drive connections are in progress. Try again in a few minutes.",
+    google_drive_too_many_folders: "Choose at most 50 folders. Choose a common parent instead.",
+    google_drive_invalid_folder: "That is not a Google Drive folder id.",
     source_name_required: "Give this source a name.",
     bad_cron: "That cron expression could not be parsed.",
     bad_cron_fields:
@@ -243,7 +256,7 @@ export const en = {
     copied: "Copied",
     mcpTitle: "MCP client configuration",
     mcpHint:
-      "For Claude Code, Claude Desktop and other Streamable HTTP clients. Each base has its own endpoint, so pick the one the agent should talk to. Other clients spell the keys differently.",
+      "For Claude Code, Claude Desktop and other Streamable HTTP clients. This snippet connects to one knowledge base, even if the token allows all bases. Check the selected base before copying. Other clients spell the keys differently.",
     mcpBase: "Base",
     yourTokens: "Your tokens",
     noTokens: "No tokens yet.",
@@ -593,6 +606,7 @@ export const en = {
       phrase_is_value: "Kept, but the phrase is the value itself",
       phrase_is_subject: "Kept, but the phrase is the subject's own name",
       object_is_value: "Kept, with the object read as a value",
+      attr_datatype: "Kept as an open statement, but the value cannot be read as the attribute's datatype",
     } as Record<string, string>,
     // 来源级重抽：不危险，只是费时费钱——轻确认，文案直说成本与保留项
     reExtractSource: "Re-extract",
@@ -641,12 +655,14 @@ export const en = {
       custom: "Custom",
       github_issues: "GitHub issues",
       github_repo: "GitHub repository files",
+      gitlab_repo: "GitLab project files",
       jira_issues: "Jira issues",
       s3: "S3 / MinIO",
       azure_blob: "Azure Blob",
       gcs: "Google Cloud Storage",
       webdav: "WebDAV",
       notion: "Notion",
+      google_drive: "Google Drive",
     },
     sourceKindHints: {
       folder: "Holds the files you upload: add, drag in and remove them here.",
@@ -663,6 +679,10 @@ export const en = {
       github_repo:
         "Reads markdown files off a repository's default branch. Each file becomes one " +
         "document dated by its last commit; unchanged files are not fetched again.",
+      gitlab_repo:
+        "Reads markdown files off a gitlab.com project's default branch, the same way as " +
+        "GitHub repository files. A private project needs a token with read_api. " +
+        "Self-managed GitLab has not been verified.",
       s3:
         "Reads documents out of an S3 bucket, or anything speaking the same protocol " +
         "(MinIO, Ceph, R2). **Leave the endpoint empty for AWS**; fill it in for a " +
@@ -681,6 +701,10 @@ export const en = {
         "Syncs the pages a Notion integration can see — share a page with the integration " +
         "and it appears here. Dated by when the page was last edited, which is the page's " +
         "own clock rather than ours.",
+      google_drive:
+        "Syncs the folders you choose from your Google Drive, shared drives included. " +
+        "**You connect with your own Google account**, read-only; Docs, Sheets and Slides " +
+        "arrive as Word, Excel and PowerPoint files. Dated by each file's last modification.",
       api: "External systems push JSON documents here, authenticated with this source's own token.",
       statements:
         "Your system pushes statements already in the extraction contract; no model reads them. Send events, not the state of a table.",
@@ -741,6 +765,7 @@ export const en = {
     rssHydrationCounts: (c: { pending: number; queued: number; retrying: number; complete: number; terminal: number }) =>
       `pending ${c.pending} · queued ${c.queued} · retrying ${c.retrying} · complete ${c.complete} · terminal ${c.terminal}`,
     repoField: "Repository (owner/name)",
+    gitlabProjectField: "Project (group/name, subgroups allowed)",
     jiraUrlField: "Jira site URL",
     jiraProjectField: "Project key",
     s3BucketField: "Bucket",
@@ -758,7 +783,42 @@ export const en = {
     davPassField: "Password",
     notionTokenField: "Internal integration token",
     notionQueryField: "Search term (optional — empty takes every shared page)",
+    googleDrive: {
+      createHint: "After creating the source, connect a Google account and choose the folders.",
+      notConfigured:
+        "Google Drive is not set up on this server. An administrator sets UTOPIA_GOOGLE_DRIVE_CLIENT_ID, _CLIENT_SECRET and _REDIRECT_URI.",
+      account: "Google account",
+      connect: "Connect Google Drive",
+      reconnect: "Reconnect",
+      disconnect: "Disconnect",
+      waiting: "Finish in the Google window…",
+      connectedAs: (email: string) => `Connected as ${email}`,
+      connectedNoEmail: "Connected",
+      notConnected: "Not connected. Syncing reads Drive with the permissions of whoever connects it.",
+      folders: "Folders to sync",
+      onlyConnector:
+        "Only the person who connected this Google Drive can choose its folders, because they are folders from their own Drive.",
+      foldersHint: "Subfolders are included. Files outside these folders are never read.",
+      myDrive: "My Drive",
+      sharedWithMe: "Shared with me",
+      top: "Google Drive",
+      empty: "No folders here.",
+      open: "Open",
+      noneSelected: "No folders chosen yet.",
+      remove: "Remove",
+      saveFolders: "Save folders and sync",
+      saved: "Folders saved. A sync has started.",
+      disconnectConfirm: (account: string, mine: boolean, connector: string) =>
+        mine
+          ? `Stop reading your Google Drive (${account})? Its access and the chosen folders are removed here, and connecting again starts from scratch.`
+          : `Stop reading the Google Drive ${connector} connected (${account})? Only ${connector} chose its folders. Its access and those folders are removed here.`,
+      unnamedAccount: "the connected account",
+      someoneElse: "someone else",
+      cancel: "Cancel",
+      disconnected: "Google Drive disconnected.",
+    },
     tokenField: "GitHub token (optional, never shown again)",
+    gitlabTokenField: "GitLab token with read_api (optional, never shown again)",
     includePullRequests: "Treat pull requests as tickets too",
     includeGlobsField: "Include globs (comma-separated, optional; replaces the default)",
     excludeGlobsField: "Exclude globs (comma-separated, optional; replaces the default)",
@@ -1310,6 +1370,14 @@ export const en = {
       packsPick: "Search packs…",
       packsNone: "None — the ontology grows out of the documents",
       packsCount: (c: number, p: number) => `${c} classes · ${p} properties`,
+      scenariosLabel: "Scenario packs",
+      scenariosHint:
+        "Classes, properties and the questions to answer for one kind of corpus; " +
+        "installed as this base's own ontology. Optional.",
+      scenariosPick: "Search scenarios…",
+      scenariosNone: "None — build the ontology by hand later",
+      scenariosCount: (c: number, p: number, q: number) =>
+        `${c} classes · ${p} properties · ${q} questions`,
       name: "Name",
       description: "Description",
       visibility: "Visibility",
@@ -1348,6 +1416,7 @@ export const en = {
     },
     chatShapeOk: "ok",
     chatShapeRefused: (error: string) => `refused: ${error}`,
+    chatShapeTimedOut: (error: string) => `timed out (${error})`,
     okDim: (dim: number) => `Reachable and authenticated (dim ${dim})`,
     unsaved: "Unsaved changes. Save this card to test them.",
     readersTitle: "Reading scans and recordings",
@@ -1398,7 +1467,11 @@ export const en = {
     caseHideEvidence: "Hide source evidence",
     caseMake: "Add regression case",
     caseAddTitle: "Add a property regression case",
-    caseAddHint: "Save the property and direction this open statement should bind to. Its existing alignment decision will be compared with this expectation.",
+    caseExpectBound: "Bind to a property",
+    caseNoneHint: "Only an explicit no-binding decision passes. An undecided or bound result fails; no decision remains unchecked.",
+    caseHumanConflict: "Failed: manual binding conflict",
+    caseHumanConflictHint: "This case expects no binding, but a person bound the statement. The case fails; the manual binding is retained.",
+    caseAddHint: "Save whether this open statement should bind to a property or remain unbound. Its alignment decision is compared with that expectation.",
     caseExpectedProperty: "Expected property",
     caseDirection: "Direction",
     caseForward: "Subject → Object",

@@ -193,7 +193,17 @@ impl Fixture {
             .await?;
         let dir = self.dir.clone();
         drop(self);
-        std::fs::remove_dir_all(dir)?;
+        // Tantivy can finish a background file operation after the state is dropped.
+        // Retry only that teardown race; persistent or unrelated IO errors still fail.
+        for attempt in 0..10 {
+            match std::fs::remove_dir_all(&dir) {
+                Ok(()) => break,
+                Err(e) if e.kind() == std::io::ErrorKind::DirectoryNotEmpty && attempt < 9 => {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+                Err(e) => return Err(e.into()),
+            }
+        }
         Ok(())
     }
 }
@@ -1186,6 +1196,142 @@ async fn entity_facts_keeps_identity_values_filters_and_both_clocks() -> anyhow:
 }
 
 #[tokio::test]
+async fn changes_shows_the_superseded_value_even_outside_the_window() -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    let previous_employer = Uuid::now_v7();
+    sqlx::query("INSERT INTO entities(id,kb_id,canonical_name) VALUES ($1,$2,'Former employer')")
+        .bind(previous_employer)
+        .bind(f.kb)
+        .execute(&f.state.pool)
+        .await?;
+    sqlx::query("UPDATE facts SET object_id=$1 WHERE id=$2")
+        .bind(previous_employer)
+        .bind(f.fact)
+        .execute(&f.state.pool)
+        .await?;
+
+    // 3 月 10 日的前一次断言既在窗口外，也被 kinds 排除，不能靠相邻事件找前值。
+    let args = json!({"since":"2026-03-20","until":"2026-03-20","kinds":["corrected"]});
+    let result = f.call("changes", args).await?;
+    let changes = result["structuredContent"]["changes"].as_array().unwrap();
+    assert_eq!(changes.len(), 1);
+    let text = result["content"][0]["text"].as_str().unwrap();
+    assert!(
+        text.contains("Alice works for old: Former employer → new: Acme"),
+        "{text}"
+    );
+    assert_eq!(changes[0]["previous_object_name"], "Former employer");
+    assert_eq!(changes[0]["object_name"], "Acme");
+    assert_eq!(changes[0].get("previous_object_value"), Some(&Value::Null));
+    f.clean().await
+}
+
+#[tokio::test]
+async fn entity_facts_pages_filtered_rows_without_repeating_time_ties() -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    async fn check(f: &Fixture) -> anyhow::Result<()> {
+        let extra: Vec<Uuid> = (0..4).map(|_| Uuid::new_v4()).collect();
+        sqlx::query(
+            "INSERT INTO facts(id,kb_id,subject_id,predicate_id,object_value,
+                               valid_from,valid_from_precision,recorded_at)
+             SELECT extra.id,f.kb_id,f.subject_id,f.predicate_id,
+                    jsonb_build_object('value',extra.n),f.valid_from,
+                    f.valid_from_precision,f.recorded_at
+             FROM facts f CROSS JOIN unnest($2::uuid[]) WITH ORDINALITY extra(id,n)
+             WHERE f.id=$1",
+        )
+        .bind(f.attribute)
+        .bind(&extra)
+        .execute(&f.state.pool)
+        .await?;
+        let mut expected = extra;
+        expected.push(f.attribute);
+        expected.sort();
+        for offset in [0, 2, 3, 4, 5, 99] {
+            let page = f
+                .call(
+                    "entity_facts",
+                    json!({"entity_id":f.subject,"predicate":"weight","limit":2,
+                           "offset":offset,"at":"2026-01-01","before":CORRECTION}),
+                )
+                .await?;
+            let data = &page["structuredContent"];
+            assert_eq!(page["isError"], false);
+            assert_eq!(data["offset"], offset);
+            assert_eq!(data["matched_facts"], 5);
+            let ids: Vec<Uuid> = data["facts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|fact| uuid(&fact["id"]))
+                .collect();
+            assert_eq!(ids, expected[offset.min(5)..(offset + 2).min(5)]);
+            let next = (offset + 2 < 5).then_some(offset + 2);
+            assert_eq!(data["next_offset"], json!(next));
+            assert_eq!(data["truncated"], next.is_some());
+            if let Some(next) = next {
+                assert!(page["content"][0]["text"]
+                    .as_str()
+                    .unwrap()
+                    .contains(&format!("offset={next}")));
+            }
+        }
+        Ok(())
+    }
+    let result = check(&f).await;
+    f.clean().await?;
+    result
+}
+
+#[tokio::test]
+async fn paged_tools_advertise_offsets_and_refuse_invalid_values() -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    let listed = f
+        .request(f.kb, "tools/list", json!({}))
+        .await
+        .map_err(|e| e.0)?
+        .0;
+    for name in ["entity_facts", "changes"] {
+        let tool = listed["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == name)
+            .unwrap();
+        assert_eq!(
+            tool["inputSchema"]["properties"]["offset"]["type"],
+            "integer"
+        );
+        assert_eq!(tool["inputSchema"]["properties"]["offset"]["minimum"], 0);
+    }
+    for offset in [
+        json!(-1),
+        json!(1.5),
+        json!("2"),
+        json!(null),
+        json!(u64::MAX),
+    ] {
+        for tool in ["entity_facts", "changes"] {
+            let result = f
+                .call(
+                    tool,
+                    json!({"entity_id":f.subject,"since":"2026","offset":offset}),
+                )
+                .await?;
+            assert_eq!(result["isError"], true, "{tool}: {result}");
+            assert!(result.get("structuredContent").is_none());
+        }
+    }
+    f.clean().await
+}
+
+#[tokio::test]
 async fn changes_returns_fact_ids_and_a_reusable_correction_timestamp() -> anyhow::Result<()> {
     let Some(f) = Fixture::new().await? else {
         return Ok(());
@@ -1245,6 +1391,17 @@ async fn changes_returns_fact_ids_and_a_reusable_correction_timestamp() -> anyho
     .bind(f.attribute)
     .execute(&f.state.pool)
     .await?;
+    let ids: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM facts WHERE kb_id=$1 AND recorded_at='2026-03-21' ORDER BY id",
+    )
+    .bind(f.kb)
+    .fetch_all(&f.state.pool)
+    .await?;
+    // 同一事实同一时刻的两种事件恰好跨页；只按时间或事实 id 排都不够。
+    sqlx::query("UPDATE facts SET invalidated_at=recorded_at WHERE id=$1")
+        .bind(ids[39])
+        .execute(&f.state.pool)
+        .await?;
     let capped = f
         .call(
             "changes",
@@ -1259,6 +1416,64 @@ async fn changes_returns_fact_ids_and_a_reusable_correction_timestamp() -> anyho
         40
     );
     assert_eq!(capped["structuredContent"]["limit_reached"], true);
+    assert_eq!(capped["structuredContent"]["offset"], 0);
+    assert_eq!(capped["structuredContent"]["next_offset"], 40);
+    assert!(capped["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("offset=40"));
+    assert_eq!(
+        capped["structuredContent"]["changes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|event| (uuid(&event["fact_id"]), event["kind"].as_str().unwrap()))
+            .collect::<Vec<_>>(),
+        ids[..40]
+            .iter()
+            .map(|id| (*id, "asserted"))
+            .collect::<Vec<_>>()
+    );
+    let last = f
+        .call(
+            "changes",
+            json!({"since":"2026-03-21","until":"2026-03-21","offset":40}),
+        )
+        .await?;
+    let events = last["structuredContent"]["changes"].as_array().unwrap();
+    assert_eq!(events.len(), 2);
+    assert_eq!(uuid(&events[0]["fact_id"]), ids[39]);
+    assert_eq!(events[0]["kind"], "rejected");
+    assert_eq!(uuid(&events[1]["fact_id"]), ids[40]);
+    assert_eq!(last["structuredContent"]["offset"], 40);
+    assert!(last["structuredContent"]["next_offset"].is_null());
+    assert_eq!(last["structuredContent"]["limit_reached"], false);
+    let exhausted = f
+        .call(
+            "changes",
+            json!({"since":"2026-03-21","until":"2026-03-21","offset":42}),
+        )
+        .await?;
+    assert_eq!(exhausted["structuredContent"]["changes"], json!([]));
+    assert!(exhausted["structuredContent"]["next_offset"].is_null());
+    assert_eq!(exhausted["isError"], false);
+    // 满四十条不等于还有下一页；过滤后再偏移，断言事件正好剩四十条。
+    let full_last = f
+        .call(
+            "changes",
+            json!({"since":"2026-03-21","until":"2026-03-21","offset":1,
+                   "entity_id":f.subject,"kinds":["asserted"]}),
+        )
+        .await?;
+    assert_eq!(full_last["structuredContent"]["limit_reached"], true);
+    assert!(full_last["structuredContent"]["next_offset"].is_null());
+    assert_eq!(
+        full_last["structuredContent"]["changes"]
+            .as_array()
+            .unwrap()
+            .len(),
+        40
+    );
     f.clean().await
 }
 
@@ -2518,6 +2733,190 @@ async fn computed_rule_descriptions_keep_the_expression_tree_and_identity() -> a
 }
 
 #[tokio::test]
+async fn rule_reads_include_active_ontology_axioms_without_compiling_them() -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    let result: anyhow::Result<()> = async {
+        let (employs, connected, mentors, foreign) = (
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+            Uuid::now_v7(),
+        );
+        sqlx::raw_sql(&format!(
+            "INSERT INTO relation_types(id,kb_id,key,label,is_transitive,is_symmetric,sub_property_of)
+             VALUES ('{employs}','{kb}','employs','employs',false,false,NULL),
+                    ('{connected}','{kb}','connected_to','connected to',true,true,NULL),
+                    ('{mentors}','{kb}','mentors','mentors',false,false,'{connected}'),
+                    ('{foreign}','{other_kb}','foreign_axiom','Other base',true,false,NULL);
+             UPDATE relation_types SET inverse_of='{employs}'
+              WHERE kb_id='{kb}' AND key='works_for';",
+            kb = f.kb,
+            other_kb = f.other_kb,
+        ))
+        .execute(&f.state.pool)
+        .await?;
+        let expected = [
+            "inverse of works_for: X works_for Y ⇒ Y employs X",
+            "inverse of employs: X employs Y ⇒ Y works_for X",
+            "symmetric of connected_to: X connected_to Y ⇒ Y connected_to X",
+            "transitive of connected_to: X connected_to Y AND Y connected_to Z ⇒ X connected_to Z",
+            "sub_property of mentors: X mentors Y ⇒ X connected_to Y",
+        ];
+        let listed = f.call("list_rules", json!({})).await?;
+        assert_eq!(listed["isError"], false);
+        let text = listed["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("Weight rule"), "{text}");
+        assert!(
+            text.contains("Ontology axioms (from property declarations):"),
+            "{text}"
+        );
+        for line in expected {
+            assert!(text.contains(line), "{line} missing from {text}");
+        }
+        assert!(!text.contains("foreign_axiom"), "{text}");
+        // 夹具保留了一条旧对称规则，但它的声明已经撤销，不能把历史规则列成现行公理。
+        assert!(!text.contains("symmetric of works_for"), "{text}");
+        step_has(
+            &step_of(&f, &[], "list_rules", json!({})).await,
+            json!({"count":6}),
+        )?;
+        let compiled: i64 = sqlx::query_scalar("SELECT count(*) FROM rules WHERE kb_id=$1")
+            .bind(f.kb)
+            .fetch_one(&f.state.pool)
+            .await?;
+        assert_eq!(compiled, 1, "Reading must not compile the new axioms");
+
+        sqlx::query("DELETE FROM attribute_rules WHERE kb_id=$1")
+            .bind(f.kb)
+            .execute(&f.state.pool)
+            .await?;
+        let listed = f.call("list_rules", json!({})).await?;
+        let text = listed["content"][0]["text"].as_str().unwrap();
+        for line in expected {
+            assert!(text.contains(line), "{line} missing from {text}");
+        }
+        sqlx::query(
+            "UPDATE relation_types SET is_transitive=false,is_symmetric=false,
+                    inverse_of=NULL,sub_property_of=NULL WHERE kb_id=$1",
+        )
+        .bind(f.kb)
+        .execute(&f.state.pool)
+        .await?;
+        let empty = f.call("list_rules", json!({})).await?;
+        assert_eq!(
+            empty["content"][0]["text"],
+            "This base has no business rules or active ontology axioms."
+        );
+        Ok(())
+    }
+    .await;
+    f.clean().await?;
+    result
+}
+
+#[tokio::test]
+async fn rule_reads_mark_axioms_as_inactive_when_derivation_is_off() -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    let result: anyhow::Result<()> = async {
+        sqlx::query("UPDATE knowledge_bases SET materialize_inferences=false WHERE id=$1")
+            .bind(f.kb)
+            .execute(&f.state.pool)
+            .await?;
+        sqlx::query(
+            "UPDATE relation_types SET is_transitive=true WHERE kb_id=$1 AND key='works_for'",
+        )
+        .bind(f.kb)
+        .execute(&f.state.pool)
+        .await?;
+        let listed = f.call("list_rules", json!({})).await?;
+        assert_eq!(listed["isError"], false);
+        let text = listed["content"][0]["text"].as_str().unwrap();
+        assert!(
+            text.contains(
+                "Ontology axioms (derivation is off for this base; nothing is derived from these):"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "transitive of works_for: X works_for Y AND Y works_for Z ⇒ X works_for Z"
+            ),
+            "{text}"
+        );
+        Ok(())
+    }
+    .await;
+    f.clean().await?;
+    result
+}
+
+#[tokio::test]
+async fn derived_axioms_name_the_source_property_even_after_retirement() -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    let result: anyhow::Result<()> = async {
+        sqlx::query("DELETE FROM attribute_rules WHERE kb_id=$1")
+            .bind(f.kb)
+            .execute(&f.state.pool)
+            .await?;
+        let employs = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO relation_types(id,kb_id,key,label) VALUES ($1,$2,'employs','employs')",
+        )
+        .bind(employs)
+        .bind(f.kb)
+        .execute(&f.state.pool)
+        .await?;
+        sqlx::query("UPDATE relation_types SET inverse_of=$2 WHERE kb_id=$1 AND key='works_for'")
+            .bind(f.kb)
+            .bind(employs)
+            .execute(&f.state.pool)
+            .await?;
+        utopia_store::reasoning::materialize(&f.state.pool, f.kb).await?;
+        let recorded: chrono::DateTime<chrono::Utc> =
+            sqlx::query_scalar("SELECT clock_timestamp()")
+                .fetch_one(&f.state.pool)
+                .await?;
+        let current = f
+            .call("entity_facts", json!({"entity_id":f.object}))
+            .await?;
+        sqlx::query("UPDATE relation_types SET inverse_of=NULL WHERE kb_id=$1")
+            .bind(f.kb)
+            .execute(&f.state.pool)
+            .await?;
+        utopia_store::reasoning::materialize(&f.state.pool, f.kb).await?;
+        let historical = f
+            .call(
+                "entity_facts",
+                json!({"entity_id":f.object,"as_of":recorded}),
+            )
+            .await?;
+        for response in [current, historical] {
+            assert_eq!(response["isError"], false, "{response}");
+            let text = response["content"][0]["text"].as_str().unwrap();
+            assert!(
+                text.contains("Acme · employs · Alice [rule: inverse of works_for]"),
+                "{text}"
+            );
+            assert!(response["structuredContent"]["derived_facts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|d| d["predicate"] == "employs" && d["rule_name"] == "inverse of works_for"));
+        }
+        Ok(())
+    }
+    .await;
+    f.clean().await?;
+    result
+}
+
+#[tokio::test]
 async fn rule_reads_preserve_matches_and_empty_results() -> anyhow::Result<()> {
     let Some(f) = Fixture::new().await? else {
         return Ok(());
@@ -2555,7 +2954,7 @@ async fn rule_reads_preserve_matches_and_empty_results() -> anyhow::Result<()> {
     assert_eq!(empty["isError"], false);
     assert_eq!(
         empty["content"][0]["text"],
-        "This base has no business rules."
+        "This base has no business rules or active ontology axioms."
     );
     f.clean().await
 }
@@ -3109,6 +3508,10 @@ async fn a_list_cut_at_its_limit_says_so() -> anyhow::Result<()> {
         );
         let gadgets = f.call("find_entities", json!({"name":"Gadget"})).await?;
         anyhow::ensure!(!text(&gadgets).contains("were read"), "{gadgets}");
+        assert_eq!(widgets["structuredContent"]["matched_entities"], 10);
+        assert_eq!(widgets["structuredContent"]["truncated"], true);
+        assert_eq!(gadgets["structuredContent"]["matched_entities"], 3);
+        assert_eq!(gadgets["structuredContent"]["truncated"], false);
         step_has(
             &step_of(f, &[], "find_entities", json!({"name":"Widget"})).await,
             json!({"status":"ok","count":8,"total":10}),

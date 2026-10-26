@@ -1,5 +1,6 @@
 //! A disputed kind-word binding no longer projects its old class onto entities.
 use super::*;
+use anyhow::Context as _;
 use axum::{extract::State, response::IntoResponse, routing::post, Json, Router};
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
@@ -12,7 +13,7 @@ struct Model {
     entered: Arc<tokio::sync::Notify>,
     release: Arc<tokio::sync::Notify>,
 }
-async fn reply(State(m): State<Model>, Json(body): Json<Value>) -> impl IntoResponse {
+async fn reply(State(m): State<Model>, Json(body): Json<Value>) -> axum::response::Response {
     let n = {
         let mut seen = m.requests.lock().unwrap();
         seen.push(body);
@@ -22,17 +23,21 @@ async fn reply(State(m): State<Model>, Json(body): Json<Value>) -> impl IntoResp
         m.entered.notify_one();
         m.release.notified().await;
     }
-    let text = m
-        .replies
-        .get(n)
-        .expect("unexpected model request")
-        .to_string();
-    let frame = json!({"choices":[{"delta":{"content":text}}]});
+    let text = m.replies.get(n).expect("unexpected model request");
+    if text == OUT_OF_CREDIT {
+        let body = json!({"error": {"message": "You have no credits remaining.",
+            "type": "insufficient_quota", "code": "insufficient_quota"}});
+        return (axum::http::StatusCode::TOO_MANY_REQUESTS, Json(body)).into_response();
+    }
+    let frame = json!({"choices":[{"delta":{"content":text.to_string()}}]});
     (
         [("content-type", "text/event-stream")],
         format!("data: {frame}\n\ndata: [DONE]\n\n"),
     )
+        .into_response()
 }
+/// 脚本里放这个字符串，对话端点就回 OpenAI 余额耗尽的 429
+const OUT_OF_CREDIT: &str = "out_of_credit";
 /// 嵌入端点一直坏着：只有配了嵌入模型的测试会走到这里
 async fn embeddings_down() -> impl IntoResponse {
     (
@@ -1031,6 +1036,30 @@ async fn a_retrieval_error_falls_back_to_the_whole_class_list() -> anyhow::Resul
             f.requests().len() == 2,
             "while retrieval keeps failing the candidates, and so the basis, stay the same"
         );
+        anyhow::Ok(())
+    }
+    .await;
+    f.cleanup().await?;
+    run
+}
+
+/// 余额空了（#1360）：第一个欠费 429 让整轮带着类型失败，不按「这一批留到下次」再排一份
+#[tokio::test]
+async fn an_empty_balance_fails_the_run_instead_of_queueing_another() -> anyhow::Result<()> {
+    let Some(f) = Fx::new(vec![json!(OUT_OF_CREDIT)]).await? else {
+        return Ok(());
+    };
+    let run = async {
+        f.seed_bound().await?;
+        let err = f
+            .run()
+            .await
+            .err()
+            .context("a refused chat call fails the run")?;
+        anyhow::ensure!(crate::alerting::hopeless(&err), "not hopeless: {err:#}");
+        anyhow::ensure!(f.requests().len() == 1);
+        let jobs = align_types_jobs(&f).await?;
+        anyhow::ensure!(jobs.is_empty(), "nothing is queued, got {jobs:?}");
         anyhow::Ok(())
     }
     .await;

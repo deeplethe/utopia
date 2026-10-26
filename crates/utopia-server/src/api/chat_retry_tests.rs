@@ -287,6 +287,7 @@ async fn every_question_tells_the_interface_its_stored_id() -> anyhow::Result<()
 /// 重试资格尚未读完时，另一标签页不能订阅这次随后会被拒绝的占位。
 #[tokio::test]
 async fn a_rejected_retry_does_not_publish_a_stream_to_another_tab() -> anyhow::Result<()> {
+    let _held = HELD_DB_LOCKS.lock().await;
     let Some(f) = fixture(Scripted::new(vec![])).await? else {
         return Ok(());
     };

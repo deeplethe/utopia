@@ -109,6 +109,16 @@ export type OntologyPack = {
   properties: number;
 };
 
+/** 场景包（0073）：名字与说明两种语言都给，界面按自己的语言挑 */
+export type ScenarioPack = {
+  id: string;
+  name: { zh: string; en: string };
+  summary: { zh: string; en: string };
+  classes: number;
+  properties: number;
+  questions: number;
+};
+
 export interface Kb {
   id: string;
   workspace_id: string;
@@ -229,13 +239,22 @@ export interface SourceView {
     repo?: string;
     /** github_issues：PR 在 GitHub 模型里也是工单，默认不收 */
     include_pull_requests?: boolean;
-    /** github_repo：给了就整列替换默认的 glob（markdown；隐藏目录、node_modules、vendor） */
+    /** github_repo / gitlab_repo：给了就整列替换默认的 glob（markdown；隐藏目录、node_modules、vendor） */
     include?: string[];
     exclude?: string[];
     /** jira_issues：站点地址，如 https://issues.apache.org/jira */
     base_url?: string;
-    /** jira_issues：项目 key，如 KAFKA */
+    /** jira_issues：项目 key，如 KAFKA；gitlab_repo：项目路径，如 group/subgroup/name */
     project?: string;
+    /** google_drive：选中的文件夹（名字只给界面看，同步只认 id） */
+    folders?: { id: string; name: string }[];
+    /** google_drive：连上的 Google 账号；`connected_at` 有值即已连接（令牌从不下发） */
+    account_email?: string | null;
+    connected_at?: string;
+    /** google_drive：连上的那个 Utopia 用户；浏览与选文件夹只给他 */
+    connected_by?: string;
+    /** google_drive：连上的那个人连接时的名字，断开前的确认里用 */
+    connected_by_name?: string;
     /** false = 这个来源下的文档只检索、不抽取（schema 文档，0035 决定 7）；缺省抽取 */
     extract?: boolean;
   } | null;
@@ -1196,8 +1215,9 @@ export interface OntologyRegressionCase {
   id: string;
   kb_id: string;
   statement_id: string;
-  expected_property_id: string;
-  expected_direction: "forward" | "reverse";
+  expected_binding: "bound" | "none";
+  expected_property_id: string | null;
+  expected_direction: "forward" | "reverse" | null;
   created_by: string | null;
   created_at: string;
   origin: "adoption" | "person";
@@ -1205,6 +1225,7 @@ export interface OntologyRegressionCase {
   last_result: {
     passed: boolean;
     human_bound: boolean;
+    conflict?: "human_binding" | null;
     actual_property_id: string | null;
     actual_direction: "forward" | "reverse" | null;
     status: "bound" | "none" | "undecided";
@@ -1216,8 +1237,8 @@ export interface OntologyRegressionCase {
   object_id: string | null;
   object_label: string | null;
   object_value: Record<string, unknown> | null;
-  expected_property_label: string;
-  expected_property_key: string;
+  expected_property_label: string | null;
+  expected_property_key: string | null;
   actual_property_label: string | null;
   actual_property_key: string | null;
   created_by_label: string | null;
@@ -1759,6 +1780,8 @@ export const api = {
       visibility?: string;
       /** 预置本体包 id，顺序有意义：第一个会认领同名的种子类 */
       ontology_packs?: string[];
+      /** 场景包 id（0073）：按场景预置的类、属性和能力问题 */
+      scenario_packs?: string[];
     },
   ) =>
     request<Kb>(`/api/v1/workspaces/${workspaceId}/kbs`, {
@@ -1768,6 +1791,8 @@ export const api = {
 
   ontologyPacks: () =>
     request<{ packs: OntologyPack[] }>("/api/v1/ontology-packs"),
+  scenarioPacks: () =>
+    request<{ packs: ScenarioPack[] }>("/api/v1/scenario-packs"),
 
   kbDetail: (kbId: string) => request<Kb>(`/api/v1/kbs/${kbId}`),
   updateKb: (kbId: string, body: Record<string, unknown>) =>
@@ -2268,11 +2293,15 @@ export const api = {
     ),
   addOntologyRegression: (
     kbId: string,
-    body: {
-      statement_id: string;
+    body: { statement_id: string } & ({
+      expected_binding?: "bound";
       relation_type_id: string;
       direction: "forward" | "reverse";
-    },
+    } | {
+      expected_binding: "none";
+      relation_type_id?: null;
+      direction?: null;
+    }),
   ) =>
     request<{ id: string }>(`/api/v1/kbs/${kbId}/ontology/regressions`, {
       method: "POST",
@@ -2486,6 +2515,32 @@ export const api = {
       {
         method: "POST",
       },
+    ),
+  googleDriveStatus: () =>
+    request<{ enabled: boolean }>(`/api/v1/google-drive/status`),
+  googleDriveConnect: (kbId: string, sourceId: string) =>
+    request<{ url: string }>(
+      `/api/v1/kbs/${kbId}/sources/${sourceId}/google-drive/connect`,
+      { method: "POST" },
+    ),
+  googleDriveDisconnect: (kbId: string, sourceId: string) =>
+    request<{ ok: boolean }>(
+      `/api/v1/kbs/${kbId}/sources/${sourceId}/google-drive/connection`,
+      { method: "DELETE" },
+    ),
+  googleDriveFolders: (kbId: string, sourceId: string, parent?: string) =>
+    request<{ folders: { id: string; name: string }[] }>(
+      `/api/v1/kbs/${kbId}/sources/${sourceId}/google-drive/folders` +
+        (parent ? `?parent=${encodeURIComponent(parent)}` : ""),
+    ),
+  googleDriveSelect: (
+    kbId: string,
+    sourceId: string,
+    folders: { id: string; name: string }[],
+  ) =>
+    request<{ source: SourceView }>(
+      `/api/v1/kbs/${kbId}/sources/${sourceId}/google-drive/folders`,
+      { method: "PUT", body: JSON.stringify({ folders }) },
     ),
   syncSource: (kbId: string, sourceId: string) =>
     request<{ queued: boolean }>(
@@ -2760,7 +2815,7 @@ export const api = {
         ok: boolean;
         reply?: string;
         error?: string;
-        checks?: Record<"plain" | "streaming" | "tools", { ok: boolean; error?: string }>;
+        checks?: Record<"plain" | "streaming" | "tools", { ok: boolean; timed_out?: boolean; error?: string }>;
       };
       embed: { ok: boolean; dim?: number; error?: string };
       ocr?: { ok: boolean; version?: string | null; error?: string };

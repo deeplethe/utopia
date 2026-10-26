@@ -364,6 +364,61 @@ async fn kept_apart_from(pool: &PgPool, kb_id: Uuid, entity_id: Uuid) -> AppResu
     Ok(rows.into_iter().map(|(id,)| id).collect())
 }
 
+/// 0071 决定 2、3：恰有一个活着的同名持有者（类为声明的类或无类）时，不看画像，直接归并；
+/// 没有就新建，哪怕该名字在别的类下已有（类型漂移审核照留）；两个及以上走原来的画像路径。
+/// 持有者按本名或名字事实认（合并会把输家的名字作为 known_as 移给存活者）。
+pub async fn resolve_identity_name(
+    pool: &PgPool,
+    kb_id: Uuid,
+    type_id: Option<Uuid>,
+    raw_name: &str,
+    context: Option<&[f32]>,
+    text: Option<&str>,
+    exclude: &[Uuid],
+) -> AppResult<Resolution> {
+    let normalized = normalize_name(raw_name);
+    let name = fold_markdown_markers(&normalized);
+    let spellings = vec![normalized.to_lowercase(), name.to_lowercase()];
+    let holders: Vec<Candidate> = sqlx::query_as(&format!(
+        "SELECT e.id, e.canonical_name, e.type_id, e.profile_embedding, e.profile_n,
+                TRUE AS exact_name
+           FROM entities e
+          WHERE e.kb_id = $1 AND e.merged_into IS NULL AND e.description IS NULL
+            AND (e.type_id IS NULL OR e.type_id = $2)
+            AND (lower(e.canonical_name) = ANY($3) OR {named})",
+        named = crate::names::has_name_in("e", 1, 3),
+    ))
+    .bind(kb_id)
+    .bind(type_id)
+    .bind(&spellings)
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .filter(|holder: &Candidate| !exclude.contains(&holder.id))
+    .collect();
+    match holders.as_slice() {
+        [holder] => {
+            match context {
+                Some(ctx) => update_profile(pool, holder.id, holder.profile_n, ctx).await?,
+                None => touch_entity(pool, holder.id).await?,
+            }
+            if holder.type_id.is_none() {
+                adopt_type(pool, kb_id, holder.id, &holder.canonical_name, type_id).await?;
+            }
+            Ok(Resolution {
+                entity_id: holder.id,
+                created: false,
+                reviews: Vec::new(),
+            })
+        }
+        [] => {
+            let keys = recall_keys(&normalized);
+            resolve_type_drift(pool, kb_id, type_id, name, &keys, context, exclude, false).await
+        }
+        _ => resolve_by_name(pool, kb_id, type_id, raw_name, context, text, exclude).await,
+    }
+}
+
 /// 通道 2：mention 名字向量的近邻，各排一对（规矩见 [`resolve_mention`]）
 async fn propose_by_name_vector(
     pool: &PgPool,
@@ -523,7 +578,7 @@ async fn resolve_by_name(
     if candidates.is_empty() {
         // 同类型无候选 ≠ 新名字：类型标签会漂（同一团队被抽成 organization/project/
         // concept），先查其它类型下的同名实体，按类型对的互斥强度分流。
-        return resolve_type_drift(pool, kb_id, type_id, name, &keys, context, exclude).await;
+        return resolve_type_drift(pool, kb_id, type_id, name, &keys, context, exclude, true).await;
     }
 
     let Some(ctx) = context else {
@@ -884,7 +939,7 @@ async fn containment_reviews(
     // 本体声明了跟这个类互斥的那些类（含继承），一次取出，逐行比 id
     let disjoint = declared_disjoint_from(pool, kb_id, type_id).await?;
     // 第三列可空：未分类实体也要参与包含关系扫描（0009）
-    let rows: Vec<ContainRow> = sqlx::query_as(
+    let rows: Vec<ContainRow> = sqlx::query_as(&format!(
         "SELECT e.id, e.canonical_name, t.key, e.type_id, e.profile_embedding
          FROM entities e LEFT JOIN entity_types t ON t.id = e.type_id
          WHERE e.id IN (
@@ -899,20 +954,25 @@ async fn containment_reviews(
                                         WHERE nr.kb_id = $1 AND nr.builtin AND nr.key = 'known_as')
                 AND nf.invalidated_at IS NULL
                 AND char_length(nf.object_value->>'value') >= $4
-                AND (lower(nf.object_value->>'value') LIKE '%' || $6 || '%'
-                     OR $3 LIKE '%' || replace(replace(replace(lower(nf.object_value->>'value'), '\\', '\\\\'), '%', '\\%'), '_', '\\_') || '%'))
+                AND ((lower(nf.object_value->>'value') LIKE '%' || $6 || '%'
+                      AND lower(nf.object_value->>'value') ~ $7)
+                     OR ($3 LIKE '%' || replace(replace(replace(lower(nf.object_value->>'value'), '\\', '\\\\'), '%', '\\%'), '_', '\\_') || '%'
+                      AND $3 ~ {name_edges})))
            AND e.kb_id = $1 AND e.merged_into IS NULL
            AND e.id <> $2
            AND lower(e.canonical_name) <> $3
          ORDER BY char_length(e.canonical_name)
          LIMIT $5",
-    )
+        name_edges = crate::names::word_edges_sql("lower(nf.object_value->>'value')"),
+    ))
     .bind(kb_id)
     .bind(new_id)
     .bind(&lower)
     .bind(MIN_CONTAIN_CHARS)
     .bind(CONTAIN_SCAN_LIMIT)
     .bind(like_escaped(&lower))
+    // 只靠 LIKE，`token` 会匹配到 `service_token`：拉丁名字须落在词边界上才算包含（#1104）
+    .bind(crate::names::word_edges_pattern(&lower))
     .fetch_all(pool)
     .await?;
 
@@ -954,8 +1014,6 @@ struct CrossCandidate {
     type_key: Option<String>,
     // 同上；`types_are_kin` 要按 id 走类层级
     type_id: Option<Uuid>,
-    // 抽取升格要看它：人说过「就是没有类型」时，那也是一个决定
-    type_source: String,
     profile_embedding: Option<Vector>,
     profile_n: i32,
 }
@@ -1068,10 +1126,43 @@ fn confusable_reviews(
         .collect()
 }
 
+/// 持有者还没判出类型而这次判出来了 → 升格。
+/// 不是合并（没有第二个实体），不入 entity_merges；本体页可手工改回
+///
+/// **人说过的「没有类型」不算「还没判出来」。** 0009 之后两者都是
+/// NULL，只看 type_id 分不出——于是一个人看过、认为
+/// 本体里没有合适类的实体，会在下一次抽取时被安上一个类型
+async fn adopt_type(
+    pool: &PgPool,
+    kb_id: Uuid,
+    entity_id: Uuid,
+    canonical_name: &str,
+    type_id: Option<Uuid>,
+) -> AppResult<()> {
+    let Some(type_id) = type_id else {
+        return Ok(());
+    };
+    let adopted = sqlx::query(
+        "UPDATE entities
+         SET type_id = $2, type_source = 'extracted', updated_at = now()
+         WHERE id = $1 AND type_id IS NULL AND type_source <> 'human'",
+    )
+    .bind(entity_id)
+    .bind(type_id)
+    .execute(pool)
+    .await?;
+    if adopted.rows_affected() > 0 {
+        // 类型标签兜底的消歧后缀可能已过时
+        refresh_disambiguators(pool, kb_id, canonical_name).await?;
+    }
+    Ok(())
+}
+
 /// 同类型召回为空时的跨类型处置（类型漂移）。
 /// concept 兜底型候选跑既有画像分层：高相似直接 ATTACH（漂移的召回修复，concept
 /// 侧类型升格为具体类型），灰区/无从判别 → 宁分勿合新建 + 审核对；易混具体类型
 /// 一律新建 + 审核对（同名 + 类型摇摆本身就是信号，不设相似度门槛）；硬互斥忽略。
+#[allow(clippy::too_many_arguments)]
 async fn resolve_type_drift(
     pool: &PgPool,
     kb_id: Uuid,
@@ -1081,6 +1172,8 @@ async fn resolve_type_drift(
     keys: &[String],
     context: Option<&[f32]>,
     exclude: &[Uuid],
+    // false = 不归并到概念兜底：身份名按自己声明的类新建，不能被兜底吞掉
+    may_attach: bool,
 ) -> AppResult<Resolution> {
     // 这一侧也可能还没判出类型（0009），那时没有 key 可查
     let mention_key: Option<String> = match type_id {
@@ -1092,7 +1185,7 @@ async fn resolve_type_drift(
         None => None,
     };
     let cross: Vec<CrossCandidate> = sqlx::query_as(&format!(
-        "SELECT e.id, e.canonical_name, t.key AS type_key, e.type_id, e.type_source,
+        "SELECT e.id, e.canonical_name, t.key AS type_key, e.type_id,
                 e.profile_embedding, e.profile_n
          FROM entities e LEFT JOIN entity_types t ON t.id = e.type_id
          -- IS DISTINCT FROM 而不是 <>：后者遇 NULL 返回 NULL，被 WHERE 当假，
@@ -1137,7 +1230,7 @@ async fn resolve_type_drift(
         }
     }
 
-    if let Some(ctx) = context {
+    if let Some(ctx) = context.filter(|_| may_attach) {
         let best = recall_cands
             .iter()
             .filter_map(|c| {
@@ -1150,24 +1243,8 @@ async fn resolve_type_drift(
         if let Some((best, sim)) = best {
             if sim >= SIM_ATTACH {
                 update_profile(pool, best.id, best.profile_n, ctx).await?;
-                // 候选还没判出类型而这次抽取判出来了 → 升格。
-                // 不是合并（没有第二个实体），不入 entity_merges；本体页可手工改回
-                //
-                // **人说过的「没有类型」不算「还没判出来」。** 0009 之后两者都是
-                // NULL，只看 type_key.is_none() 分不出——于是一个人看过、认为
-                // 本体里没有合适类的实体，会在下一次抽取时被安上一个类型
-                if best.type_key.is_none() && best.type_source != "human" && type_id.is_some() {
-                    sqlx::query(
-                        "UPDATE entities
-                         SET type_id = $2, type_source = 'extracted', updated_at = now()
-                         WHERE id = $1",
-                    )
-                    .bind(best.id)
-                    .bind(type_id)
-                    .execute(pool)
-                    .await?;
-                    // 类型标签兜底的消歧后缀可能已过时
-                    refresh_disambiguators(pool, kb_id, &best.canonical_name).await?;
+                if best.type_key.is_none() {
+                    adopt_type(pool, kb_id, best.id, &best.canonical_name, type_id).await?;
                 }
                 // mention 已定居到召回实体；同名易混类型实体的疑点仍在 → 照常入队
                 let mut reviews =

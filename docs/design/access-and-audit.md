@@ -19,9 +19,10 @@ writes an audit row `mcp.tool_called`; the tokens page shows the plaintext once 
 snippet [0014]. A `write` token also sets up a base as its owner: creating a base and a `statements` or `api` source,
 reading the source's push key, importing an ontology and deciding a kind word, with the owner's
 role unchanged as the ceiling; any token lists a workspace's bases; a token limited by `kb_ids`
-creates no base. These routes, document content and eight graph reads (entity search, detail,
+creates no base. These routes, document content, eight graph reads (entity search, detail,
 history, fact evidence, overview, neighbourhood, ontology, a class's instances; Viewer suffices,
-`kb_ids` answers 404) take `SessionOrToken`; apart from MCP, every other route is session-only [0014 d6, d7]. `ingest_token` on a source is a different kind: plaintext, push-only [0014].
+`kb_ids` answers 404), a document's extractions, the base's export (its `kb.exported` row
+names the token) and chunk search take `SessionOrToken`; apart from MCP, every other route is session-only [0014 d6, d7]. `ingest_token` on a source is a different kind: plaintext, push-only [0014].
 
 **A client reads a pushed document back by its `external_id`.**
 `GET /kbs/{id}/sources/{sid}/documents/by-external-id?external_id=…` finds an `api` or `statements`

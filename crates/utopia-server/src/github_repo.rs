@@ -55,18 +55,27 @@ impl FileFilter {
     }
 
     fn eligible(&self, e: &TreeEntry) -> bool {
+        self.path_ok(&e.path, &e.kind, &e.mode) && e.size.is_some_and(|s| self.size_ok(s))
+    }
+
+    /// 只看树条目本身就能判的那一半。GitLab 的树不带大小（#1327），大小要另问一次，
+    /// 所以两半分开
+    pub(crate) fn path_ok(&self, path: &str, kind: &str, mode: &str) -> bool {
         let opts = glob::MatchOptions {
             case_sensitive: true,
             require_literal_separator: true,
             require_literal_leading_dot: false,
         };
-        // 子模块是 commit、目录是 tree，符号链接指向别处——都不是文件本体。
-        // 空文件成不了文档（`ingest_item` 对空字节什么也不建），收进来就每轮都得重取一遍
-        e.kind == "blob"
-            && e.mode != "120000"
-            && e.size.is_some_and(|s| s > 0 && s <= self.max_file_bytes)
-            && self.include.iter().any(|p| p.matches_with(&e.path, opts))
-            && !self.exclude.iter().any(|p| p.matches_with(&e.path, opts))
+        // 子模块是 commit、目录是 tree，符号链接指向别处——都不是文件本体
+        kind == "blob"
+            && mode != "120000"
+            && self.include.iter().any(|p| p.matches_with(path, opts))
+            && !self.exclude.iter().any(|p| p.matches_with(path, opts))
+    }
+
+    /// 空文件成不了文档（`ingest_item` 对空字节什么也不建），收进来就每轮都得重取一遍
+    pub(crate) fn size_ok(&self, size: i64) -> bool {
+        size > 0 && size <= self.max_file_bytes
     }
 }
 

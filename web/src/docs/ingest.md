@@ -153,6 +153,8 @@ Content-Type: application/json
 
 Any other key is refused with `422`, so a mistaken `predicate` or `class` field cannot pass as a typed fact: the contract has no slot for one. A `subject`, or the entity of an `n` row, that is not listed in `e` is refused the same way, rather than dropped later in silence. A body over 64 KiB or with more than 200 statements is refused too.
 
+If every name your system pushes is already unique, such as `owner/repo:src/a.ts#parseDate`, set `{"names": "identity"}` in the source's config. A name from that source attaches to the entity with the same name (ignoring case, in the same class or none) and is created when there is none, whatever the surrounding text. It gets no name vector, so it queues no near-name pairs. A name that exists only under another class is created in this source's class, and still queues the type-drift review unless the two classes are declared disjoint.
+
 Two things to know before wiring a system to it:
 
 - **Send events, not state.** A row that *is* the current state of a system belongs on a mounted database, read at query time. Pushing it here copies state into the ledger and the two drift.
@@ -194,6 +196,37 @@ The credential is a personal access token (or a signed-in session) of someone wh
 ```
 
 `content` is the current version's text; older versions are at `GET /api/v1/documents/{id}/content?version=N`. An identity marked "Not in source", a document in the trash or purged, and an identity this source never pushed are all `404`.
+
+## Searching what you pushed
+
+A service can search the base's chunks with the same personal access token. The push token is not accepted here either.
+
+```
+POST {your-utopia-base}/api/v1/kbs/{kb_id}/search
+Authorization: Bearer utp_pat_…
+Content-Type: application/json
+
+{ "q": "harvest report", "top_k": 20, "offset": 0 }
+```
+
+`q` is required. `top_k` defaults to 10 and is capped at 50; `offset` defaults to 0. `as_of` (an RFC 3339 instant) reads the base as it was then; ranks are counted before `as_of` filters the hits. Any other field is a `422`.
+
+```json
+{
+  "results": [
+    {
+      "id": "0199…", "document_id": "0199…", "seq": 3, "text": "…", "filename": "obs-000412.json",
+      "source_id": "0199…", "external_id": "obs-000412",
+      "score": 0.0328, "bm25_rank": 1, "vector_rank": 2
+    }
+  ],
+  "offset": 0, "top_k": 20, "has_more": true, "vector_used": true
+}
+```
+
+`external_id` is the identity you pushed the document under, so you can match a hit to your own record; it is `null` for documents that did not come from an API or Statements push. `score` orders hits within this one query and means nothing across queries. `bm25_rank` and `vector_rank` count from 1 and are `null` when the hit was not in that channel. `vector_used` is `false` when no embedding model answered and the hits are keyword-only.
+
+Page by raising `offset` by `top_k` while `has_more` is `true`. Pages stop at a depth of 100: a request with `offset + top_k` above 100 is a `422` (`page_too_deep`), and the page that reaches 100 has `has_more: false`. Pages join without repeats only while the base does not change between requests.
 
 ---
 

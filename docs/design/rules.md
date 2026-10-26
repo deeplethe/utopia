@@ -80,7 +80,14 @@ invalidates what is not in it [0030].
 
 **Explanation.** The entity panel shows a conclusion with its rule and each premise back to its
 passage; derived edges are gold behind a toggle; blocked derivations are ghost edges; MCP has
-`list_rules` and `rule_matches`, read-only [0002, 0017, 0021].
+`list_rules` and `rule_matches`, read-only [0002, 0017, 0021]. `list_rules` includes the
+active ontology axioms, using the same inverse normalization as the reasoner; retired
+declarations are excluded even though their compiled rules remain for historical proofs.
+When `materialize_inferences` is off, the section says that derivation is off for this
+base and nothing is derived from these declarations.
+In chat and MCP, a derived fact names the property its axiom was declared on (for example,
+`inverse of works_at`), which can differ from the conclusion's property. `rule_matches`
+continues to take business rule IDs.
 
 **A definition has a history.** Every edit that changes what a rule says opens a version (a full
 snapshot with a record time) and closes the previous one; renaming or switching a rule off does
