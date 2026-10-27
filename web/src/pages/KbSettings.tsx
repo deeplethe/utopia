@@ -125,18 +125,40 @@ export function KbSettings() {
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // 每张卡只跟随自己的服务端字段；保存别的卡触发重取时，保留这张卡的草稿。
   useEffect(() => {
     if (kb.data) {
       setName(kb.data.name);
       setDesc(kb.data.description ?? "");
+    }
+  }, [kbId, kb.data?.name, kb.data?.description]);
+
+  useEffect(() => {
+    if (kb.data) {
       setVisibility(kb.data.visibility);
+    }
+  }, [kbId, kb.data?.visibility]);
+
+  useEffect(() => {
+    if (kb.data) {
       setMaterialize(kb.data.materialize_inferences);
       setAutoResolve(kb.data.auto_type_resolution);
       setGovernance(kb.data.governance);
       setInferMins(kb.data.inference_interval_minutes);
+    }
+  }, [
+    kbId,
+    kb.data?.materialize_inferences,
+    kb.data?.auto_type_resolution,
+    kb.data?.governance,
+    kb.data?.inference_interval_minutes,
+  ]);
+
+  useEffect(() => {
+    if (kb.data) {
       setOntoLang(kb.data.ontology_lang);
     }
-  }, [kb.data]);
+  }, [kbId, kb.data?.ontology_lang]);
 
   // 四张卡，四个保存：改名字那一下不该把下面的开关一起送上去
   const saveIdentity = useKbPatch(kbId!, setError);
@@ -509,6 +531,19 @@ function auditDetailName(e: AuditEvent): string {
 
 const AUDIT_PAGE = 50;
 
+/** 两个日期框说的是读者日历上的几天：起始那天零点起、截止那天过完为止。服务端的区间
+ *  含起点不含终点、按时刻比，所以截止日要送下一天的零点，零点也按本地时区换成时刻 */
+export function auditBounds(since: string, until: string) {
+  const midnight = (day: string, later: number) => {
+    const [y, m, d] = day.split("-").map(Number);
+    return new Date(y, m - 1, d + later).toISOString();
+  };
+  return {
+    since: since ? midnight(since, 0) : undefined,
+    until: until ? midnight(until, 1) : undefined,
+  };
+}
+
 function KbActivity({ kbId }: { kbId: string }) {
   // 筛选按真实查法来：查一类动作、查一个人、查一段时间。
   // 动作前缀匹配——`entity.` 就能把 retyped / renamed 一族一起捞出来
@@ -521,8 +556,7 @@ function KbActivity({ kbId }: { kbId: string }) {
     queryFn: () =>
       api.kbAudit(kbId, {
         action: action || undefined,
-        since: since || undefined,
-        until: until || undefined,
+        ...auditBounds(since, until),
         limit: AUDIT_PAGE,
         offset: page * AUDIT_PAGE,
       }),
