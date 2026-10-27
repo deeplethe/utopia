@@ -383,7 +383,7 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
     utopia_store::documents::set_graph_status(&state.pool, document_id, "extracting").await?;
     state.emit_document(doc.kb_id, document_id);
     let await_nod = utopia_store::memory::is_memory_document(&state.pool, document_id).await?;
-    crate::extraction_open::run_open(
+    let result = crate::extraction_open::run_open(
         state,
         &doc,
         &kb,
@@ -395,7 +395,18 @@ async fn run(state: &AppState, document_id: Uuid, proposer: Proposer) -> anyhow:
         pushed,
         identity,
     )
-    .await
+    .await;
+    // epoch 检查之后的多条写入之间仍可能发生重建；被接管的旧任务不应重试或报失败。
+    // 只有明确读到新 epoch 才丢弃错误，查询失败则保留原始错误。
+    if result.is_err()
+        && utopia_store::documents::extract_epoch(&state.pool, document_id)
+            .await
+            .is_ok_and(|epoch| epoch != my_epoch)
+    {
+        tracing::info!(document = %document_id, "discarding an extraction error after its job was superseded");
+        return Ok(());
+    }
+    result
 }
 
 #[cfg(test)]

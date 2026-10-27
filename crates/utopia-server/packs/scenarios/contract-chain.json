@@ -1,0 +1,167 @@
+{
+  "id": "contract-chain",
+  "name": { "zh": "合同链", "en": "Contract chain" },
+  "summary": {
+    "zh": "主合同与补充协议：当事方、签订日期、合同金额、有效期、付款条款，以及哪份补充协议改了哪一条",
+    "en": "Master agreements and their amendments: parties, signing dates, amounts, terms, payment conditions, and which amendment changed what"
+  },
+  "classes": [
+    {
+      "key": "contract",
+      "label": { "zh": "合同", "en": "Contract" },
+      "description": {
+        "zh": "一份合同、协议、补充协议或修订本，有自己的名称或编号。",
+        "en": "A contract, agreement, supplementary agreement or amendment, with a title or number of its own."
+      }
+    },
+    {
+      "key": "party",
+      "label": { "zh": "当事方", "en": "Party" },
+      "description": {
+        "zh": "合同的一方：甲方、乙方、委托方、承包方，可以是企业、机构或个人。",
+        "en": "A party to a contract: the buyer, seller, principal or contractor; a company, institution or person."
+      }
+    },
+    {
+      "key": "clause",
+      "label": { "zh": "条款", "en": "Clause" },
+      "description": {
+        "zh": "合同里的一条约定：付款条款、交付条款、违约责任、保密条款等，以条号或标题指称。",
+        "en": "A clause of a contract: payment, delivery, liability, confidentiality, referred to by number or heading."
+      }
+    }
+  ],
+  "attributes": [
+    {
+      "key": "signed_on",
+      "host": "contract",
+      "label": { "zh": "签订日期", "en": "Signed on" },
+      "description": {
+        "zh": "合同签订或签署的日期。原文写「于 2023 年 5 月 8 日签订」「签订日期：2024-01-15」。",
+        "en": "The date the contract was signed: 于 2023 年 5 月 8 日签订, signed on 15 January 2024."
+      },
+      "datatype": "date",
+      "functional": true
+    },
+    {
+      "key": "contract_amount",
+      "host": "contract",
+      "label": { "zh": "合同金额", "en": "Contract amount" },
+      "description": {
+        "zh": "合同约定的总价款或总金额。原文写「合同总金额 380 万元」「合同价款为人民币 1.2 亿元」。",
+        "en": "The total price or amount the contract fixes: 合同总金额 380 万元, a contract price of RMB 120 million."
+      },
+      "datatype": "number",
+      "unit": "万元",
+      "functional": true
+    },
+    {
+      "key": "effective_from",
+      "host": "contract",
+      "label": { "zh": "生效日期", "en": "Effective from" },
+      "description": {
+        "zh": "合同开始生效的日期。原文写「自 2024 年 1 月 1 日起生效」。",
+        "en": "The date the contract takes effect: 自 2024 年 1 月 1 日起生效."
+      },
+      "datatype": "date",
+      "functional": true
+    },
+    {
+      "key": "expires_on",
+      "host": "contract",
+      "label": { "zh": "到期日期", "en": "Expires on" },
+      "description": {
+        "zh": "合同有效期截止的日期。原文写「有效期至 2026 年 12 月 31 日」「到期日为 2025-06-30」。",
+        "en": "The date the contract's term ends: 有效期至 2026 年 12 月 31 日."
+      },
+      "datatype": "date",
+      "functional": true
+    },
+    {
+      "key": "payment_terms",
+      "host": "contract",
+      "label": { "zh": "付款条件", "en": "Payment terms" },
+      "description": {
+        "zh": "合同约定的付款方式和期限，照原文记：「签订后 30 日内支付 30%」「货到验收后 60 天付清」。",
+        "en": "How and when payment is due, as the contract words it: 30% within 30 days of signing, balance 60 days after acceptance."
+      },
+      "datatype": "text",
+      "functional": true
+    },
+    {
+      "key": "contract_number",
+      "host": "contract",
+      "label": { "zh": "合同编号", "en": "Contract number" },
+      "description": {
+        "zh": "合同的编号。原文写「合同编号：HT-2024-0017」。",
+        "en": "The contract's reference number: 合同编号 HT-2024-0017."
+      },
+      "datatype": "text",
+      "functional": true
+    }
+  ],
+  "relations": [
+    {
+      "key": "party_a",
+      "label": { "zh": "甲方", "en": "Party A" },
+      "description": {
+        "zh": "宾语是主语合同的甲方（委托方、买方、发包方）。方向：合同 → 当事方。",
+        "en": "The object is Party A of the subject contract: the principal, buyer or employer. Direction: contract → party."
+      },
+      "domains": ["contract"],
+      "ranges": ["party"],
+      "temporal": "state"
+    },
+    {
+      "key": "party_b",
+      "label": { "zh": "乙方", "en": "Party B" },
+      "description": {
+        "zh": "宾语是主语合同的乙方（受托方、卖方、承包方）。方向：合同 → 当事方。",
+        "en": "The object is Party B of the subject contract: the contractor, seller or supplier. Direction: contract → party."
+      },
+      "domains": ["contract"],
+      "ranges": ["party"],
+      "temporal": "state"
+    },
+    {
+      "key": "amends",
+      "label": { "zh": "修订", "en": "Amends" },
+      "description": {
+        "zh": "主语补充协议或修订本修改、补充或替换宾语合同的约定：「本补充协议对主合同第五条作如下修改」。方向：补充协议 → 主合同。",
+        "en": "The subject amendment modifies, supplements or replaces terms of the object contract: 本补充协议对主合同第五条作如下修改. Direction: amendment → master agreement."
+      },
+      "domains": ["contract"],
+      "ranges": ["contract"],
+      "temporal": "event"
+    },
+    {
+      "key": "stipulates",
+      "label": { "zh": "约定", "en": "Stipulates" },
+      "description": {
+        "zh": "主语合同包含宾语条款：「合同第五条约定付款方式」。方向：合同 → 条款。",
+        "en": "The subject contract contains the object clause: 合同第五条约定付款方式. Direction: contract → clause."
+      },
+      "domains": ["contract"],
+      "ranges": ["clause"],
+      "temporal": "state"
+    }
+  ],
+  "questions": [
+    {
+      "question": { "zh": "某份合同的甲方和乙方是谁？", "en": "Who are the parties to a contract?" },
+      "needs": { "classes": ["contract", "party"], "properties": ["party_a", "party_b"] }
+    },
+    {
+      "question": { "zh": "某个日期当天，某份合同适用的付款条件是什么？", "en": "Which payment terms applied under a contract on a given date?" },
+      "needs": { "classes": ["contract"], "properties": ["payment_terms", "amends", "effective_from"] }
+    },
+    {
+      "question": { "zh": "哪份补充协议修改了某份合同，什么时候签订的？", "en": "Which amendment changed a contract, and when was it signed?" },
+      "needs": { "classes": ["contract"], "properties": ["amends", "signed_on"] }
+    },
+    {
+      "question": { "zh": "某份合同的金额是多少，有效期到什么时候？", "en": "What is a contract's amount, and when does it expire?" },
+      "needs": { "classes": ["contract"], "properties": ["contract_amount", "expires_on"] }
+    }
+  ]
+}

@@ -158,13 +158,15 @@ async fn a_superseded_chunk_keeps_its_vector_and_answers_as_of_then() -> anyhow:
 
     // 2. 现在：向量召回给出新块，给不出被顶掉的旧块
     let query = vec![1.0_f32, 0.0, 0.0];
-    let now_hits = utopia_store::documents::vector_search(&pool, f.kb, &query, 10, None).await?;
+    let now_hits =
+        utopia_store::documents::vector_search(&pool, f.kb, &query, 10, None, None).await?;
     assert!(!now_hits.contains(&f.old_chunk), "现行检索不该翻出旧版本");
     assert!(now_hits.contains(&f.new_chunk));
 
     // 3. 三月：那时旧块是现行的，新块还不存在
     let then = Some(t("2026-03-01T00:00:00Z"));
-    let then_hits = utopia_store::documents::vector_search(&pool, f.kb, &query, 10, then).await?;
+    let then_hits =
+        utopia_store::documents::vector_search(&pool, f.kb, &query, 10, then, None).await?;
     assert!(
         then_hits.contains(&f.old_chunk),
         "三月该搜得到当时那一版——这一条在丢向量的实现上不可能成立"
@@ -182,7 +184,7 @@ async fn a_superseded_chunk_keeps_its_vector_and_answers_as_of_then() -> anyhow:
         None,
     )
     .await?;
-    let ids: Vec<Uuid> = live_now.iter().map(|c| c.id).collect();
+    let ids: Vec<Uuid> = live_now.iter().map(|c| c.chunk.id).collect();
     assert!(
         !ids.contains(&f.deleted_doc_chunk),
         "删掉的文档不出现在现在"
@@ -196,7 +198,7 @@ async fn a_superseded_chunk_keeps_its_vector_and_answers_as_of_then() -> anyhow:
         Some(t("2026-05-15T00:00:00Z")),
     )
     .await?;
-    let ids: Vec<Uuid> = live_then.iter().map(|c| c.id).collect();
+    let ids: Vec<Uuid> = live_then.iter().map(|c| c.chunk.id).collect();
     assert!(
         ids.contains(&f.deleted_doc_chunk),
         "五月中那篇文档还没被删，它的块该拿得回来"

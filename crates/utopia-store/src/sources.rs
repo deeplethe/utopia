@@ -281,7 +281,7 @@ pub async fn update(
         && old_full
         && new_full
         && rss_feed_url(&previous.config) != rss_feed_url(&next_config);
-    let source = sqlx::query_as(
+    let source: Source = sqlx::query_as(
         "UPDATE sources SET
             name = COALESCE($2, name),
             config = COALESCE($3, config),
@@ -303,7 +303,34 @@ pub async fn update(
     if (!old_full && new_full) || feed_url_changed {
         crate::rss_full_content::enable_source(&mut tx, id).await?;
     }
+    if !previous.names_are_identities() && source.names_are_identities() {
+        crate::name_vectors::drop_for_source(&mut tx, id).await?;
+    }
     tx.commit().await?;
+    opened(source)
+}
+
+/// 只动配置里的几个键：`set` 里的写进去（密钥照样封印），`remove` 里的删掉，别的键原样。
+/// 一条语句完成，不先读后写——两个请求同时改不同的键时，谁也不会把对方刚写的盖掉
+pub async fn patch_config(
+    pool: &PgPool,
+    id: Uuid,
+    set: &serde_json::Value,
+    remove: &[&str],
+) -> AppResult<Source> {
+    let mut set = set.clone();
+    secrets::seal_json_keys(&mut set, SOURCE_SECRET_KEYS);
+    let source = sqlx::query_as(
+        "UPDATE sources SET config =
+            (CASE WHEN jsonb_typeof(config) = 'object' THEN config ELSE '{}'::jsonb END - $3::text[]) || $2
+         WHERE id = $1 RETURNING *",
+    )
+    .bind(id)
+    .bind(set)
+    .bind(remove)
+    .fetch_optional(pool)
+    .await?
+    .ok_or(AppError::NotFound)?;
     opened(source)
 }
 
@@ -431,6 +458,76 @@ pub async fn touch_sync_time(pool: &PgPool, id: Uuid, at: DateTime<Utc>) -> AppR
 // ---------------------------------------------------------------------------
 // 同步运行记录（渠道审计历史）
 // ---------------------------------------------------------------------------
+
+/// 工单来源的进度独立于只保留 50 条的审计历史；NULL 也不能回退到旧的 ok 行。
+pub async fn sync_checkpoint(pool: &PgPool, source_id: Uuid) -> AppResult<Option<DateTime<Utc>>> {
+    sqlx::query_scalar("SELECT sync_checkpoint FROM sources WHERE id = $1")
+        .bind(source_id)
+        .fetch_optional(pool)
+        .await?
+        .ok_or(AppError::NotFound)
+}
+
+/// 完整时间戳组的进度与成功记录一起提交，任一写入失败都保留旧游标。
+pub async fn finish_timestamp_sync(
+    pool: &PgPool,
+    run_id: Uuid,
+    source_id: Uuid,
+    previous_checkpoint: Option<DateTime<Utc>>,
+    checkpoint: Option<DateTime<Utc>>,
+    created_docs: i32,
+    updated_docs: i32,
+) -> AppResult<()> {
+    if checkpoint < previous_checkpoint {
+        return Err(AppError::Validation(
+            "Source checkpoint cannot move backwards".into(),
+        ));
+    }
+    let mut tx = pool.begin().await?;
+    let source = sqlx::query(
+        "UPDATE sources SET sync_checkpoint = $3, last_sync_status = 'ok',
+                last_sync_error = NULL, last_sync_added = $4, last_sync_at = now()
+         WHERE id = $1 AND kind IN ('github_issues', 'jira_issues')
+           AND sync_checkpoint IS NOT DISTINCT FROM $2::timestamptz",
+    )
+    .bind(source_id)
+    .bind(previous_checkpoint)
+    .bind(checkpoint)
+    .bind(created_docs + updated_docs)
+    .execute(&mut *tx)
+    .await?;
+    if source.rows_affected() != 1 {
+        return Err(AppError::Conflict(
+            "Source checkpoint changed during sync".into(),
+        ));
+    }
+    let run = sqlx::query(
+        "UPDATE source_sync_runs SET finished_at = now(), status = 'ok', error = NULL,
+                created_docs = $3, updated_docs = $4
+         WHERE id = $1 AND source_id = $2 AND status = 'running'",
+    )
+    .bind(run_id)
+    .bind(source_id)
+    .bind(created_docs)
+    .bind(updated_docs)
+    .execute(&mut *tx)
+    .await?;
+    if run.rows_affected() != 1 {
+        return Err(AppError::Conflict(
+            "Source sync run is no longer running".into(),
+        ));
+    }
+    sqlx::query(
+        "DELETE FROM source_sync_runs WHERE source_id = $1 AND id NOT IN
+         (SELECT id FROM source_sync_runs WHERE source_id = $1
+          ORDER BY started_at DESC LIMIT 50)",
+    )
+    .bind(source_id)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
 
 /// 调度时钟包含失败尝试，不能作增量游标。回到上次成功运行的开始，
 /// 让那次拉取期间发生的更新也能在下一轮读到；没有成功记录就重新全量读取。

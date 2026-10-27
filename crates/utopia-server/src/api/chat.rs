@@ -430,11 +430,12 @@ pub(super) fn base_tools() -> serde_json::Value {
                     The best tool for who/when/history questions. Use after find_entities. \
                     Pass `at` to see the world as of that date (server-side filter) — \
                     always do this for \"who was X in <year/month>\" questions. \
-                    Conclusions a business rule reached about this entity come back too, \
-                    marked `[rule: <name>]` with the readings that made them true — take \
+                    Conclusions from business rules and ontology axioms come back too, \
+                    marked `[rule: <name>]`; an axiom names its defining property. \
+                    The readings that made them true are included — take \
                     those as given rather than re-deriving them from the readings yourself. \
-                    Output is grouped by predicate and cut at `limit`; narrow with predicate, \
-                    object_type, since / until, or use timeline / neighbors / paths_between.",
+                    Output is grouped by predicate and cut at `limit`; use `offset` to continue. \
+                    Narrow with predicate, object_type, since / until, or use timeline / neighbors / paths_between.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -444,6 +445,7 @@ pub(super) fn base_tools() -> serde_json::Value {
                         "since": { "type": "string", "description": "Optional WORLD-time window start: facts still holding after it." },
                         "until": { "type": "string", "description": "Optional WORLD-time window end: facts that had started by it." },
                         "limit": { "type": "integer", "description": "How many facts to return (default 80, max 300); the reply says when it is cut." },
+                        "offset": { "type": "integer", "minimum": 0, "description": "Zero-based position in the filtered facts (default 0). Use the reply's next_offset to continue, keeping the entity, filters and time parameters unchanged." },
                         "at": {
                             "type": "string",
                             "description": "Optional as-of moment on the WORLD axis (YYYY, YYYY-MM, \
@@ -523,12 +525,14 @@ pub(super) fn base_tools() -> serde_json::Value {
             "type": "function",
             "function": {
                 "name": "list_rules",
-                "description": "The business rules this base runs: what each one concludes and \
-                    the exact conditions it tests, thresholds included. A rule is written by a \
-                    person, and its conclusions are already in the graph — read the rule to \
+                "description": "The business rules and declared ontology axioms of this base. \
+                    Business rules show what each one concludes and the exact conditions it \
+                    tests, thresholds included. Ontology axioms name the defining properties \
+                    and the relations they imply, and say when derivation is off for this base. Read the rule to \
                     explain WHY something was concluded, or to answer \"what counts as X here\". \
                     Do not re-implement a rule's comparison yourself; ask entity_facts or \
-                    rule_matches for what it actually concluded.",
+                    rule_matches for what it actually concluded. rule_matches takes business \
+                    rule ids only.",
                 "parameters": { "type": "object", "properties": {} }
             }
         },
@@ -568,7 +572,7 @@ pub(super) fn base_tools() -> serde_json::Value {
                     fractional seconds. \
                     For 'before a correction arrived', find that event here and pass its \
                     timestamp, exactly as printed, to entity_facts as `before`. Keep at for the \
-                    world date asked about.",
+                    world date asked about. Returns up to 40 events; use `offset` to continue.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -595,7 +599,8 @@ pub(super) fn base_tools() -> serde_json::Value {
                             "description": "Optional filter. A freshly ingested corpus is nearly \
                                 all 'asserted'; pass [\"corrected\", \"rejected\"] to isolate \
                                 the places we actually changed our mind."
-                        }
+                        },
+                        "offset": { "type": "integer", "minimum": 0, "description": "Zero-based position in the matching events (default 0). Use the reply's next_offset to continue, keeping the window and filters unchanged." }
                     },
                     "required": ["since"]
                 }

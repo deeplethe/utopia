@@ -228,12 +228,16 @@ async fn run(state: &AppState, input: &ProcessingInput) -> anyhow::Result<()> {
     tokio::task::spawn_blocking(move || search.reindex_document(&kb, &did, &chunk_pairs)).await??;
 
     // 4. embedding（工作区配置了 embedding 模型才做；没配也算 ready，先享受 BM25 搜索）
-    if let Some((settings, client)) = embedder(settings.as_ref()) {
-        if !documents::set_status_if_current(&state.pool, input, "embedding").await? {
-            return Ok(());
+    // statements 单块保留完整 JSON 契约，可能超过 embedding 模型的输入上限；
+    // 确定性抽取不应因此被阻塞（#1375）。
+    if !pushed_statements {
+        if let Some((settings, client)) = embedder(settings.as_ref()) {
+            if !documents::set_status_if_current(&state.pool, input, "embedding").await? {
+                return Ok(());
+            }
+            state.emit_document(doc.kb_id, document_id);
+            embed_pending(state, settings, &client, input).await?;
         }
-        state.emit_document(doc.kb_id, document_id);
-        embed_pending(state, settings, &client, input).await?;
     }
 
     // 来源说了不抽取的，到这里为止：可搜、可问，不进图。

@@ -492,14 +492,18 @@ fn scan_quantity(s: &str, strict: bool) -> Option<Quantity> {
             }
         }
     }
-    // 2. 数字：前导的 [-+0-9.,_]
+    // 2. 数字：前导的 [-+0-9.,_]，负号也可以是排版用的 U+2212
     let num_end = rest
         .char_indices()
-        .find(|(_, c)| !matches!(c, '0'..='9' | '.' | ',' | '_' | '-' | '+'))
+        .find(|(_, c)| !matches!(c, '0'..='9' | '.' | ',' | '_' | '-' | '+' | '−'))
         .map(|(i, _)| i)
         .unwrap_or(rest.len());
     let (num, after) = rest.split_at(num_end);
-    let cleaned: String = num.chars().filter(|c| !matches!(c, ',' | '_')).collect();
+    let cleaned: String = num
+        .chars()
+        .filter(|c| !matches!(c, ',' | '_'))
+        .map(|c| if c == '−' { '-' } else { c })
+        .collect();
     let mut n: f64 = cleaned.parse().ok()?;
     // 3. 数字后面：紧贴或空格隔开的量级词、货币词，逐个吃；吃不动的就是「其余」
     let mut tail = after.trim_start();
@@ -512,7 +516,8 @@ fn scan_quantity(s: &str, strict: bool) -> Option<Quantity> {
         // 取下一个记号：中文按字（量级/货币词最长两三个字），其它按空白分词
         let (tok, next) = next_token(tail);
         if !ate_magnitude {
-            if let Some(m) = magnitude(tok) {
+            // 标题里写成「$5 Billion」：量级词不分大小写，不然 5 billion 读成 5
+            if let Some(m) = magnitude(&tok.to_ascii_lowercase()) {
                 // Parse the written decimal with its scale in one conversion. Multiplying
                 // an already rounded f64 needs an epsilon that can erase real fractions.
                 // The suffix is at most three bytes (e12), so allocation stays O(num.len()).
@@ -581,8 +586,11 @@ fn strip_approx(s: &str) -> &str {
         "~",
         "≈",
     ] {
-        if let Some(rest) = s.strip_prefix(p) {
-            s = rest.trim_start();
+        // 句首的「About 350」「Approximately 1,200」：英文的约数词不分大小写
+        if s.get(..p.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(p))
+        {
+            s = s[p.len()..].trim_start();
             break;
         }
     }
@@ -754,10 +762,14 @@ pub fn attribute_value(
         return normalize_attr_value(datatype, raw);
     };
     // 声明的单位拆成量级和其余：「万元」→ (4, 元)，「million dollars」→ (6, dollars)
+    // 币种写在前面的「USD million」「€ million」，量级在末尾
     let (tok, rest) = next_token(declared);
+    let trailing = declared
+        .rsplit_once(char::is_whitespace)
+        .and_then(|(head, last)| Some((magnitude(&last.to_ascii_lowercase())?, head.trim())));
     let (exponent, base) = match magnitude(&tok.to_ascii_lowercase()) {
         Some(m) => (m, rest.trim()),
-        None => (0, declared),
+        None => trailing.unwrap_or((0, declared)),
     };
     let written = q.unit.as_deref().and_then(currency_unit);
     let wanted = currency_unit(base);
@@ -832,6 +844,33 @@ pub fn read_time(s: &str) -> Option<(DateTime<Utc>, &'static str)> {
     })
 }
 
+/// 「17th」「2nd」「23rd」里的日。后缀得和数字相符：11、12、13 是 th，不是 11st。
+fn ordinal_day(w: &str) -> Option<&str> {
+    let (digits, suffix) = w.split_at_checked(w.len().checked_sub(2)?)?;
+    if digits.is_empty() || digits.len() > 2 || !digits.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let n: u32 = digits.parse().ok()?;
+    let expected = match n % 100 {
+        11..=13 => "th",
+        _ => match n % 10 {
+            1 => "st",
+            2 => "nd",
+            3 => "rd",
+            _ => "th",
+        },
+    };
+    suffix.eq_ignore_ascii_case(expected).then_some(digits)
+}
+
+fn day_digits(w: &str) -> Option<&str> {
+    if w.chars().all(|c| c.is_ascii_digit()) {
+        Some(w)
+    } else {
+        ordinal_day(w)
+    }
+}
+
 /// 没照规则 3 写、但说得清是哪一天（或哪个月）的日期（#688）。
 ///
 /// 合同、公告里的日期多半这么写，模型常常照抄；从前这些值全被当成「不是日期」丢掉。
@@ -853,9 +892,14 @@ pub fn written_date(s: &str) -> Option<(NaiveDate, &'static str)> {
         .filter(|w| !w.is_empty())
         .collect();
     let is_number = |w: &str| w.chars().all(|c| c.is_ascii_digit());
+    // 日可以带序数后缀（March 17th、2nd March）；月名不带
     let (day, month, year) = match words.as_slice() {
-        [m, d, y] if !is_number(m) && is_number(d) && is_number(y) => (Some(*d), *m, *y),
-        [d, m, y] if is_number(d) && !is_number(m) && is_number(y) => (Some(*d), *m, *y),
+        [m, d, y] if !is_number(m) && day_digits(d).is_some() && is_number(y) => {
+            (day_digits(d), *m, *y)
+        }
+        [d, m, y] if day_digits(d).is_some() && !is_number(m) && is_number(y) => {
+            (day_digits(d), *m, *y)
+        }
         [m, y] if !is_number(m) && is_number(y) => (None, *m, *y),
         _ => return None,
     };
@@ -1173,8 +1217,25 @@ mod tests {
             Some(json!(5e9))
         );
         assert_eq!(
+            normalize_attr_value("number", &json!("$2.5 Billion")),
+            Some(json!(2.5e9))
+        );
+        assert_eq!(
             normalize_attr_value("number", &json!("52%")),
             Some(json!(52.0))
+        );
+        // 排版过的负号是 U+2212（维基百科、排版出来的 PDF 都这么写），读法同 `-`
+        assert_eq!(
+            normalize_attr_value("number", &json!("−3.2%")),
+            Some(json!(-3.2))
+        );
+        assert_eq!(
+            normalize_attr_value("number", &json!("−1,250")),
+            Some(json!(-1250.0))
+        );
+        assert_eq!(
+            attribute_value("number", Some("万元"), &json!("−2.3亿元")),
+            Some(json!(-23000.0))
         );
         // 原来就认的两种写法不受影响
         assert_eq!(
@@ -1229,6 +1290,7 @@ mod tests {
         use serde_json::json;
         let day = |s: &str| normalize_attr_value("date", &json!(s));
         for written in [
+            "March 17th, 2020",
             "March 17, 2020",
             "March 17 2020",
             "march 17, 2020",
@@ -1244,6 +1306,15 @@ mod tests {
             "2020年3月17日",
         ] {
             assert_eq!(day(written), Some(json!("2020-03-17")), "{written}");
+        }
+        for (written, iso) in [
+            ("2nd March 2020", "2020-03-02"),
+            ("March 11th, 2020", "2020-03-11"),
+            ("March 21st, 2020", "2020-03-21"),
+            ("March 22nd, 2020", "2020-03-22"),
+            ("March 23rd, 2020", "2020-03-23"),
+        ] {
+            assert_eq!(day(written), Some(json!(iso)), "{written}");
         }
         // 只写到月的是月，不补日
         for written in ["March 2020", "Mar. 2020", "2020年3月"] {
@@ -1452,8 +1523,34 @@ mod an_attribute_value_is_read_in_its_declared_unit {
         // 光秃秃的数就是声明单位下的数
         assert_eq!(value("number", Some("万元"), "5000"), Some(json!(5000.0)));
         assert_eq!(value("number", Some("人"), "约350名"), Some(json!(350.0)));
+        assert_eq!(
+            value("number", Some("人"), "Approximately 1,200"),
+            Some(json!(1200.0))
+        );
+        assert_eq!(
+            value("number", Some("people"), "About 350 people"),
+            Some(json!(350.0))
+        );
         // 只写到年的日期按年
         assert_eq!(value("date", None, "1982年"), Some(json!("1982")));
+    }
+
+    /// 财报的单位常把币种写在量级前面：「USD million」「€ million」，同「million dollars」
+    #[test]
+    fn a_unit_with_its_currency_first_is_still_read_in_millions() {
+        assert_eq!(
+            value("number", Some("USD million"), "$5 billion"),
+            Some(json!(5000.0))
+        );
+        assert_eq!(
+            value("number", Some("€ million"), "€30 million"),
+            Some(json!(30.0))
+        );
+        assert_eq!(value("number", Some("USD million"), "€30 million"), None);
+        assert_eq!(
+            value("number", Some("million dollars"), "$5 billion"),
+            Some(json!(5000.0))
+        );
     }
 
     /// 换不了的不换：货币对不上、读不出数的，宁缺勿脏

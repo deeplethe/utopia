@@ -8,6 +8,7 @@ mod datasource_routes;
 pub(crate) mod documents_routes;
 mod events_routes;
 mod export_routes;
+mod google_drive_routes;
 mod graph_routes;
 mod jobs_routes;
 mod kbs;
@@ -122,6 +123,9 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
         .route("/auth/oidc/callback", get(oidc_routes::callback))
         // 受信的另一个应用拿它用户刚到手的 ID token 换一个会话（0066）
         .route("/auth/oidc/exchange", post(oidc_routes::exchange))
+        // Google Drive 来源（0074）：部署配了 OAuth 客户端才有；回调落在连接弹窗里
+        .route("/google-drive/status", get(google_drive_routes::status))
+        .route("/google-drive/callback", get(google_drive_routes::callback))
         // 我自己的绑定：看、解绑。绑定走 `/auth/oidc/start?link=1`，由本人完成
         .route(
             "/auth/oidc/me",
@@ -140,6 +144,7 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
         .route("/workspaces/{id}/kbs", get(kbs::list).post(kbs::create))
         // 建库界面用的静态清单，与具体工作区无关
         .route("/ontology-packs", get(kbs::list_packs))
+        .route("/scenario-packs", get(kbs::list_scenario_packs))
         .route("/workspaces/{id}/my-kbs", get(kbs::my_kbs))
         .route(
             "/workspaces/{id}/settings",
@@ -503,6 +508,18 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
             post(sources_routes::push_statements).layer(DefaultBodyLimit::max(
                 4 * sources_routes::STATEMENTS_MAX_BYTES,
             )),
+        )
+        .route(
+            "/kbs/{id}/sources/{source_id}/google-drive/connect",
+            post(google_drive_routes::connect),
+        )
+        .route(
+            "/kbs/{id}/sources/{source_id}/google-drive/connection",
+            axum::routing::delete(google_drive_routes::disconnect),
+        )
+        .route(
+            "/kbs/{id}/sources/{source_id}/google-drive/folders",
+            get(google_drive_routes::folders).put(google_drive_routes::select),
         )
         .route(
             "/kbs/{id}/sources/{source_id}/token",

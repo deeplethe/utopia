@@ -1,6 +1,6 @@
 # 0020 · An auditor reads it without us
 
-- **Status**: Implemented · revised 2026-09-25 (#902) · open: SPARQL (#308)
+- **Status**: Implemented · revised 2026-10-23 (#1345) · open: SPARQL (#308)
 - **Written**: 2026-09-05 (conventions in the [README](README.md))
 - **Related**: [0001](0001-ontology-import-and-governance.md) kept the imported file verbatim and projected what today's consumers can use — this is the first consumer pointing the other way. [0015](0015-recording-a-sentence-is-not-asserting-a-fact.md) and [0019](0019-the-second-clock-can-be-rewound.md) are what makes the export worth reading: the intervals and the lineage are the content, not the triples
 
@@ -28,6 +28,23 @@ change needs a decision record explaining why; the internal tables and UI API
 shapes are not that boundary. MCP may return the same UUIDs alongside its prose
 so a caller can join an agent result to this export. The user-facing contract is
 documented in [Agents over MCP](../../web/src/docs/mcp.md#the-external-read-contract).
+
+**Revision 2026-10-23 ([#1345](https://github.com/deeplethe/utopia/issues/1345)).**
+`changes` and `entity_facts` accept a zero-based `offset`, defaulting to zero,
+and return `offset` and `next_offset` alongside their existing fields. A null
+`next_offset` means the page has no successor. Facts are paged after filtering;
+their separate names and derived conclusions keep their existing selection.
+Changes read one extra event to establish whether another page exists, while
+`limit_reached` continues to mean only that the returned page filled its limit.
+Both lists break time ties with ledger identities. Offsets describe the result
+of each call, not a retained snapshot: callers keep filters and time parameters
+unchanged, and a changing live result can move page boundaries.
+
+`find_entities` also returns `matched_entities` (the partial-name count, or null
+when lookup did not count that set) and `truncated`, carrying the existing text
+notice into structured output. It remains a ranked candidate lookup; a more
+specific name narrows a truncated result. These additions preserve the current
+fact fields; a compact fact representation is a separate proposal.
 
 Classes and relations that came in from an import **keep the IRI they came with**. A base built from the schema.org pack exports `schema:Organization`, not a Utopia mint of it, so the file lines up with the vocabulary the reader already has. That is the payoff for having stored `iri` on `entity_types` and `relation_types` since the first import.
 

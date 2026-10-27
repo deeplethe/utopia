@@ -12,8 +12,8 @@
 //! 写在结果最上面，模型不同意就拿 id 再来一次。
 
 use super::tools::{
-    entity_facts_detail, fact_line, just_before, literal_text, parse_when, Step, ToolCtx,
-    ToolResult, ToolSink,
+    entity_facts_detail, fact_line, just_before, literal_text, page_offset, parse_when, Step,
+    ToolCtx, ToolResult, ToolSink,
 };
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -331,6 +331,7 @@ pub async fn find_entities(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value)
     }
     ToolResult::new(text, step.json()).structured(json!({
         "kb_id": ctx.kb_id,
+        "matched_entities": total, "truncated": total.is_some_and(|t| t > read as i64),
         "entities": ranked.iter().map(|n| json!({
             "id": n.id, "name": n.name, "type_key": n.type_key,
             "type_label": n.type_label, "disambiguator": n.disambiguator,
@@ -679,6 +680,10 @@ impl FactFilter<'_> {
 }
 
 pub async fn entity_facts(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) -> ToolResult {
+    let offset = match page_offset(args, "facts") {
+        Ok(offset) => offset,
+        Err(result) => return result,
+    };
     let raw = args["entity_id"]
         .as_str()
         .or_else(|| args["entity"].as_str())
@@ -769,7 +774,9 @@ pub async fn entity_facts(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) 
             Vec::new()
         });
     let (kept, aligned) = filtered(ctx, sink, &facts, &filter).await;
-    let shown: Vec<&EntityFact> = kept.iter().copied().take(limit).collect();
+    let shown: Vec<&EntityFact> = kept.iter().copied().skip(offset).take(limit).collect();
+    let end = offset + shown.len();
+    let next_offset = (end < kept.len()).then_some(end);
     let mut lines: Vec<String> = Vec::new();
     if let Some(note) = &who.note {
         lines.push(note.clone());
@@ -806,11 +813,12 @@ pub async fn entity_facts(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) 
                 ));
             }
         }
-        if shown.len() < kept.len() {
+        if offset > 0 || shown.len() < kept.len() {
+            head.push_str(&format!(", {} shown at offset {offset}", shown.len()));
+        }
+        if let Some(next) = next_offset {
             head.push_str(&format!(
-                ", {} shown. Narrow with predicate=, object_type=, since/until; timeline for the \
-                 dated ones; neighbors for the related entities",
-                shown.len()
+                ". Call entity_facts with offset={next} and the same entity, filters and time parameters to continue"
             ));
         }
         lines.push(head);
@@ -853,7 +861,8 @@ pub async fn entity_facts(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) 
         })).collect::<Vec<_>>(),
         "at": m.at, "as_of": m.as_of, "before": m.before,
         "total_facts": facts.len(), "matched_facts": kept.len(),
-        "limit": limit, "truncated": shown.len() < kept.len(),
+        "limit": limit, "offset": offset, "next_offset": next_offset,
+        "truncated": next_offset.is_some(),
         "facts": shown.iter().map(|f| json!({
             "id": f.id, "direction": f.direction,
             "predicate_key": f.predicate_key, "predicate_label": f.predicate_label,

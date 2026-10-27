@@ -98,7 +98,7 @@ enum Cut {
 /// `Err` has two causes: no chat model, or an empty balance (#1095). An empty balance
 /// stops the document, and the error keeps its chain for `alerting::hopeless`.
 ///
-/// 被接管的检查（epoch）留在主循环顶上，不在这里：它要在调模型之前
+/// 被接管的检查（epoch）留在主循环，不在这里：调模型之前、回复落库之前都要核对。
 #[allow(clippy::too_many_arguments)]
 async fn call_and_parse_one_chunk(
     state: &AppState,
@@ -1100,6 +1100,11 @@ pub(crate) async fn run_open(
             Some(p) => p,
             None => continue,
         };
+        // 模型回答期间，重建可能已删掉缓存里的实体（#1361）；旧回复不能写事实或标记分块完成。
+        if utopia_store::documents::extract_epoch(pool, document_id).await? != my_epoch {
+            tracing::info!(%document_id, "抽取任务已被新一轮接管，落库前退出");
+            return Ok(());
+        }
         let ChunkParsed {
             extraction,
             name_vecs,
@@ -1217,6 +1222,12 @@ pub(crate) async fn run_open(
         serde_json::json!({ "document_id": document_id }),
     )
     .await?;
+    // 这篇开抽时还没绑上、抽到一半才绑上的类别词：它的类补到这篇后半建的实体上
+    // （`bound_types` 是开抽时读的一份，判定落下时的投影看不见之后建的实体）
+    let caught_up = utopia_store::type_bindings::apply_bound(pool, kb_id).await?;
+    if caught_up > 0 {
+        tracing::info!(%document_id, entities = caught_up, "抽取途中绑上的类补到了后建的实体上");
+    }
     // 新出现的类别词绑到类（0044 对齐第一片）：库级，同库排着就不重复
     utopia_store::jobs::enqueue_unless_queued(
         pool,
@@ -1246,6 +1257,10 @@ pub(crate) async fn run_open(
         state.emit_review(kb_id);
     }
 
+    // 身份来源（0071 决定 5）：散文先写下的名字向量，这篇给了它身份证据，删掉
+    if identity {
+        utopia_store::name_vectors::drop_for_document(pool, document_id).await?;
+    }
     // 名字向量：这篇新写的名字事实，向量补上（0041 决定 3 通道 2）。算不出来只记日志——
     // 文档已经抽完了，不能因为召回的辅助数据没算而把它标成 failed
     if let (Some(settings), Some(client)) = (settings, &embed) {

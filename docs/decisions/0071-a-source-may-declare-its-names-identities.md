@@ -1,6 +1,6 @@
 # 0071 · A source may declare its names identities
 
-- **Status**: In progress · 2026-10-19 · [#1293](https://github.com/deeplethe/utopia/issues/1293) · open: decisions 5, 6 and 7, and the `name_vectors::pending` skip of decision 4
+- **Status**: In progress · 2026-10-19 · [#1293](https://github.com/deeplethe/utopia/issues/1293) · open: decision 7
 - **Written**: 2026-10-19 (conventions in the [README](README.md))
 - **Related**: [0054](0054-a-source-may-push-statements-in-the-open-contract.md) decision 3 sends pushed statements down the same resolution path as prose, and this record narrows that for one kind of source; [0041](0041-a-name-is-a-claim-about-an-entity.md) owns name facts and name-vector recall; [#1248](https://github.com/deeplethe/utopia/issues/1248) meets the same problem from the merge side and is decided here as decision 7; [#1296](https://github.com/deeplethe/utopia/issues/1296) measured what the recall costs; [#1308](https://github.com/deeplethe/utopia/pull/1308) is the disjointness fix that stands on its own
 
@@ -34,7 +34,7 @@ A mention from an identity source runs no `name_vectors::nearest` query and prop
 
 **5. Identity evidence wins.**
 
-One name fact can carry evidence from both an identity source and a prose document, because facts dedupe on subject, predicate and object. Such a fact gets no vector. The identity source has vouched for the name, and a prose mention still reaches it by exact match. This changes recall for prose: a prose mention of a *variant* of that name (an abbreviation, another script) no longer finds the entity through its vector, and the code PR covers that with the test `a_name_with_identity_evidence_gets_no_vector_even_when_prose_names_it_too`.
+One name fact can carry evidence from both an identity source and a prose document, because facts dedupe on subject, predicate and object. Such a fact gets no vector. The identity source has vouched for the name, and a prose mention still reaches it by exact match. The order does not matter: when an identity document is extracted, the vectors of the name facts it gave evidence to are deleted, and a backfill writes no vector for a name that has identity evidence by then. This changes recall for prose: a prose mention of a *variant* of that name (an abbreviation, another script) no longer finds the entity through its vector, and the code PR covers that with the test `a_name_with_identity_evidence_gets_no_vector_even_when_prose_names_it_too`.
 
 **6. Switching the flag.**
 
@@ -47,7 +47,7 @@ One name fact can carry evidence from both an identity source and a prose docume
 
 Why a person and not a stricter threshold: an identity source has already said what its names are. Decisions 2 to 4 remove the pairs that name vectors and the single-candidate split would raise, so what is left are containment and type-drift pairs and the cross-source duplicate (one thing pushed under two names by two producers). Those are exactly the cases where the model's `same` is a guess about a claim the producer made, and a wrong merge of identities is what #1248 measured: on a small local model, 40 automatic merges with governance off, nearly all wrong (a method into its file, two unrelated types). A person sees few of them because the vectors are off. Raising `AUTO_CONF` for these pairs would still let a confident wrong verdict through, and a per-base switch is a dead end (below).
 
-**A NULL-typed holder keeps its class for now.** A typed mention that attaches to a holder with `type_id IS NULL` does not upgrade the holder's class, as the type-drift path does. PR 2 decides that.
+**A NULL-typed holder takes the declared class.** *Revised 2026-10-23 (#1390):* this note said a holder with `type_id IS NULL` keeps its class and left the choice to the next PR. A typed identity mention that attaches to such a holder now gives it the declared class, as the type-drift path does and with the same helper, so a class a person removed stays removed.
 
 ## Not doing
 

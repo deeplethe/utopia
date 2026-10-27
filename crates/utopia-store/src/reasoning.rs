@@ -1448,19 +1448,7 @@ fn coarsest(a: Option<&str>, b: Option<&str>) -> Option<String> {
     }
 }
 
-/// 按本体公理重编译规则，返回 `(谓词, 种类) → 规则 id`。
-///
-/// **幂等**：身份取 `(kb, 谓词, 种类)`，重编译认得出「还是那条规则」——否则每跑
-/// 一次 `derived_facts.rule_id` 就指向一个新 id，历史全断。
-///
-/// **公理撤了的规则不删。** 已失效的派生行仍指着它，解释「当时是靠哪条规则推的」
-/// 需要它还在；而它不再出现在返回值里，据它推出来的事实由下面的对账作废。
-/// 规则一个库也就几条，留着不占地方。
-async fn compile_rules(
-    conn: &mut PgConnection,
-    kb_id: Uuid,
-    ax: &HashMap<Uuid, Axioms>,
-) -> AppResult<HashMap<(Uuid, RuleKind), Uuid>> {
+fn axiom_rule_keys(ax: &HashMap<Uuid, Axioms>) -> Vec<(Uuid, RuleKind)> {
     let mut want: Vec<(Uuid, RuleKind)> = Vec::new();
     for (&pred, a) in ax {
         if a.transitive {
@@ -1480,8 +1468,24 @@ async fn compile_rules(
         }
     }
     want.sort();
+    want
+}
+
+/// 按本体公理重编译规则，返回 `(谓词, 种类) → 规则 id`。
+///
+/// **幂等**：身份取 `(kb, 谓词, 种类)`，重编译认得出「还是那条规则」——否则每跑
+/// 一次 `derived_facts.rule_id` 就指向一个新 id，历史全断。
+///
+/// **公理撤了的规则不删。** 已失效的派生行仍指着它，解释「当时是靠哪条规则推的」
+/// 需要它还在；而它不再出现在返回值里，据它推出来的事实由下面的对账作废。
+/// 规则一个库也就几条，留着不占地方。
+async fn compile_rules(
+    conn: &mut PgConnection,
+    kb_id: Uuid,
+    ax: &HashMap<Uuid, Axioms>,
+) -> AppResult<HashMap<(Uuid, RuleKind), Uuid>> {
     let mut out = HashMap::new();
-    for (pred, kind) in want {
+    for (pred, kind) in axiom_rule_keys(ax) {
         sqlx::query(
             "INSERT INTO rules (id, kb_id, predicate_id, kind) VALUES ($1, $2, $3, $4)
              ON CONFLICT (kb_id, predicate_id, kind) DO NOTHING",
@@ -1503,6 +1507,45 @@ async fn compile_rules(
         out.insert((pred, kind), id);
     }
     Ok(out)
+}
+
+pub struct AxiomRule {
+    pub kind: &'static str,
+    pub predicate: String,
+    pub target: String,
+}
+
+/// 读编译器采用的声明，包含补齐的逆关系对。
+/// 已存规则还保留撤销的声明，新声明则可能尚未编译；列出它们不能物化或写规则。
+pub async fn active_axiom_rules(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<AxiomRule>> {
+    let mut conn = pool.acquire().await?;
+    let ax = axioms(&mut conn, kb_id).await?;
+    let names: HashMap<Uuid, String> =
+        sqlx::query_as("SELECT id, key FROM relation_types WHERE kb_id=$1")
+            .bind(kb_id)
+            .fetch_all(&mut *conn)
+            .await?
+            .into_iter()
+            .collect();
+    let mut rules = Vec::new();
+    for (predicate, kind) in axiom_rule_keys(&ax) {
+        let target = match kind {
+            "inverse" => ax[&predicate].inverse_of,
+            "sub_property" => ax[&predicate].sub_property_of,
+            _ => Some(predicate),
+        };
+        if let (Some(predicate), Some(target)) =
+            (names.get(&predicate), target.and_then(|id| names.get(&id)))
+        {
+            rules.push(AxiomRule {
+                kind,
+                predicate: predicate.clone(),
+                target: target.clone(),
+            });
+        }
+    }
+    rules.sort_by(|a, b| a.predicate.cmp(&b.predicate).then(a.kind.cmp(b.kind)));
+    Ok(rules)
 }
 
 /// 取边时一并拿回来的随行信息（精度与置信度，落库要用）。
@@ -3110,6 +3153,7 @@ pub async fn blocked_proof(
 }
 
 /// 按 id 取一条派生（失效的也取：证明要能回看）。
+/// 公理名字取声明它的谓词，不取结论谓词；撤销的公理也仍要能解释历史事实。
 async fn derived_one(
     pool: &PgPool,
     kb_id: Uuid,
@@ -3126,7 +3170,7 @@ async fn derived_one(
                          d.object_value #>> '{}') AS object,
                 r.label AS predicate,
                 COALESCE(ru.kind, 'business') AS rule,
-                ar.name AS rule_name,
+                COALESCE(ar.name, ru.kind || ' of ' || rp.key) AS rule_name,
                 v.seq AS rule_version, v.definition AS rule_definition,
                 d.valid_from, d.valid_to, d.confidence, d.derived_at,
                 COALESCE(
@@ -3150,6 +3194,8 @@ async fn derived_one(
            LEFT JOIN entities o ON o.id = d.object_id
            JOIN relation_types r ON r.id = d.predicate_id
            LEFT JOIN rules ru ON ru.id = d.rule_id
+           LEFT JOIN relation_types rp ON rp.id = ru.predicate_id
+                AND rp.kb_id = d.kb_id AND ru.kb_id = d.kb_id
            LEFT JOIN attribute_rules ar ON ar.id = d.attribute_rule_id
            LEFT JOIN attribute_rule_versions v ON v.id = d.attribute_rule_version_id
            LEFT JOIN entity_types ct ON ct.id = ar.conclude_type_id
@@ -3193,7 +3239,7 @@ pub async fn derived_for_entity(
                          d.object_value #>> '{{}}') AS object,
                 r.label AS predicate,
                 COALESCE(ru.kind, 'business') AS rule,
-                ar.name AS rule_name,
+                COALESCE(ar.name, ru.kind || ' of ' || rp.key) AS rule_name,
                 v.seq AS rule_version, v.definition AS rule_definition,
                 d.valid_from, d.valid_to, d.confidence, d.derived_at,
                 COALESCE(
@@ -3217,6 +3263,8 @@ pub async fn derived_for_entity(
            LEFT JOIN entities o ON o.id = d.object_id
            JOIN relation_types r ON r.id = d.predicate_id
            LEFT JOIN rules ru ON ru.id = d.rule_id
+           LEFT JOIN relation_types rp ON rp.id = ru.predicate_id
+                AND rp.kb_id = d.kb_id AND ru.kb_id = d.kb_id
            LEFT JOIN attribute_rules ar ON ar.id = d.attribute_rule_id
            LEFT JOIN attribute_rule_versions v ON v.id = d.attribute_rule_version_id
            LEFT JOIN entity_types ct ON ct.id = ar.conclude_type_id
