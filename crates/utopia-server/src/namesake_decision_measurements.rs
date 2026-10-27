@@ -1,8 +1,34 @@
-//! Decision-path measurements for #1193, independent of the original eight cases.
-//! These assert evidence delivery and graph/review consistency, not the intelligence
-//! of a scripted reply. GOLD_ERROR is reported explicitly, without adding any name
-//! to KNOWN_FAILURES or treating a wrong merge as a successful identity decision.
+//! #1193 的裁决路径测量，与原八项案例分开。来源身份决定金标准，脚本回复只推动真实调用方。
+//! 除证据归属和图/审核状态一致性外，逐名锁定现有金标准错误：名单内必须仍错，名单外必须正确。
+//! 修复要同时移除对应名字；错误意外消失与新回归都不能被一个总数掩盖。
 use super::*;
+
+const KNOWN_GOLD_ERRORS: &[&str] = &[
+    "Batch/ordinary/forward/distinct",
+    "Batch/ordinary/reverse/distinct",
+    "Batch/governance/forward/distinct",
+    "Batch/governance/reverse/distinct",
+    "BatchHigh/ordinary/forward/distinct",
+    "BatchHigh/ordinary/reverse/distinct",
+    "BatchHigh/governance/forward/distinct",
+    "BatchHigh/governance/reverse/distinct",
+    "Cached/ordinary/forward/distinct",
+    "Cached/ordinary/reverse/distinct",
+    "Cached/governance/forward/distinct",
+    "Cached/governance/reverse/distinct",
+    "Facts/ordinary/forward/distinct",
+    "Facts/ordinary/reverse/distinct",
+    "Facts/governance/forward/distinct",
+    "Facts/governance/reverse/distinct",
+    "Quotes/ordinary/forward/distinct",
+    "Quotes/ordinary/reverse/distinct",
+    "Quotes/governance/forward/distinct",
+    "Quotes/governance/reverse/distinct",
+    "QuotesSplit/ordinary/forward/same",
+    "QuotesSplit/ordinary/reverse/same",
+    "QuotesSplit/governance/forward/same",
+    "QuotesSplit/governance/reverse/same",
+];
 
 #[derive(Clone, Copy, Debug)]
 enum Path {
@@ -29,9 +55,8 @@ impl Fx {
     ) -> anyhow::Result<Value> {
         let order = if reverse { [1, 0] } else { [0, 1] };
         let mut holders = [Uuid::nil(); 2];
-        // The fixture register explicitly identifies one person per employee number.
-        // Gold is the register's identity, never inferred from a model verdict or an
-        // ontology uniqueness declaration. The open graph has no such declaration.
+        // 登记册原文明说员工号与人一一对应；金标准来自来源身份，不由模型判决反推，
+        // 也不靠本体声明唯一关系——这个开放图谱没有这样的声明。
         let numbers = if gold_same { ["E17", "E17"] } else { EMPLOYEES };
         let quotes = numbers.map(|n| {
             format!("Register R assigns one number per person and one person per number: Alex Lee is employee {n}.")
@@ -91,7 +116,7 @@ impl Fx {
             )
             .await?;
         }
-        // Governance deliberately does not consume the ordinary adjudicator cache.
+        // 治理不读普通裁决缓存：预种缓存的治理案例仍然要问一次攒批模型。
         let asks_batch = governance || !matches!(path, Path::Cached);
         let reads_evidence = matches!(path, Path::Facts | Path::Quotes | Path::QuotesSplit);
         let confidence = if reads_evidence {
@@ -156,8 +181,7 @@ impl Fx {
             "unconsumed script"
         );
         let requests = self.model.requests.lock().unwrap().clone();
-        // Verify ownership in the actual HTTP request, including tool results. A
-        // whole-request contains check would pass swapped A/B evidence unnoticed.
+        // 检查实际 HTTP 请求里各自那一侧，包括工具结果；只查整段 contains 会放过 A/B 交换。
         if asks_batch {
             let messages = requests[0]["messages"].as_array().unwrap();
             let user = messages.iter().find(|m| m["role"] == "user").unwrap()["content"]
@@ -232,7 +256,7 @@ impl Fx {
         .await?;
         let human: i64 = sqlx::query_scalar("SELECT count(*) FROM resolution_reviews WHERE kb_id=$1 AND stage='human' AND status='pending'")
             .bind(self.kb).fetch_one(&self.pool).await?;
-        // Re-running a terminal pair must not silently add work or model calls.
+        // 终态再执行一次不能悄悄新增调查和模型调用。
         if governance {
             crate::governance::govern(&self.state, self.kb).await?;
         } else {
@@ -242,23 +266,32 @@ impl Fx {
             self.model.requests.lock().unwrap().len() == requests.len(),
             "terminal pair was investigated again"
         );
-        Ok(json!({"path":format!("{path:?}"),"governance":governance,
+        let id = format!(
+            "{path:?}/{}/{}/{}",
+            if governance { "governance" } else { "ordinary" },
+            if reverse { "reverse" } else { "forward" },
+            if gold_same { "same" } else { "distinct" },
+        );
+        Ok(
+            json!({"id":id,"path":format!("{path:?}"),"governance":governance,
             "order":if reverse {"reverse"} else {"forward"},"source_gold_same":gold_same,"batch_confidence":confidence,
             "source_quotes":quotes,"observed_same":l==r,"gold_error":(l==r)!=gold_same,
             "model_calls":requests.len(),"investigation_calls":decisions.iter().map(|d|d.0).sum::<i32>(),
             "source_passages_read":matches!(path,Path::Quotes | Path::QuotesSplit) && !read.is_empty(),
-            "tool_results":read,"decisions":decisions,"review":review,"pending_human":human}))
+            "tool_results":read,"decisions":decisions,"review":review,"pending_human":human}),
+        )
     }
 }
 
 #[tokio::test]
-async fn namesake_decision_measurements_preserve_evidence_ownership_and_terminal_state(
-) -> anyhow::Result<()> {
+async fn namesake_decision_measurements_have_only_the_named_gold_errors() -> anyhow::Result<()> {
     let Some(url) = utopia_store::test_db::url() else {
         return Ok(());
     };
     let pool = sqlx::PgPool::connect(&url).await?;
     let mut rows = Vec::new();
+    let mut seen = Vec::new();
+    let mut mismatches = Vec::new();
     let case = Case {
         id: "decision_measurement",
         check: Check::Adjudicator { literal: true },
@@ -294,17 +327,50 @@ async fn namesake_decision_measurements_preserve_evidence_ownership_and_terminal
                     let row =
                         run.map_err(|_| anyhow::anyhow!("decision measurement timed out"))??;
                     println!("NAMESAKE_DECISION_MEASUREMENT {row}");
+                    let id = row["id"].as_str().unwrap().to_string();
+                    let error = row["observed_same"].as_bool().unwrap()
+                        != row["source_gold_same"].as_bool().unwrap();
+                    anyhow::ensure!(row["gold_error"] == error, "{id}: inconsistent gold error");
+                    if seen.contains(&id) {
+                        mismatches.push(format!("{id}: duplicate row"));
+                    }
+                    if KNOWN_GOLD_ERRORS.contains(&id.as_str()) != error {
+                        mismatches.push(format!(
+                            "{id}: {}",
+                            if error {
+                                "unlisted gold error"
+                            } else {
+                                "unexpected pass: remove this name with its fix"
+                            }
+                        ));
+                    }
+                    seen.push(id);
                     rows.push(row);
                 }
             }
         }
     }
+    // 名单必须被真实运行消费：删掉一行或改了名字，不能留下无人检查的旧豁免。
+    for &name in KNOWN_GOLD_ERRORS {
+        if !seen.iter().any(|id| id.as_str() == name) {
+            mismatches.push(format!("{name}: unused known-gold-error name"));
+        }
+    }
+    if rows.len() != 48 {
+        mismatches.push(format!("expected 48 rows, got {}", rows.len()));
+    }
     println!(
         "NAMESAKE_DECISION_SUMMARY {}",
         json!({"cases":rows.len(),
         "source_gold_errors":rows.iter().filter(|r|r["gold_error"]==true).count(),
-        "scope":"evidence transport and decision paths; scripted verdicts do not measure model accuracy",
-        "known_failure_list_unchanged":true})
+        "scope":"named gold errors and evidence transport; scripted verdicts do not measure model accuracy",
+        "known_gold_errors":KNOWN_GOLD_ERRORS,"mismatches":mismatches,
+        "original_known_failure_list_unchanged":true})
+    );
+    anyhow::ensure!(
+        mismatches.is_empty(),
+        "namesake gold expectation mismatch: {}",
+        mismatches.join("; ")
     );
     Ok(())
 }
