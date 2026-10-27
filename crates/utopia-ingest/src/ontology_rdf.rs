@@ -840,13 +840,20 @@ fn is_opaque_local_name(local: &str) -> bool {
 }
 
 /// 派生 key：局部名是纯编号且词汇表给了 label 时用 label，否则用局部名。
+/// 局部名派生不出 key 的（`ex:公司` 一个 ASCII 字母都没有）也改用 label。
 ///
 /// **IRI 始终是身份**，这里只换那个给模型读的标签，所以重导入、对齐、
 /// `e_by_iri` 的认领都不受影响。
 pub fn key_from_iri_or_label(iri: &str, label: Option<&str>) -> String {
+    let from_iri = key_from_iri(iri);
     match label {
-        Some(l) if is_opaque_local_name(local_name(iri)) && !l.trim().is_empty() => to_key(l),
-        _ => key_from_iri(iri),
+        Some(l)
+            if (from_iri.is_empty() || is_opaque_local_name(local_name(iri)))
+                && !l.trim().is_empty() =>
+        {
+            to_key(l)
+        }
+        _ => from_iri,
     }
 }
 
@@ -1290,6 +1297,29 @@ mod tests {
         assert_eq!(k("http://x#HTTP_Server", "HTTP server"), "http_server");
         // 数字不足三位：可能是有意义的编号（v2、Q1），不当编号处理
         assert_eq!(k("http://x#part_12", "part twelve"), "part_12");
+    }
+
+    /// 中文写的 IRI 派生不出 key：有英文 label 就用它，不然每个类都是空 key，导入整个被拒
+    #[test]
+    fn a_chinese_iri_takes_its_key_from_the_label() {
+        let ttl = r#"
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix ex: <http://example.cn/onto#> .
+
+ex:公司 a owl:Class ; rdfs:label "Company"@en, "公司"@zh .
+ex:人员 a owl:Class ; rdfs:label "Person"@en, "人员"@zh .
+ex:注册资本 a owl:DatatypeProperty ; rdfs:label "registered capital"@en ;
+    rdfs:domain ex:公司 ; rdfs:range xsd:decimal .
+"#;
+        let p = project(ttl.as_bytes(), RdfFormat::Turtle).unwrap();
+        let mut keys: Vec<&str> = p.classes.iter().map(|c| c.key.as_str()).collect();
+        keys.sort();
+        assert_eq!(keys, ["company", "person"]);
+        assert_eq!(p.properties[0].key, "registered_capital");
+        // 没有 label 的仍退回局部名
+        assert_eq!(key_from_iri_or_label("http://x#Company", None), "company");
     }
 
     /// schema.org 那一套的最小复刻：数据类型自报家门，属性用

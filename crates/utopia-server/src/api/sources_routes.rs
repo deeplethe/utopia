@@ -6,12 +6,13 @@ use axum::Json;
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use serde_json::json;
-use utopia_core::models::{Role, SOURCE_SECRET_KEYS};
+use utopia_core::models::{Role, SourceKind, SOURCE_SECRET_KEYS};
 use uuid::Uuid;
 
 use super::graph_routes::require_kb;
 use crate::auth::{AuthUser, SessionOrToken};
 use crate::error::ApiResult;
+use crate::pushed_keys::{is_push_kind, pushed_key};
 use crate::state::AppState;
 
 /// 生成 api 来源的推送密钥。
@@ -109,12 +110,22 @@ pub async fn create(
     let user = caller.user;
     require_kb(&state, &user, kb_id, Role::Editor).await?;
     validate_rss_config(&body.kind, &body.config)?;
+    let drive = config_is_drive_owned(&body.kind);
+    // 没配 OAuth 客户端的部署连不上 Google，建出来也只会一直失败（0074 决定 2）
+    if drive && crate::google_drive::oauth_config().is_none() {
+        return Err(utopia_core::AppError::invalid(
+            "google_drive_not_configured",
+            "Google Drive is not configured on this server",
+        )
+        .into());
+    }
+    let config = if drive { json!({}) } else { body.config };
     let source = utopia_store::sources::create(
         &state.pool,
         kb_id,
         &body.kind,
         &body.name,
-        &body.config,
+        &config,
         body.icon.as_deref(),
         body.sync_interval_minutes,
         body.sync_cron.as_deref(),
@@ -154,19 +165,6 @@ pub async fn create(
     Ok(Json(
         json!({ "source": mask_secrets(source), "ingest_token": ingest_token }),
     ))
-}
-
-/// 有推送密钥的来源：`api` 推文档，`statements` 推陈述（0054）。两种的密钥同一套
-/// 生成、查看、轮换
-pub(crate) fn is_push_kind(kind: &str) -> bool {
-    matches!(kind, "api" | "statements")
-}
-
-/// The `external_key` a push source files a pushed identity under (`api:…`, `statements:…`).
-/// The push handlers write it and the read by `external_id` (#1276) looks it up, so the two
-/// cannot drift apart.
-pub(crate) fn pushed_key(source: &utopia_core::models::Source, identity: &str) -> String {
-    format!("{}:{identity}", source.kind)
 }
 
 /// 查看推送密钥（Editor；列表响应从不携带，查看走这里）。
@@ -212,6 +210,12 @@ fn validate_rss_config(kind: &str, config: &serde_json::Value) -> utopia_core::A
         utopia_store::sources::rss_content_mode(config)?;
     }
     Ok(())
+}
+
+/// Google Drive 来源的配置只由它自己的连接、选文件夹、断开三条路由写（0074）。
+/// 通用的建、改要是也能写，任何编辑者都能绕过「只有连上的那个人能选文件夹」
+fn config_is_drive_owned(kind: &str) -> bool {
+    SourceKind::parse(kind) == Some(SourceKind::GoogleDrive)
 }
 
 /// 更新时凭据的合并规则，每个 `SOURCE_SECRET_KEYS` 里的键一样：新配置里**没有**这个键
@@ -266,7 +270,9 @@ pub async fn update(
     require_kb(&state, &user, kb_id, Role::Editor).await?;
     let existing = source_in_kb(&state, kb_id, source_id).await?;
     // 凭据只进不出：响应从不回显，表单留空 / 没传 = 保留库里原值
-    let mut config = body.config;
+    let mut config = body
+        .config
+        .filter(|_| !config_is_drive_owned(&existing.kind));
     if let Some(cfg) = config.as_mut() {
         keep_secrets(cfg, &existing.config);
     }

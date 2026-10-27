@@ -398,7 +398,10 @@ async fn a_large_statements_payload_is_searchable_without_embedding() -> anyhow:
         payload
     );
     let chunks = utopia_store::documents::chunks_full(&f.pool, doc).await?;
-    let hits = f.state.search.search(&f.kb.to_string(), "sensor", 1)?;
+    let hits = f
+        .state
+        .search
+        .search(&f.kb.to_string(), "sensor", 1, None)?;
     assert_eq!(hits.len(), 1, "the payload remains searchable by keyword");
     assert_eq!(hits[0].chunk_id, chunks[0].id.to_string());
     f.cleanup().await

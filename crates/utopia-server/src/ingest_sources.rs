@@ -7,13 +7,18 @@
 use crate::state::AppState;
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
-use utopia_core::models::Source;
 use utopia_core::models::SourceKind;
+use utopia_core::models::{Role, Source};
+use utopia_core::AppError;
 use uuid::Uuid;
 
 #[cfg(test)]
 #[path = "source_checkpoint_tests.rs"]
 mod source_checkpoint_tests;
+
+#[cfg(test)]
+#[path = "timestamp_checkpoint_tests.rs"]
+mod timestamp_checkpoint_tests;
 
 /// 单次同步的新文档上限（防超长 feed/URL 列表拖垮任务）
 const MAX_NEW_PER_SYNC: usize = 200;
@@ -38,6 +43,7 @@ pub struct SyncStats {
     pub discovered: usize,
     pub queued_for_content: usize,
     pub content_terminal: usize,
+    pub checkpoint: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug)]
@@ -68,8 +74,11 @@ pub async fn sync_source(state: &AppState, source_id: Uuid) -> anyhow::Result<()
     let source = utopia_store::sources::get(&state.pool, source_id).await?;
     let kind = SourceKind::parse(&source.kind);
     let since = match kind {
-        Some(SourceKind::Custom | SourceKind::GithubIssues | SourceKind::JiraIssues) => {
+        Some(SourceKind::Custom) => {
             utopia_store::sources::last_successful_sync_start(&state.pool, source_id).await?
+        }
+        Some(SourceKind::GithubIssues | SourceKind::JiraIssues) => {
+            utopia_store::sources::sync_checkpoint(&state.pool, source_id).await?
         }
         _ => None,
     };
@@ -91,6 +100,7 @@ pub async fn sync_source(state: &AppState, source_id: Uuid) -> anyhow::Result<()
         }
         Some(SourceKind::Webdav) => sync_webdav(state, &source).await,
         Some(SourceKind::Notion) => sync_notion(state, &source).await,
+        Some(SourceKind::GoogleDrive) => sync_google_drive(state, &source).await,
         // 被动容器：folder / api / memory / upload 没有拉取语义
         Some(
             SourceKind::Folder
@@ -102,19 +112,51 @@ pub async fn sync_source(state: &AppState, source_id: Uuid) -> anyhow::Result<()
         None => Err(anyhow::anyhow!("unknown source kind `{}`", source.kind)),
     };
 
-    match outcome {
-        Ok(stats) => {
-            utopia_store::sources::finish_run(
+    let outcome = match outcome {
+        Ok(stats)
+            if matches!(
+                kind,
+                Some(SourceKind::GithubIssues | SourceKind::JiraIssues)
+            ) =>
+        {
+            utopia_store::sources::finish_timestamp_sync(
                 &state.pool,
                 run_id,
                 source_id,
-                None,
+                since,
+                stats.checkpoint,
                 stats.created as i32,
                 stats.updated as i32,
             )
-            .await?;
-            utopia_store::sources::finish_sync(&state.pool, source_id, None, stats.total() as i32)
+            .await
+            .map(|()| stats)
+            .map_err(anyhow::Error::from)
+        }
+        other => other,
+    };
+    match outcome {
+        Ok(stats) => {
+            if !matches!(
+                kind,
+                Some(SourceKind::GithubIssues | SourceKind::JiraIssues)
+            ) {
+                utopia_store::sources::finish_run(
+                    &state.pool,
+                    run_id,
+                    source_id,
+                    None,
+                    stats.created as i32,
+                    stats.updated as i32,
+                )
                 .await?;
+                utopia_store::sources::finish_sync(
+                    &state.pool,
+                    source_id,
+                    None,
+                    stats.total() as i32,
+                )
+                .await?;
+            }
             state.emit_source(source.kb_id);
             tracing::info!(
                 %source_id,
@@ -832,20 +874,20 @@ async fn sync_github_issues_with_client(
 
     let base = format!("{api_base}/repos/{repo}");
 
-    // 增量：GitHub 的 since 是"这之后更新过的"
-    let mut issue_q: Vec<(&str, String)> = vec![("state", "all".into())];
-    if let Some(t) = since {
-        issue_q.push(("since", t.to_rfc3339()));
-    }
-
-    let issues: Vec<crate::github_issues::Issue> =
-        crate::github_issues::fetch_all(http, &format!("{base}/issues"), &issue_q, auth).await?;
-    let mut stats = SyncStats::default();
-    for issue in issues
-        .iter()
-        .filter(|i| include_prs || i.pull_request.is_none())
-        .take(MAX_NEW_PER_SYNC)
-    {
+    let window = crate::github_issues::fetch_window(
+        http,
+        &format!("{base}/issues"),
+        since,
+        MAX_NEW_PER_SYNC,
+        include_prs,
+        auth,
+    )
+    .await?;
+    let mut stats = SyncStats {
+        checkpoint: window.checkpoint,
+        ..SyncStats::default()
+    };
+    for issue in &window.issues {
         // 只重建本轮选中的工单，但每张要读完整评论历史。仓库级评论即使
         // 去掉 since，也可能被无关工单和 PR 的评论挤出分页上限。
         let comments = crate::github_issues::fetch_all::<crate::github_issues::Comment>(
@@ -1205,21 +1247,14 @@ async fn sync_jira_issues(
     )
     .await?;
 
-    let jql = crate::jira_issues::jql(project, since);
-    let (issues, total) = crate::jira_issues::fetch_all(&http, base_url, &jql, auth).await?;
-    // **截断了就说出来。** 一个跑了多年的项目动辄上万张工单，翻页上限意味着
-    // 这一轮只覆盖了一段；不报的话界面上"同步完成"就是一句误导
-    if total > issues.len() as i64 {
-        tracing::warn!(
-            source_id = %source.id,
-            fetched = issues.len(),
-            total,
-            "Jira 结果被翻页上限截断，本轮只覆盖了一部分；下一轮的 JQL 窗口会接上"
-        );
-    }
-
-    let mut stats = SyncStats::default();
-    for issue in issues.iter().take(MAX_NEW_PER_SYNC) {
+    let window =
+        crate::jira_issues::fetch_window(&http, base_url, project, since, MAX_NEW_PER_SYNC, auth)
+            .await?;
+    let mut stats = SyncStats {
+        checkpoint: window.checkpoint,
+        ..SyncStats::default()
+    };
+    for issue in &window.issues {
         let body = crate::jira_issues::render(issue);
         // 逻辑身份带上站点：一个知识库接两个 Jira 时，PROJ-1 不会互相覆盖
         let host = reqwest::Url::parse(base_url)
@@ -1520,6 +1555,172 @@ async fn sync_notion(state: &AppState, source: &Source) -> anyhow::Result<SyncSt
                 .join("; ")
         );
     }
+    Ok(stats)
+}
+
+/// Google Drive 同步：走遍选中的文件夹，把读得出来的文件摄进来（0074）。
+///
+/// `doc_time` 取 `modifiedTime`，理由同 Notion：那是内容最后一次改动的时刻。
+/// 标记没变、文档还在的文件连下载都省了，见 `google_drive` 的模块注释。
+///
+/// **对账只在遍历完整时做**：列表到了上限、或有选中的文件夹打不开时，没看见的东西
+/// 不等于没了，只把这一轮看见的摘掉 missing 标记。下载到了上限不影响对账：列表是全的。
+///
+/// 没走完的这一轮（列表到顶、下载到顶、有打不开或读不出的）都报失败并说明缘由，
+/// 不报成功——「同步成功」下面不能藏着没进来的东西
+async fn sync_google_drive(state: &AppState, source: &Source) -> anyhow::Result<SyncStats> {
+    use crate::google_drive;
+
+    let refresh = source.config["refresh_token"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "google_drive source is not connected: connect a Google account in its settings"
+            )
+        })?;
+    // 读的是连上的那个人的 Drive：他离开了这个库、被降成只读、或账号停用了，
+    // 这份授权就不再替库读东西，等库里的人重连
+    let connector = match google_drive::connected_by(&source.config) {
+        Some(id) => utopia_store::accounts::find_user_by_id(&state.pool, id).await?,
+        None => None,
+    };
+    let access = match connector {
+        Some(user) => {
+            utopia_store::access::require_kb(&state.pool, &user, source.kb_id, Role::Editor).await
+        }
+        None => Err(AppError::NotFound),
+    };
+    let still_editor = match access {
+        Ok(_) => true,
+        Err(AppError::NotFound | AppError::Forbidden) => false,
+        Err(e) => return Err(e.into()),
+    };
+    anyhow::ensure!(
+        still_editor,
+        "the person who connected this Google Drive is no longer an editor of this knowledge base: reconnect it in the source settings"
+    );
+    let cfg = google_drive::oauth_config().ok_or_else(|| {
+        anyhow::anyhow!(
+            "Google Drive is not configured on this server (UTOPIA_GOOGLE_DRIVE_CLIENT_ID)"
+        )
+    })?;
+    let folders = google_drive::selected_folders(&source.config);
+    if folders.is_empty() {
+        anyhow::bail!("google_drive source has no folders selected");
+    }
+
+    let drive = google_drive::Drive::connect(&cfg, refresh).await?;
+    let listing = drive.walk(&folders).await?;
+
+    let known = google_drive::markers(&state.pool, source.id).await?;
+    let mut stats = SyncStats::default();
+    let mut seen_keys = Vec::with_capacity(listing.files.len());
+    let mut seen_ids = Vec::with_capacity(listing.files.len());
+    let mut unread: Vec<String> = Vec::new();
+    let mut downloads = 0usize;
+    let mut deferred = 0usize;
+    for f in &listing.files {
+        let key = f.external_key();
+        seen_keys.push(key.clone());
+        seen_ids.push(f.id.clone());
+        let marker = f.marker();
+        if known.get(&f.id) == Some(&marker) {
+            let live = utopia_store::documents::find_by_external_key(&state.pool, source.id, &key)
+                .await?
+                .is_some_and(|d| d.deleted_at.is_none());
+            if live {
+                continue;
+            }
+        }
+        if downloads == google_drive::MAX_DOWNLOADS_PER_SYNC {
+            deferred += 1;
+            continue;
+        }
+        downloads += 1;
+        // 读不出来的文件跳过，库里已有的原样留着，其余照常同步——同 Notion
+        let content = match drive.content(f).await {
+            Ok(c) => c,
+            Err(error) => {
+                tracing::warn!(id = %f.id, error = %format!("{error:#}"), "google drive file could not be read, leaving the stored document as it is");
+                unread.push(format!("{}: {error:#}", f.name));
+                continue;
+            }
+        };
+        let action = ingest_item(
+            state,
+            source.kb_id,
+            source.id,
+            &key,
+            &content.filename,
+            content.mime,
+            &content.bytes,
+            f.modified,
+        )
+        .await?;
+        google_drive::remember(&state.pool, source.id, &f.id, &marker).await?;
+        stats.absorb(action);
+    }
+
+    if listing.truncated || !listing.unreachable.is_empty() {
+        utopia_store::documents::clear_missing_keys(&state.pool, source.id, &seen_keys).await?;
+    } else {
+        utopia_store::documents::reconcile_missing(&state.pool, source.id, &seen_keys).await?;
+        google_drive::forget_others(&state.pool, source.id, &seen_ids).await?;
+    }
+
+    let mut gaps: Vec<String> = Vec::new();
+    if !listing.unreachable.is_empty() {
+        gaps.push(format!(
+            "{} selected folder(s) could not be opened (deleted, or no longer shared with the connected account): {}",
+            listing.unreachable.len(),
+            listing.unreachable.join(", ")
+        ));
+    }
+    if !unread.is_empty() {
+        gaps.push(format!(
+            "{} could not be read and keep their stored content: {}",
+            unread.len(),
+            unread
+                .iter()
+                .take(3)
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join("; ")
+        ));
+    }
+    if !listing.broken_shortcuts.is_empty() {
+        gaps.push(format!(
+            "{} shortcut(s) point to files the connected account cannot open: {}",
+            listing.broken_shortcuts.len(),
+            listing
+                .broken_shortcuts
+                .iter()
+                .take(3)
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join("; ")
+        ));
+    }
+    if listing.truncated {
+        gaps.push(
+            "the folders go deeper or hold more files than one walk lists, so the rest were not looked at"
+                .into(),
+        );
+    }
+    if deferred > 0 {
+        gaps.push(format!(
+            "{deferred} more file(s) wait for the next sync (at most {} downloads per run)",
+            google_drive::MAX_DOWNLOADS_PER_SYNC
+        ));
+    }
+    anyhow::ensure!(
+        gaps.is_empty(),
+        "{} file(s) synced; {}",
+        stats.total(),
+        gaps.join("; ")
+    );
     Ok(stats)
 }
 
