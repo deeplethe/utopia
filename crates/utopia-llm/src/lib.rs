@@ -953,6 +953,7 @@ impl LlmClient {
         stream: bool,
     ) -> anyhow::Result<reqwest::Response> {
         use std::sync::atomic::Ordering;
+        let mut retried = false;
         loop {
             let learned = self.tools_without_effort.load(Ordering::Relaxed);
             let resp = self
@@ -975,7 +976,18 @@ impl LlmClient {
             {
                 tracing::info!(model = %self.model, "端点不收带工具的推理强度，带工具的请求改发 none 并记住");
                 self.tools_without_effort.store(true, Ordering::Relaxed);
+                retried = true;
                 continue;
+            }
+            // 改发 none 也被拒，且错误还是在说推理强度：这个端点连 none 都不收，记住它只会让以后每一问都带着一个错的值。
+            // 别的 400（上下文超长、工具定义不对）跟 none 无关，记住的值留着
+            if retried
+                && status == reqwest::StatusCode::BAD_REQUEST
+                && err_detail(&parsed, &raw)
+                    .to_lowercase()
+                    .contains("reasoning_effort")
+            {
+                self.tools_without_effort.store(false, Ordering::Relaxed);
             }
             return Err(failure("LLM", status, retry_after, &parsed, &raw));
         }
@@ -1761,6 +1773,70 @@ mod tests {
                 (true, serde_json::json!("none")), // remembered, also by a clone
                 (false, serde_json::json!("low")), // a call without tools keeps the setting
             ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_deployment_that_refuses_none_too_is_not_sent_none_again() {
+        use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({ "error": {
+                "message": "Function tools with reasoning_effort are not supported for gpt-x." } })))
+            .mount(&server)
+            .await;
+        let client =
+            LlmClient::new(&server.uri(), None, "m").with_reasoning_effort(Some("low".into()));
+        let tool = serde_json::json!([{ "type": "function", "function": { "name": "ping" } }]);
+        let ask = [serde_json::json!({ "role": "user", "content": "x" })];
+        assert!(client.chat_tools(&ask, &tool).await.is_err());
+        let sent: Vec<serde_json::Value> = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| serde_json::from_slice(&r.body).unwrap())
+            .collect();
+        assert_eq!(
+            sent.iter()
+                .map(|b| b["reasoning_effort"].clone())
+                .collect::<Vec<_>>(),
+            ["low", "none"]
+        );
+        assert_eq!(
+            client.tools_body(&ask, Some(&tool), None, false)["reasoning_effort"],
+            "low",
+            "the flag is cleared"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unrelated_400_on_the_retry_keeps_none() {
+        use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({ "error": {
+                "message": "Function tools with reasoning_effort are not supported for gpt-x." } })))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(400).set_body_json(serde_json::json!({ "error": {
+                "message": "This model's maximum context length is 8192 tokens." } })),
+            )
+            .mount(&server)
+            .await;
+        let client =
+            LlmClient::new(&server.uri(), None, "m").with_reasoning_effort(Some("low".into()));
+        let tool = serde_json::json!([{ "type": "function", "function": { "name": "ping" } }]);
+        let ask = [serde_json::json!({ "role": "user", "content": "x" })];
+        assert!(client.chat_tools(&ask, &tool).await.is_err());
+        assert_eq!(server.received_requests().await.unwrap().len(), 2);
+        assert_eq!(
+            client.tools_body(&ask, Some(&tool), None, false)["reasoning_effort"],
+            "none",
+            "the flag is kept"
         );
     }
 

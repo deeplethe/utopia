@@ -227,11 +227,11 @@ pub async fn by_external_id(
 ) -> ApiResult<Response> {
     require_reader_kb(&state, &reader, kb_id).await?;
     let source = super::sources_routes::source_in_kb(&state, kb_id, source_id).await?;
-    if !super::sources_routes::is_push_kind(&source.kind) {
+    if !crate::pushed_keys::is_push_kind(&source.kind) {
         return Err(AppError::NotFound.into());
     }
     let external_id = query.external_id.trim();
-    let key = super::sources_routes::pushed_key(&source, external_id);
+    let key = crate::pushed_keys::pushed_key(&source, external_id);
     let found = utopia_store::documents::find_by_external_key(&state.pool, source.id, &key)
         .await?
         .ok_or(AppError::NotFound)?;

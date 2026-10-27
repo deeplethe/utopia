@@ -246,6 +246,15 @@ export interface SourceView {
     base_url?: string;
     /** jira_issues：项目 key，如 KAFKA；gitlab_repo：项目路径，如 group/subgroup/name */
     project?: string;
+    /** google_drive：选中的文件夹（名字只给界面看，同步只认 id） */
+    folders?: { id: string; name: string }[];
+    /** google_drive：连上的 Google 账号；`connected_at` 有值即已连接（令牌从不下发） */
+    account_email?: string | null;
+    connected_at?: string;
+    /** google_drive：连上的那个 Utopia 用户；浏览与选文件夹只给他 */
+    connected_by?: string;
+    /** google_drive：连上的那个人连接时的名字，断开前的确认里用 */
+    connected_by_name?: string;
     /** false = 这个来源下的文档只检索、不抽取（schema 文档，0035 决定 7）；缺省抽取 */
     extract?: boolean;
   } | null;
@@ -2507,6 +2516,32 @@ export const api = {
         method: "POST",
       },
     ),
+  googleDriveStatus: () =>
+    request<{ enabled: boolean }>(`/api/v1/google-drive/status`),
+  googleDriveConnect: (kbId: string, sourceId: string) =>
+    request<{ url: string }>(
+      `/api/v1/kbs/${kbId}/sources/${sourceId}/google-drive/connect`,
+      { method: "POST" },
+    ),
+  googleDriveDisconnect: (kbId: string, sourceId: string) =>
+    request<{ ok: boolean }>(
+      `/api/v1/kbs/${kbId}/sources/${sourceId}/google-drive/connection`,
+      { method: "DELETE" },
+    ),
+  googleDriveFolders: (kbId: string, sourceId: string, parent?: string) =>
+    request<{ folders: { id: string; name: string }[] }>(
+      `/api/v1/kbs/${kbId}/sources/${sourceId}/google-drive/folders` +
+        (parent ? `?parent=${encodeURIComponent(parent)}` : ""),
+    ),
+  googleDriveSelect: (
+    kbId: string,
+    sourceId: string,
+    folders: { id: string; name: string }[],
+  ) =>
+    request<{ source: SourceView }>(
+      `/api/v1/kbs/${kbId}/sources/${sourceId}/google-drive/folders`,
+      { method: "PUT", body: JSON.stringify({ folders }) },
+    ),
   syncSource: (kbId: string, sourceId: string) =>
     request<{ queued: boolean }>(
       `/api/v1/kbs/${kbId}/sources/${sourceId}/sync`,
@@ -2773,19 +2808,20 @@ export const api = {
       },
     ),
 
-  testSettings: (workspaceId: string) =>
+  /** 只测 `card` 那一张卡，回来的也只有那一项（#1424） */
+  testSettings: (workspaceId: string, card: "chat" | "embed" | "ocr" | "transcribe") =>
     request<{
       /** `ok` only when all three request shapes the jobs send pass; `checks` has each one (#1354) */
-      chat: {
+      chat?: {
         ok: boolean;
         reply?: string;
         error?: string;
         checks?: Record<"plain" | "streaming" | "tools", { ok: boolean; timed_out?: boolean; error?: string }>;
       };
-      embed: { ok: boolean; dim?: number; error?: string };
+      embed?: { ok: boolean; dim?: number; error?: string };
       ocr?: { ok: boolean; version?: string | null; error?: string };
       transcribe?: { ok: boolean; error?: string };
-    }>(`/api/v1/workspaces/${workspaceId}/settings/test`, { method: "POST" }),
+    }>(`/api/v1/workspaces/${workspaceId}/settings/test?card=${card}`, { method: "POST" }),
   /** 读扫描件的服务、转写模型各自一个保存：存它们不碰对话与嵌入那几列。
    *  `requeued`：因为缺它而等着的文件，这一存重新排进了处理队列几份 */
   saveOcrSettings: (
