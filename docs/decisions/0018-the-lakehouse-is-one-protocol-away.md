@@ -54,7 +54,7 @@ It is the one name of the four that is not "JSON in, JSON out": requests are sig
 ## Open questions
 
 - **How much schema to fetch.** All three expose `information_schema.columns`, and a lakehouse catalog can hold thousands of tables; `sync_schema_doc` caps at 200. With a schema in the connection string only that schema is read, otherwise the whole catalog. Whether that is enough waits for a real cluster.
-- **The type-restoration table** in `coerce` is hand-written from the three vendors' docs. Snowflake's `fixed` with a scale returns `"42.10"`, which becomes 42.1 and loses the trailing zero; harmless for a model, possibly not for an "exact definition". Revisit when the semantic layer keeps evidence (0016 D1) and decide whether to keep the raw string alongside.
+- **The type-restoration table** in `coerce` is hand-written from the three vendors' docs. Long exact decimal values with more than 15 significant digits stay strings rather than being rounded through an f64; approximate floating-point types remain numbers. Snowflake's `fixed` with a scale returns `"42.10"`, which becomes 42.1 and loses the trailing zero; harmless for a model, possibly not for an "exact definition". Revisit when the semantic layer keeps evidence (0016 D1) and decide whether to keep the raw string alongside.
 - **Trino's `ssl` inference**: a password, `ssl=true`, or port 443 / 8443 means https, anything else is plaintext. That is trino-python's rule, and someone who gets it wrong sees a TLS error instead of a hint.
 
 ## Status history
