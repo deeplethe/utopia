@@ -1,15 +1,15 @@
 //! `utopia` — operator-facing command-line entry point.
 //!
 //! See `.roadmap-proposals/backup-restore.md` for the design rationale.
-//! This is the draft PR (branch `feat/backup-restore`): `backup` is
-//! implemented, `restore` is stubbed.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use anyhow::Context;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use sqlx::{Connection, PgConnection};
 use tracing_subscriber::EnvFilter;
 use utopia_core::config::AppConfig;
 
@@ -82,9 +82,10 @@ struct ManifestDataDir {
 /// not a side effect of a code change.
 // 是迁移文件的**个数**，不是最大的编号（守卫 `schema_version_policy_compares_against_current`
 // 按个数比）：编号有空缺时两者不同——0071 由一个开放 PR 占着，0072 先落，个数是 71
-const CURRENT_SCHEMA_VERSION: u32 = 106;
+const CURRENT_SCHEMA_VERSION: u32 = 107;
 
-fn main() -> anyhow::Result<()> {
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -96,7 +97,7 @@ fn main() -> anyhow::Result<()> {
     let cmd = parse(&args)?;
     match cmd {
         Command2::Backup(a) => run_backup(a),
-        Command2::Restore(a) => run_restore(a),
+        Command2::Restore(a) => run_restore(a).await,
     }
 }
 
@@ -127,7 +128,7 @@ fn print_help() {
          \n\
          SUBCOMMANDS:\n  \
              backup   Snapshot the Postgres database (and optionally the data dir) into a tarball.\n  \
-             restore  Restore from a tarball produced by `utopia backup`. (TODO: stubbed in this PR.)\n"
+             restore  Restore from a tarball produced by `utopia backup`.\n"
     );
 }
 
@@ -192,9 +193,9 @@ fn parse_restore<'a, I: Iterator<Item = &'a String>>(iter: &mut I) -> anyhow::Re
                          --from <path>              Path to a tarball produced by `utopia backup`.\n      \
                          --target-data-dir <path>   Where to place the restored data dir.\n      \
                          --pg-restore <path>        Override the pg_restore binary.\n      \
-                         --dry-run                  Plan only.\n      \
-                         --force                    Required if target database is non-empty.\n      \
-                         --yes                      Skip the confirmation prompt.\n"
+                         --dry-run                  Validate and print the plan; do not change targets.\n      \
+                         --force                    Required for a non-empty target database or restored data dir.\n      \
+                         --yes                      Skip confirmation only; does not imply --force.\n"
                 );
                 std::process::exit(0);
             }
@@ -494,10 +495,10 @@ fn hex_encode(bytes: &[u8]) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// restore (stubbed)
+// 恢复
 // ---------------------------------------------------------------------------
 
-fn run_restore(args: RestoreArgs) -> anyhow::Result<()> {
+async fn run_restore(args: RestoreArgs) -> anyhow::Result<()> {
     let cfg = AppConfig::load()?;
     let from = args
         .from
@@ -518,19 +519,11 @@ fn run_restore(args: RestoreArgs) -> anyhow::Result<()> {
         .clone()
         .unwrap_or_else(|| PathBuf::from(&cfg.data_dir));
 
-    // Stage: extract the tarball into a tempdir we own. The cleanup at the
-    // end of every path uses `let _ = remove_dir_all(&stage)` so a panic or
-    // early return doesn't leave a half-written data dir behind.
-    let stage = tempdir_in(std::env::current_dir()?.as_path())?;
-    let manifest_path = stage.join("manifest.json");
-
-    let manifest = match extract_and_verify(&tar_bin, from, &stage, &manifest_path) {
-        Ok(m) => m,
-        Err(e) => {
-            let _ = std::fs::remove_dir_all(&stage);
-            return Err(e);
-        }
-    };
+    let stage = tempfile::Builder::new()
+        .prefix(".utopia-restore-")
+        .tempdir_in(std::env::current_dir()?)?;
+    let manifest_path = stage.path().join("manifest.json");
+    let manifest = extract_and_verify(&tar_bin, from, stage.path(), &manifest_path)?;
 
     // Manifest version policy: refuse forward, warn older. Forward refusal
     // is fatal because restoring into an older server with a newer schema
@@ -539,7 +532,6 @@ fn run_restore(args: RestoreArgs) -> anyhow::Result<()> {
     // a newer server can usually still load them (the schema migrations are
     // forward-only; older files just exercise older code paths).
     if manifest.schema_version > CURRENT_SCHEMA_VERSION {
-        let _ = std::fs::remove_dir_all(&stage);
         anyhow::bail!(
             "manifest schema_version {} is newer than this binary's {}; refusing to restore an incompatible backup",
             manifest.schema_version,
@@ -574,41 +566,43 @@ fn run_restore(args: RestoreArgs) -> anyhow::Result<()> {
         args.dry_run,
     );
 
+    let target_data_dir = preflight_restore(
+        &pg_restore_bin,
+        &target_db,
+        &target_data_dir,
+        stage.path(),
+        &manifest,
+        args.force,
+    )
+    .await?;
+
     if args.dry_run {
         print!("{plan}");
-        let _ = std::fs::remove_dir_all(&stage);
-        // Verify pre-flight so a bad plan still exits non-zero.
-        preflight_restore(&pg_restore_bin, &target_data_dir, &manifest)?;
         eprintln!("[dry-run] plan resolved cleanly; no changes made.");
         return Ok(());
     }
 
-    preflight_restore(&pg_restore_bin, &target_data_dir, &manifest)?;
-
     if !args.yes {
         eprint!(
-            "{plan}\nAbout to drop and recreate the target database, then restore from the archive. Continue? [y/N] "
+            "{plan}\nAbout to restore database objects and replace data if included in the archive. Stop all writers first. Continue? [y/N] "
         );
         let mut buf = String::new();
         std::io::stdin().read_line(&mut buf)?;
         if !matches!(buf.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
-            let _ = std::fs::remove_dir_all(&stage);
             anyhow::bail!("aborted by user");
         }
     }
 
-    if let Err(e) = apply_restore(
+    apply_restore(
         &pg_restore_bin,
         &target_db,
         &target_data_dir,
-        &stage,
+        stage.path(),
         &manifest,
-    ) {
-        let _ = std::fs::remove_dir_all(&stage);
-        return Err(e);
-    }
+        args.force,
+    )
+    .await?;
 
-    let _ = std::fs::remove_dir_all(&stage);
     tracing::info!(path = %from.display(), "restore complete");
     Ok(())
 }
@@ -655,44 +649,204 @@ fn extract_and_verify(
     Ok(manifest)
 }
 
-fn preflight_restore(
+fn check_archive_component(stage: &Path, name: &str, directory: bool) -> anyhow::Result<()> {
+    let relative = Path::new(name);
+    if name.is_empty()
+        || relative
+            .components()
+            .any(|part| !matches!(part, std::path::Component::Normal(_)))
+    {
+        anyhow::bail!("invalid archive component path: `{name}`");
+    }
+    let relative: PathBuf = relative.components().collect();
+    let path = stage.join(relative);
+    let metadata = std::fs::symlink_metadata(&path)
+        .with_context(|| format!("archive did not contain required component `{name}`"))?;
+    if metadata.file_type().is_symlink()
+        || (directory && !metadata.is_dir())
+        || (!directory && !metadata.is_file())
+        || !path.canonicalize()?.starts_with(stage.canonicalize()?)
+    {
+        anyhow::bail!("archive component `{name}` has an invalid type or location");
+    }
+    Ok(())
+}
+
+fn check_restore_data_target(target: &Path, force: bool) -> anyhow::Result<PathBuf> {
+    if target.file_name().is_none() {
+        anyhow::bail!(
+            "target data dir must name a replaceable directory: {}",
+            target.display()
+        );
+    }
+    // 先移除末尾分隔符和 `/.`，否则 lstat 也会跟随符号链接。
+    let normalized: PathBuf = target.components().collect();
+    let absolute = std::path::absolute(normalized)?;
+    // 允许父目录尚未创建，但文件或悬空链接不能充当父目录。
+    let mut resolved = None;
+    for parent in absolute.ancestors().skip(1) {
+        match std::fs::metadata(parent) {
+            Ok(metadata) if metadata.is_dir() => {
+                let suffix = absolute.strip_prefix(parent)?;
+                if suffix
+                    .components()
+                    .any(|part| !matches!(part, std::path::Component::Normal(_)))
+                {
+                    anyhow::bail!(
+                        "target data dir traverses a missing parent: {}",
+                        target.display()
+                    );
+                }
+                // 固定实际父路径，避免移走旧目录后无法访问暂存文件和回滚路径。
+                resolved = Some(parent.canonicalize()?.join(suffix));
+                break;
+            }
+            Ok(_) => anyhow::bail!(
+                "target data dir parent is not a directory: {}",
+                parent.display()
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if std::fs::symlink_metadata(parent).is_ok() {
+                    anyhow::bail!(
+                        "target data dir parent is a dangling link: {}",
+                        parent.display()
+                    );
+                }
+            }
+            Err(error) => return Err(error).context("cannot inspect target data dir parent"),
+        }
+    }
+    let target = resolved.context("target data dir has no accessible directory parent")?;
+    match std::fs::symlink_metadata(&target) {
+        Ok(metadata) => {
+            if !metadata.is_dir() || metadata.file_type().is_symlink() {
+                anyhow::bail!(
+                    "target data dir is not a regular directory: {}",
+                    target.display()
+                );
+            }
+            if std::fs::read_dir(&target)?.next().transpose()?.is_some() && !force {
+                anyhow::bail!(
+                    "target data dir {} is non-empty; pass --force to overwrite",
+                    target.display()
+                );
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error).context("cannot inspect target data dir"),
+    }
+    Ok(target)
+}
+
+async fn preflight_restore(
     pg_restore_bin: &Path,
+    target_db: &str,
     target_data_dir: &Path,
-    _manifest: &Manifest,
-) -> anyhow::Result<()> {
+    stage: &Path,
+    manifest: &Manifest,
+    force: bool,
+) -> anyhow::Result<PathBuf> {
+    check_archive_component(stage, &manifest.components.pg_dump.path, false)?;
+    let target_data_dir = if manifest.components.data_dir.present {
+        check_archive_component(stage, &manifest.components.data_dir.path, true)?;
+        check_restore_data_target(target_data_dir, force)?
+    } else {
+        target_data_dir.to_path_buf()
+    };
     if !binary_works(pg_restore_bin) {
         anyhow::bail!(
             "pg_restore not found or not executable: {}. Install postgresql-client or pass --pg-restore <path>.",
             pg_restore_bin.display()
         );
     }
-    // Data dir may not exist yet — restore creates it. Don't preflight its
-    // existence; that's not a precondition failure.
-    let _ = target_data_dir;
-    Ok(())
+    let mut connection = PgConnection::connect(target_db)
+        .await
+        .context("cannot connect to target database for restore preflight")?;
+    // 空表、schema 等用户对象也算非空；命名空间依赖还能覆盖函数、类型等对象。
+    let nonempty: bool = sqlx::query_scalar(
+        "SELECT EXISTS (
+            SELECT 1 FROM pg_catalog.pg_namespace n
+            WHERE n.nspname !~ '^pg_' AND n.nspname <> 'information_schema'
+              AND (n.nspname <> 'public' OR EXISTS (
+                  SELECT 1 FROM pg_catalog.pg_depend d
+                  WHERE d.refclassid = 'pg_catalog.pg_namespace'::regclass
+                    AND d.refobjid = n.oid)))
+         OR EXISTS (SELECT 1 FROM pg_catalog.pg_extension WHERE extname <> 'plpgsql')
+         OR EXISTS (SELECT 1 FROM pg_catalog.pg_largeobject_metadata)
+         OR EXISTS (SELECT 1 FROM pg_catalog.pg_foreign_data_wrapper)
+         OR EXISTS (SELECT 1 FROM pg_catalog.pg_foreign_server)
+         OR EXISTS (SELECT 1 FROM pg_catalog.pg_publication)
+         OR EXISTS (SELECT 1 FROM pg_catalog.pg_event_trigger)
+         OR EXISTS (SELECT 1 FROM pg_catalog.pg_subscription
+                    WHERE subdbid = (SELECT oid FROM pg_catalog.pg_database
+                                     WHERE datname = pg_catalog.current_database()))",
+    )
+    .fetch_one(&mut connection)
+    .await
+    .context("cannot inspect target database for restore preflight")?;
+    if nonempty && !force {
+        anyhow::bail!("target database is non-empty; pass --force to overwrite (--yes only skips confirmation)");
+    }
+    Ok(target_data_dir)
 }
 
-fn apply_restore(
+async fn apply_restore(
     pg_restore_bin: &Path,
     target_db: &str,
     target_data_dir: &Path,
     stage: &Path,
     manifest: &Manifest,
+    force: bool,
 ) -> anyhow::Result<()> {
-    let pg_dump_path = stage.join(&manifest.components.pg_dump.path);
-    if !pg_dump_path.exists() {
+    let dump_relative: PathBuf = Path::new(&manifest.components.pg_dump.path)
+        .components()
+        .collect();
+    let pg_dump_path = stage.join(dump_relative);
+    // 先在目标文件系统准备新目录；复制或数据库恢复失败时，旧目录仍保留原位。
+    let prepared = if manifest.components.data_dir.present {
+        let parent = target_data_dir
+            .parent()
+            .context("target data dir has no parent")?;
+        std::fs::create_dir_all(parent)?;
+        let prepared = tempfile::Builder::new()
+            .prefix(".utopia-restore-data-")
+            .tempdir_in(parent)?;
+        copy_dir_recursive(
+            &stage.join(&manifest.components.data_dir.path),
+            &prepared.path().join("new"),
+            true,
+        )?;
+        Some(prepared)
+    } else {
+        None
+    };
+    // 等待确认和准备文件期间目标可能变化，启动 pg_restore 前必须重新检查。
+    let checked_target = preflight_restore(
+        pg_restore_bin,
+        target_db,
+        target_data_dir,
+        stage,
+        manifest,
+        force,
+    )
+    .await?;
+    // 暂存文件已绑定首次解析的物理路径，复查不能悄悄切换到另一个目标。
+    if checked_target.as_path() != target_data_dir {
         anyhow::bail!(
-            "manifest references pg_dump at `{}` but the archive did not contain it",
-            manifest.components.pg_dump.path
+            "target data dir resolved to a different location after confirmation; retry with writers stopped"
         );
     }
     tracing::info!(
         archive_pg_dump = %pg_dump_path.display(),
-        "running pg_restore --clean --if-exists"
+        force,
+        "running pg_restore"
     );
-    let status = Command::new(pg_restore_bin)
-        .arg("--clean")
-        .arg("--if-exists")
+    let mut command = Command::new(pg_restore_bin);
+    if force {
+        command.args(["--clean", "--if-exists"]);
+    }
+    let status = command
+        .args(["--exit-on-error", "--single-transaction"])
         .arg("--dbname")
         .arg(target_db)
         .arg(&pg_dump_path)
@@ -700,42 +854,41 @@ fn apply_restore(
         .status()?;
     if !status.success() {
         anyhow::bail!(
-            "pg_restore exited with status {}; database may be in a partial state — verify with a follow-up pg_dump",
+            "pg_restore exited with status {}; SQL restore errors are rolled back; verify the database before retrying",
             status
         );
     }
 
-    if manifest.components.data_dir.present {
-        let archive_data_dir = stage.join(&manifest.components.data_dir.path);
-        if archive_data_dir.exists() {
-            tracing::info!(
-                target = %target_data_dir.display(),
-                "restoring data dir"
-            );
-            // Drop the existing target dir if it's non-empty so the copy
-            // below doesn't merge two worlds. This is what `--force`
-            // guards upstream — if `--force` is missing and the target
-            // already has files, fail loud.
-            if target_data_dir.exists() && std::fs::read_dir(target_data_dir)?.next().is_some() {
-                anyhow::bail!(
-                    "target data dir {} is non-empty; pass --force to overwrite",
-                    target_data_dir.display()
-                );
+    if let Some(prepared) = prepared {
+        check_restore_data_target(target_data_dir, force)
+            .context("database restored, but target data dir changed during restore; retry with writers stopped")?;
+        let previous = prepared.path().join("previous");
+        let had_target = target_data_dir.exists();
+        if had_target {
+            std::fs::rename(target_data_dir, &previous)
+                .context("database restored, but could not move old data dir; original files remain in place")?;
+        }
+        if let Err(error) = std::fs::rename(prepared.path().join("new"), target_data_dir) {
+            if had_target {
+                if let Err(rollback) = std::fs::rename(&previous, target_data_dir) {
+                    let retained = prepared.keep();
+                    anyhow::bail!("database restored, but data dir installation failed: {error}; rollback failed: {rollback}; original data retained at {} — stop writers and recover manually", retained.join("previous").display());
+                }
             }
-            // 恢复时照搬压缩包里有的：包里没有密钥，是打包那一步的决定，不是这里的
-            copy_dir_recursive(&archive_data_dir, target_data_dir, true)?;
-            if !manifest.components.data_dir.secret_key {
-                // 没有钥匙，库里那些封存的凭据就打不开。与其让人在服务起来之后
-                // 看见一串解不开的错误，不如现在说清楚该做什么
-                tracing::warn!(
+            return Err(error).context("database restored, but data dir installation failed; original data dir preserved — resolve the error and retry restore");
+        }
+        prepared.close().with_context(|| {
+            format!(
+                "restore completed, but could not remove previous data at {}",
+                previous.display()
+            )
+        })?;
+        if !target_data_dir.join(SECRET_KEY_FILE).is_file() {
+            // 没有钥匙，库里那些封存的凭据就打不开。与其让人在服务起来之后
+            // 看见一串解不开的错误，不如现在说清楚该做什么
+            tracing::warn!(
                     "this archive carries no {SECRET_KEY_FILE}: sealed credentials (model keys,                      source credentials) will not open. Set UTOPIA_SECRET_KEY on this host to the                      key the backup was taken with, or re-enter them after starting the server"
                 );
-            }
-        } else {
-            tracing::warn!(
-                path = %archive_data_dir.display(),
-                "manifest says data_dir is present but the archive did not contain it; skipping"
-            );
         }
     }
 

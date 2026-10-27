@@ -123,6 +123,11 @@ push documents in.
    Chunk search (`POST /kbs/{id}/search`, added 2026-10-24, #1271) takes a token on the same
    terms, so the service can ask the base about what it mirrored. Each hit carries its score, its
    BM25 and vector ranks and its source; `offset` pages through one fused list, at most 100 deep.
+   `source_id` narrows the search to one source of the base, and a source outside the base answers
+   404 like a missing one. `external_id_prefix` narrows it further to a push source's documents
+   whose `external_id` starts with the prefix, taken literally; without the `source_id` of an
+   `api` or `statements` source it answers 422 `prefix_needs_push_source`. Both filters apply
+   inside each channel, before fusion, so other documents cannot fill the candidates first.
 
 ## Dead ends
 
@@ -152,7 +157,8 @@ push documents in.
   and document content" now also counts them. 2026-10-19: the graph overview and neighbourhood
   join them, and so does reading a pushed document back by its `external_id` (#1276). The
   ontology and a class's instances follow (#1265), then a document's extractions and the
-  base's export (#1266). 2026-10-24: chunk search joins them (#1271).
+  base's export (#1266). 2026-10-24: chunk search joins them (#1271). 2026-10-25: it can be
+  narrowed to one source and, for a push source, to an `external_id` prefix (#1271).
 
 ## Open questions
 

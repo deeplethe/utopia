@@ -471,6 +471,27 @@ mod tests {
         assert!(super::super::guard_sql_for("mysql", "DELETE FROM sales.orders").is_err());
     }
 
+    /// 超出 f64 精度的 DECIMAL 留字符串，分毫不差；装得下的仍是数
+    #[tokio::test]
+    async fn a_decimal_longer_than_a_double_keeps_every_digit_mysql() {
+        let Some(fx) = Fx::new(1).await else { return };
+        let a = fx.schemas[0].clone();
+        fx.exec(&format!(
+            "CREATE TABLE {a}.ledger (total DECIMAL(20,2), fee DECIMAL(10,2));
+             INSERT INTO {a}.ledger VALUES (12345678901234567.89, 1234.50);"
+        ))
+        .await;
+        let r = MysqlEngine::new(&fx.url)
+            .execute(&format!("SELECT total, fee FROM {a}.ledger"))
+            .await
+            .expect("execute");
+        assert_eq!(
+            r.rows,
+            vec![r#"{"total":"12345678901234567.89","fee":1234.5}"#]
+        );
+        fx.cleanup().await;
+    }
+
     /// YEAR 与 BIT 只有无符号整数读得出：字符串、字节都不收它们，落进兜底档就整列 null
     #[tokio::test]
     async fn a_year_or_bit_column_reads_as_its_number_mysql() {

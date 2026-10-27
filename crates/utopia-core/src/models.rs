@@ -479,15 +479,18 @@ pub struct ChunkView {
     pub filename: String,
 }
 
-/// 分块带上它来自哪个来源。`external_id` 只有推送来源（api / statements）才有：
-/// 推送方给的那个 id，去掉库里加的 `{kind}:` 前缀，好让它拿回去对自己的记录（#1271）
+/// 分块带上它来自哪个来源，连同来源的 kind 和文档的 `external_key`：推送来源的
+/// `external_id` 由这两样反推（`sources_routes::pushed_identity`，#1271）
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct SourcedChunk {
     #[serde(flatten)]
     #[sqlx(flatten)]
     pub chunk: ChunkView,
     pub source_id: Option<Uuid>,
-    pub external_id: Option<String>,
+    #[serde(skip)]
+    pub source_kind: Option<String>,
+    #[serde(skip)]
+    pub external_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]

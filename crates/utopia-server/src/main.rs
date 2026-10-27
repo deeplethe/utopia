@@ -33,6 +33,7 @@ mod owl_import;
 mod pack_alignment;
 mod phrase_alignment;
 mod pipeline;
+mod pushed_keys;
 mod query_engine;
 mod rdf;
 mod readers;

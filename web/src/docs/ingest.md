@@ -211,6 +211,8 @@ Content-Type: application/json
 
 `q` is required. `top_k` defaults to 10 and is capped at 50; `offset` defaults to 0. `as_of` (an RFC 3339 instant) reads the base as it was then; ranks are counted before `as_of` filters the hits. Any other field is a `422`.
 
+To search one source, add its `source_id`; a source of another base is a `404`. To search part of what you pushed, add `external_id_prefix` as well, for example `"docs/"`: only documents whose `external_id` starts with it are searched, and `_` or `%` in it are plain characters. The prefix needs the `source_id` of an API or Statements source, otherwise it is a `422` (`prefix_needs_push_source`). For one exact `external_id`, read the document back as above. Both filters apply inside each channel before the hits are fused, so paging works the same with them as without.
+
 ```json
 {
   "results": [
