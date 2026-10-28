@@ -158,6 +158,14 @@ pub struct Source {
     pub last_sync_status: String,
     pub last_sync_error: Option<String>,
     pub last_sync_added: i32,
+    /// 工单来源读到了哪里（ADR 0072）。NULL = 没有游标：首轮同步，或者这一类
+    /// 来源不用游标。
+    ///
+    /// **说的是「读到哪」，不是「这一轮什么时候跑」**——后者是 `last_sync_at`。
+    /// 一轮读不完是常事（同一个更新时刻上可能挂着一千条工单），游标说的是
+    /// 「消费到了哪个更新时刻，且那一刻的整组都读完了」；下一轮从那儿接着读，
+    /// 而不是把这一轮没读完的跳过去（#1212）
+    pub sync_checkpoint: Option<DateTime<Utc>>,
     /// api 来源的推送密钥（明文；查看走 Editor 权限的专用端点，列表响应不带）
     #[serde(skip_serializing)]
     pub ingest_token: Option<String>,
@@ -208,6 +216,7 @@ mod source_extracts_tests {
             last_sync_status: "never".into(),
             last_sync_error: None,
             last_sync_added: 0,
+            sync_checkpoint: None,
             ingest_token: None,
             created_at: chrono::Utc::now(),
         }
@@ -389,6 +398,8 @@ pub struct SourceView {
     pub last_sync_status: String,
     pub last_sync_error: Option<String>,
     pub last_sync_added: i32,
+    /// 工单来源读到了哪里（ADR 0072）。见 [`Source::sync_checkpoint`]
+    pub sync_checkpoint: Option<DateTime<Utc>>,
     pub doc_count: i64,
     /// 已标记"不在来源中"的文档数（url 全集对账 / custom 墓碑产生）
     pub missing_count: i64,
