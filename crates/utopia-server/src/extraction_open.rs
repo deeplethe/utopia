@@ -80,6 +80,56 @@ fn mention_evidence(
     evidence
 }
 
+/// 补漏不能把不同引文、同句多个主体或重复出现的名字压成一个身份。
+/// 这里只接受唯一定位的一句，并要求该主体的每条陈述都引用它。
+fn omitted_subject_quote<'a>(
+    extraction: &'a utopia_extract::open::OpenExtraction,
+    text: &str,
+    key: &str,
+) -> Option<&'a str> {
+    if extraction
+        .names
+        .iter()
+        .any(|n| name_key(&n.entity) == key || name_key(&n.name) == key)
+    {
+        return None;
+    }
+    let mut quotes = extraction
+        .statements
+        .iter()
+        .filter(|s| name_key(&s.subject) == key)
+        .map(|s| s.quote.as_deref().map(str::trim));
+    let quote = quotes.next()??;
+    let (start, end) = locate(text, quote)?;
+    let body = quote.trim_end_matches(['.', '!', '?', '。', '！', '？', '"', '”', '’']);
+    if !span_in_quote(key, quote)
+        || body.contains(['.', '!', '?', '。', '！', '？', ';', '；'])
+        || quotes.any(|other| other != Some(quote))
+        || extraction.statements.iter().any(|other| {
+            name_key(&other.subject) != key
+                && other
+                    .quote
+                    .as_deref()
+                    .and_then(|q| locate(text, q))
+                    .is_some_and(|(a, b)| a < end && start < b)
+        })
+        || extraction.entities.iter().any(|e| {
+            let declared = name_key(&e.name);
+            declared != key && declared.contains(key) && span_in_quote(&e.name, quote)
+        })
+    {
+        return None;
+    }
+    let once = |hay: &[char], needle: &[char]| {
+        !needle.is_empty() && hay.windows(needle.len()).filter(|w| *w == needle).count() == 1
+    };
+    let (body, _) = squashed(text);
+    let (sentence, _) = squashed(quote);
+    let subject: Vec<_> = key.chars().collect();
+    let normalized_quote: Vec<_> = name_key(quote).chars().collect();
+    (once(&body, &sentence) && once(&normalized_quote, &subject)).then_some(quote)
+}
+
 /// 回复为什么是半截的：端点撞上了 token 上限（#760），或护栏看见它在复读、停了读（#1301）。
 /// 两种都当半截处理，丢弃行要说清是哪一种——复读的去查上限，是找错了地方
 #[derive(Debug, Clone, Copy)]
@@ -373,23 +423,65 @@ async fn apply_open_extraction(
         local.insert(key, id);
     }
 
+    // 漏列的主体只能查回唯一的既有名字，不能借补漏创建或重新分类实体。
+    // 另存映射只供主体使用，避免顺带改变未声明宾语的字面值回退（#559）。
+    let mut recovered_subjects = HashMap::new();
+    if !pushed && !identity && !await_nod {
+        let declared: HashSet<_> = extraction
+            .entities
+            .iter()
+            .map(|e| name_key(&e.name))
+            .collect();
+        let subjects: HashSet<_> = extraction
+            .statements
+            .iter()
+            .map(|s| name_key(&s.subject))
+            .collect();
+        for key in &subjects {
+            if declared.contains(key)
+                || known_by_name.contains_key(key)
+                || handled_by_name.contains_key(key)
+            {
+                continue;
+            }
+            if omitted_subject_quote(extraction, &chunk.text, key).is_some() {
+                if let Some(id) = utopia_store::resolution::recover_existing_subject(
+                    pool,
+                    kb_id,
+                    key,
+                    ctx,
+                    evidence.get(key).map(String::as_str),
+                )
+                .await?
+                {
+                    recovered_subjects.insert(key.clone(), id);
+                }
+            }
+        }
+    }
+
     // ---- 陈述 ----
     for s in &extraction.statements {
         let phrase = s.phrase.trim();
         if phrase.is_empty() {
             continue;
         }
-        let Some(subject) = place(
-            pool,
-            kb_id,
-            &mut local,
-            known_by_name,
-            &deferred,
-            described,
-            &s.subject,
-        )
-        .await?
-        else {
+        let subject = match recovered_subjects.get(&name_key(&s.subject)) {
+            Some(id) => Some(*id),
+            None => {
+                place(
+                    pool,
+                    kb_id,
+                    &mut local,
+                    known_by_name,
+                    &deferred,
+                    described,
+                    &s.subject,
+                )
+                .await?
+            }
+        };
+        let Some(subject) = subject else {
             drop_signal(
                 state,
                 kb_id,

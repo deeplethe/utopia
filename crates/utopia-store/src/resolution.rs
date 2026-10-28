@@ -98,6 +98,65 @@ pub fn name_key(raw: &str) -> String {
     fold_markdown_markers(&normalize_name(raw)).to_lowercase()
 }
 
+/// 模型漏列主体时只补回已有的、能按原画像规则归属的名字；不能借补漏创建实体，
+/// 也不能把「只有一个名字」当作身份声明（0071 的直接归并只属于身份来源）。
+pub async fn recover_existing_subject(
+    pool: &PgPool,
+    kb_id: Uuid,
+    raw_name: &str,
+    context: Option<&[f32]>,
+    text: Option<&str>,
+) -> AppResult<Option<Uuid>> {
+    let normalized = normalize_name(raw_name);
+    let exact = vec![normalized.to_lowercase(), name_key(raw_name)];
+    let keys = recall_keys(&normalized);
+    let holders: Vec<Candidate> = sqlx::query_as(&format!(
+        "SELECT e.id, e.canonical_name, e.type_id, e.profile_embedding, e.profile_n,
+                (lower(e.canonical_name) = ANY($3) OR {exact_named}) AS exact_name
+           FROM entities e
+          WHERE e.kb_id = $1 AND e.merged_into IS NULL AND e.description IS NULL
+            AND (lower(e.canonical_name) = ANY($2) OR {named})
+          LIMIT 2",
+        named = crate::names::has_name_in("e", 1, 2),
+        exact_named = crate::names::has_name_in("e", 1, 3),
+    ))
+    .bind(kb_id)
+    .bind(&keys)
+    .bind(&exact)
+    .fetch_all(pool)
+    .await?;
+    let [holder] = holders.as_slice() else {
+        return Ok(None);
+    };
+    if !holder.exact_name {
+        return Ok(None);
+    }
+    let score = context.and_then(|ctx| {
+        holder
+            .profile_embedding
+            .as_ref()
+            .and_then(|profile| cosine(profile.as_slice(), ctx))
+    });
+    // 漏列意味着没有类型声明。同类型的无画像兼容及灰区旁证沿用原规则；
+    // 已分类候选走类型漂移的高分门槛，不能用无类型补漏来降低它。
+    let attach = if holder.type_id.is_some() {
+        score.is_some_and(|score| score >= SIM_ATTACH)
+    } else {
+        match score {
+            None => true,
+            Some(score) if score >= SIM_ATTACH => true,
+            Some(score) if score >= SIM_NEW => match text {
+                Some(text) => corroborating_candidate(pool, kb_id, &[holder], text)
+                    .await?
+                    .is_some(),
+                None => false,
+            },
+            Some(_) => false,
+        }
+    };
+    Ok(attach.then_some(holder.id))
+}
+
 /// 泛用后缀词表：中文直接拼在词干后；英文按独立词算、首尾两种语序都认
 /// （"Phoenix Project" / "Project Phoenix"）。只影响召回，判定仍走画像相似度。
 const GENERIC_SUFFIXES_CJK: &[&str] = &["项目", "公司", "集团", "部门", "团队"];
