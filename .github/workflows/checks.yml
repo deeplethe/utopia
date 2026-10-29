@@ -47,7 +47,9 @@ jobs:
   # migrations 再编一遍才真的跑。给这个 job 也起一个 Postgres，一次编译全部跑完，
   # migrations job 只留迁移本身的检查。连库测试由此进了 backend 汇总，才真正成为合并门槛
   test:
-    runs-on: ubuntu-latest
+    # 钉在 24.04：ubuntu-latest 换到 26.04 后 apt 里没有 postgresql-client-16，
+    # 装测试工具这一步直接失败，dev 与所有 PR 一起红（2026-10-29）
+    runs-on: ubuntu-24.04
     services:
       postgres:
         image: pgvector/pgvector:pg16
