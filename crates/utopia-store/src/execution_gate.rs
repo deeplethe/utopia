@@ -5,10 +5,12 @@
 //! 撤不回的是它活着那几天离开图的东西——推理据它推出的派生、据它开出的违规与告警、
 //! 进了导出的三元组、带引用给出去的答案。撤销还原的是图，不是图被读进去的那个世界。
 //!
-//! 这里问的只有一件事：**这一次合并会不会立刻把什么送出图外**。会，就留给人，
-//! 把握再高也不动手。只管合并：分开撤起来不费什么，下一次合并就是撤销。
+//! **这一次合并会不会立刻把什么送出图外**。会，就留给人，把握再高也不动手。
+//! 来源已声明名字是身份标识时，也要由人决定合并（0071），不能让模型推翻来源的声明。
+//! 只管合并：分开撤起来不费什么，下一次合并就是撤销。
 //!
-//! `hold` 是纯函数，`impact_of` 只取数。攒批裁决器与治理 agent 走同一个闸门；
+//! `hold` 是纯函数，`impact_of` 只取数；`hold_for_merge` 先看身份来源，再看影响。
+//! 攒批裁决器与治理 agent 走同一个闸门；
 //! 路线图上那道「执行闸门」（检查 agent 的调用）以后也接这一个，不长第二个。
 
 use sqlx::PgPool;
@@ -28,10 +30,10 @@ pub struct Impact {
     pub answered: i64,
 }
 
-/// 留给人的理由。`Display` 写成 `kind value`，直接接在 `escalate_impact|` 后面，
-/// 界面按 kind 措辞
+/// 留给人的理由。`review_reason` 写卡片的 code，`explain` 写决策台账的句子。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Hold {
+    Identity,
     Contradiction(String),
     Derived(i64),
     Answered(i64),
@@ -40,6 +42,7 @@ pub enum Hold {
 impl std::fmt::Display for Hold {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Hold::Identity => write!(f, "identity"),
             Hold::Contradiction(p) => write!(f, "contradiction {p}"),
             Hold::Derived(n) => write!(f, "derived {n}"),
             Hold::Answered(n) => write!(f, "answered {n}"),
@@ -48,9 +51,17 @@ impl std::fmt::Display for Hold {
 }
 
 impl Hold {
+    pub fn review_reason(&self) -> String {
+        match self {
+            Hold::Identity => "escalate_identity".into(),
+            _ => format!("escalate_impact|{self}"),
+        }
+    }
+
     /// 写给 `agent_decisions.reason` 的一句：人在 Agent 队列里看到 agent 为什么没动手
     pub fn explain(&self) -> String {
         match self {
+            Hold::Identity => "a source treats one side's names as identifiers".into(),
             Hold::Contradiction(p) => {
                 format!("merging would put two \"{p}\" facts on one entity")
             }
@@ -105,6 +116,38 @@ pub fn hold(impact: &Impact) -> Option<Hold> {
         return Some(Hold::Answered(impact.answered));
     }
     None
+}
+
+/// 身份来源的名字证据属于实体，不只属于它现在显示的本名；混有散文证据也不撤销声明。
+/// 每次要自动合并时重读来源的开关，包括缓存判决和同簇里已合过一侧的后继判决。
+pub async fn hold_for_merge(
+    pool: &PgPool,
+    kb_id: Uuid,
+    a: Uuid,
+    b: Uuid,
+) -> AppResult<Option<Hold>> {
+    let identity: bool = sqlx::query_scalar(
+        "SELECT EXISTS (
+             SELECT 1 FROM facts f
+             JOIN relation_types r ON r.id = f.predicate_id
+             JOIN fact_evidence fe ON fe.fact_id = f.id
+             JOIN documents d ON d.id = fe.document_id
+             JOIN sources s ON s.id = d.source_id
+             WHERE f.kb_id = $1 AND f.subject_id IN ($2, $3)
+               AND f.invalidated_at IS NULL AND r.builtin AND r.key = $4
+               AND s.kind = 'statements' AND s.config->>'names' = 'identity'
+         )",
+    )
+    .bind(kb_id)
+    .bind(a)
+    .bind(b)
+    .bind(crate::names::KNOWN_AS)
+    .fetch_one(pool)
+    .await?;
+    if identity {
+        return Ok(Some(Hold::Identity));
+    }
+    Ok(hold(&impact_of(pool, kb_id, a, b).await?))
 }
 
 /// 取一对实体合并会牵动什么。三条查询，只在裁决器有把握要合的时候才跑。

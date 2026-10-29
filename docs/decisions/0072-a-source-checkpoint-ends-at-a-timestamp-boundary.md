@@ -90,8 +90,11 @@ The listing budget is not a limit on a selected ticket's discussion history.
 Do not skip a large discussion, return truncated content or advance progress
 past a ticket whose details could not be read completely. A detail-page failure
 keeps the old document and checkpoint. Large discussions therefore increase
-requests, memory use and run duration. Jira's search `total` remains required:
-without it, a premature empty page could be mistaken for a complete group.
+requests, memory use and run duration. On Jira Server and Data Center the search
+`total` remains required: without it, a premature empty page could be mistaken
+for a complete group. Jira Cloud's `search/jql` has no total (Atlassian
+CHANGE-2046), so there an empty page, or a page without `nextPageToken`, before
+`isLast` fails the run instead (#1453).
 
 For explicit rate limits, keep at most three retries of the current request,
 preserving its in-memory position. Honor a valid wait hint only when it is at

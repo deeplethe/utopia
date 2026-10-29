@@ -118,6 +118,7 @@ export const en = {
     unknown_entity_type: "That class is not in this ontology.",
     nothing_to_update: "Nothing to change.",
     self_merge: "An entity cannot be merged into itself.",
+    new_from_required: "Enter the new start date for this fact.",
     close_at_required:
       "Pick the date this fact ended — the new one does not say when it started.",
     empty_query: "Type something to search for.",
@@ -2170,6 +2171,7 @@ export const en = {
       "fact.nod_rejected": "Rejected a remembered fact",
       "fact.close": "Closed",
       "conflict.close_old": "Closed old",
+      "conflict.retime_new": "Retimed new start",
       "conflict.keep_both": "Kept both",
       "conflict.reject_new": "Rejected new",
       "merge.revert": "Reverted merge",
@@ -2186,6 +2188,8 @@ export const en = {
       escalate_sample: "Sampled for a person; the adjudicator was confident",
       /* 执行闸门（0027）：合并会立刻送出图外的东西，把握再高也留给人 */
       escalate_impact: "Held for a person; the merge would not stay in the graph",
+      escalate_identity:
+        "Held for a person; a source treats one side's names as identifiers",
       proposed: "The agent looked and left a proposal",
       governed: "Decided by the agent from precedent",
       namesake: "Two entities with this name in one document",
@@ -2431,6 +2435,8 @@ export const en = {
     conflictSince: (d: string) => `since ${d}`,
     closeOld: "Close old",
     closeOldAt: (d: string) => `Close old at ${d}`,
+    retimeNew: "Retime new start",
+    conflictDate: "Date to close the old fact or retime the new start",
     keepBoth: "Keep both",
     rejectNew: "Reject new",
     closeAtPlaceholder: "2024-06-15 · 2024-06 · 2024 · 2024-06-15T14:32Z",

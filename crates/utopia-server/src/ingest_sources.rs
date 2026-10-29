@@ -1247,9 +1247,17 @@ async fn sync_jira_issues(
     )
     .await?;
 
-    let window =
-        crate::jira_issues::fetch_window(&http, base_url, project, since, MAX_NEW_PER_SYNC, auth)
-            .await?;
+    let cloud = crate::jira_issues::is_jira_cloud(base_url);
+    let window = crate::jira_issues::fetch_window(
+        &http,
+        base_url,
+        cloud,
+        project,
+        since,
+        MAX_NEW_PER_SYNC,
+        auth,
+    )
+    .await?;
     let mut stats = SyncStats {
         checkpoint: window.checkpoint,
         ..SyncStats::default()

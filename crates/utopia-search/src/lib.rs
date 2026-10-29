@@ -62,7 +62,13 @@ impl SearchIndex {
             .register(JIEBA, tantivy_jieba::JiebaTokenizer::new());
 
         let writer = index.writer(WRITER_HEAP)?;
-        let reader = index.reader()?;
+        // 每次写都在 writer 锁里自己 reload；再留着自动重载，那条异步重载可能晚到、
+        // 带着更旧的提交把刚写进去的文档又遮掉。这个进程握着唯一的 writer，
+        // 没有别人会提交，手动重载不会漏掉什么
+        let reader = index
+            .reader_builder()
+            .reload_policy(tantivy::ReloadPolicy::Manual)
+            .try_into()?;
         let analyzer = index
             .tokenizers()
             .get(JIEBA)

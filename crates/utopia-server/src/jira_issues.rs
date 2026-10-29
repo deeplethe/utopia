@@ -37,6 +37,10 @@
 //! 评论正文换成了 ADF（一棵 JSON 树而非字符串）——那需要一个渲染器，是另一件事。
 //! v2 在 Cloud 上通常仍可用且返回字符串，所以先只做 v2；真遇到只有 v3 的实例
 //! 再补，那时才知道 ADF 的哪些节点是必须处理的。
+//!
+//! 但 Cloud 撤掉了 `search`（410 Gone，CHANGE-2046），只剩 `search/jql`：
+//! 按 `nextPageToken` 翻页、`isLast` 收尾，没有 `startAt` 也没有 `total`。
+//! Server/DC 仍只有旧端点，所以只对 Cloud 站点换。
 
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
@@ -61,6 +65,26 @@ pub struct SearchPage {
     pub issues: Vec<Issue>,
     // total 用来识别提前结束的分页，缺失时不能把空页当作完整结果。
     pub total: i64,
+}
+
+/// Cloud `search/jql` 的一页：没有 total，只能靠 token 与 isLast 判断是否读完。
+#[derive(Debug, Deserialize)]
+pub struct JqlSearchPage {
+    #[serde(default)]
+    pub issues: Vec<Issue>,
+    #[serde(rename = "nextPageToken")]
+    pub next_page_token: Option<String>,
+    #[serde(rename = "isLast", default)]
+    pub is_last: bool,
+}
+
+/// 只有 Cloud 撤掉了旧 `search`；Server/DC 站点换过去反而会 404。
+pub fn is_jira_cloud(base_url: &str) -> bool {
+    reqwest::Url::parse(base_url).is_ok_and(|url| match url.host_str() {
+        Some("api.atlassian.com") => url.path().starts_with("/ex/jira"),
+        Some(host) => host.ends_with(".atlassian.net"),
+        None => false,
+    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -255,9 +279,11 @@ pub struct IssueWindow {
 }
 
 /// 复读固定的已选前缀，检测更新导致的 offset 位移；变化时不确认本轮 checkpoint。
+/// `cloud` 由调用方按 [`is_jira_cloud`] 给出，测试的本地 mock 才能走 Cloud 的翻页。
 pub async fn fetch_window(
     http: &reqwest::Client,
     base_url: &str,
+    cloud: bool,
     project: &str,
     since: Option<DateTime<Utc>>,
     item_limit: usize,
@@ -265,7 +291,7 @@ pub async fn fetch_window(
 ) -> anyhow::Result<IssueWindow> {
     let query = jql(project, since);
     let (window, positions) =
-        fetch_window_pass(http, base_url, &query, since, item_limit, auth, None).await?;
+        fetch_window_pass(http, base_url, cloud, &query, since, item_limit, auth, None).await?;
     if let Some(checkpoint) = window
         .checkpoint
         .filter(|checkpoint| Some(*checkpoint) != since)
@@ -273,6 +299,7 @@ pub async fn fetch_window(
         let (verified, verified_positions) = fetch_window_pass(
             http,
             base_url,
+            cloud,
             &query,
             since,
             item_limit,
@@ -288,9 +315,11 @@ pub async fn fetch_window(
     Ok(window)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn fetch_window_pass(
     http: &reqwest::Client,
     base_url: &str,
+    cloud: bool,
     query: &str,
     since: Option<DateTime<Utc>>,
     item_limit: usize,
@@ -306,9 +335,11 @@ async fn fetch_window_pass(
     let mut stop_after = through;
     let mut listing_pages = 0;
     let mut start_at = 0;
+    let mut next_page_token: Option<String> = None;
+    let path = if cloud { "search/jql" } else { "search" };
     loop {
         let mut url = reqwest::Url::parse(&format!(
-            "{}/rest/api/2/search",
+            "{}/rest/api/2/{path}",
             base_url.trim_end_matches('/')
         ))?;
         {
@@ -317,20 +348,41 @@ async fn fetch_window_pass(
             q.append_pair("expand", "changelog");
             q.append_pair("fields", FIELDS);
             q.append_pair("maxResults", &PAGE_SIZE.to_string());
-            q.append_pair("startAt", &start_at.to_string());
+            if !cloud {
+                q.append_pair("startAt", &start_at.to_string());
+            } else if let Some(token) = &next_page_token {
+                q.append_pair("nextPageToken", token);
+            }
         }
-        let page_data = fetch_page(http, url, auth).await?;
-        let count = page_data.issues.len();
-        anyhow::ensure!(
-            page_data.total >= 0 && (start_at + count) as i64 <= page_data.total,
-            "Jira returned an inconsistent page total; retry the previous checkpoint"
-        );
-        anyhow::ensure!(
-            count != 0 || start_at as i64 >= page_data.total,
-            "Jira returned an empty page before its total; retry the previous checkpoint"
-        );
+        let (issues, more) = if cloud {
+            let page_data: JqlSearchPage = fetch_page(http, url, auth).await?;
+            // 没有 total 可对账：未到末页却给空页或不给 token，都不能当作读完。
+            anyhow::ensure!(
+                page_data.is_last
+                    || (!page_data.issues.is_empty() && page_data.next_page_token.is_some()),
+                "Jira returned no next page before its last page; retry the previous checkpoint"
+            );
+            next_page_token = page_data.next_page_token;
+            (page_data.issues, !page_data.is_last)
+        } else {
+            let page_data: SearchPage = fetch_page(http, url, auth).await?;
+            let count = page_data.issues.len();
+            anyhow::ensure!(
+                page_data.total >= 0 && (start_at + count) as i64 <= page_data.total,
+                "Jira returned an inconsistent page total; retry the previous checkpoint"
+            );
+            anyhow::ensure!(
+                count != 0 || start_at as i64 >= page_data.total,
+                "Jira returned an empty page before its total; retry the previous checkpoint"
+            );
+            start_at += count;
+            (
+                page_data.issues,
+                count != 0 && (start_at as i64) < page_data.total,
+            )
+        };
         let mut page_counted = false;
-        for issue in page_data.issues {
+        for issue in issues {
             let updated = issue
                 .fields
                 .updated
@@ -366,18 +418,17 @@ async fn fetch_window_pass(
                 stop_after = Some(updated);
             }
         }
-        start_at += count;
-        if count == 0 || start_at as i64 >= page_data.total {
+        if !more {
             return Ok((window, positions));
         }
     }
 }
 
-async fn fetch_page(
+async fn fetch_page<T: serde::de::DeserializeOwned>(
     http: &reqwest::Client,
     url: reqwest::Url,
     auth: Option<&str>,
-) -> anyhow::Result<SearchPage> {
+) -> anyhow::Result<T> {
     let mut retries = 0;
     loop {
         let mut req = http
@@ -500,9 +551,12 @@ mod tests {
             .await;
         let http = reqwest::Client::builder().no_proxy().build().unwrap();
         let url = reqwest::Url::parse(&server.uri()).unwrap();
-        let result = tokio::time::timeout(Duration::from_secs(1), fetch_page(&http, url, None))
-            .await
-            .expect("a long Retry-After must return an error without waiting");
+        let result = tokio::time::timeout(
+            Duration::from_secs(1),
+            fetch_page::<SearchPage>(&http, url, None),
+        )
+        .await
+        .expect("a long Retry-After must return an error without waiting");
         assert!(result.unwrap_err().to_string().contains("HTTP 429"));
         assert_eq!(server.received_requests().await.unwrap().len(), 1);
     }
@@ -528,9 +582,17 @@ mod tests {
             .await;
         let http = reqwest::Client::builder().no_proxy().build().unwrap();
         let started = std::time::Instant::now();
-        let window = fetch_window(&http, &server.uri(), "X", None, 200, Some("Bearer fixture"))
-            .await
-            .unwrap();
+        let window = fetch_window(
+            &http,
+            &server.uri(),
+            false,
+            "X",
+            None,
+            200,
+            Some("Bearer fixture"),
+        )
+        .await
+        .unwrap();
         assert_eq!(window.issues.len(), 51);
         assert!(started.elapsed() >= Duration::from_secs(1));
         let requests = server.received_requests().await.unwrap();
@@ -557,7 +619,7 @@ mod tests {
             .await;
         let http = reqwest::Client::builder().no_proxy().build().unwrap();
         let since = Some("2026-01-02T00:00:00Z".parse().unwrap());
-        let window = fetch_window(&http, &server.uri(), "X", since, 200, None)
+        let window = fetch_window(&http, &server.uri(), false, "X", since, 200, None)
             .await
             .unwrap();
         assert!(window.issues.is_empty());
@@ -587,7 +649,7 @@ mod tests {
                 .mount(&server)
                 .await;
             let http = reqwest::Client::builder().no_proxy().build().unwrap();
-            let first = fetch_window(&http, &server.uri(), "X", None, 200, None)
+            let first = fetch_window(&http, &server.uri(), false, "X", None, 200, None)
                 .await
                 .unwrap();
             assert_eq!(first.issues.len(), group_size as usize);
@@ -602,9 +664,17 @@ mod tests {
                     .collect::<Vec<_>>()
             );
             assert_eq!(first.checkpoint, Some(group_time.parse().unwrap()));
-            let next = fetch_window(&http, &server.uri(), "X", first.checkpoint, 200, None)
-                .await
-                .unwrap();
+            let next = fetch_window(
+                &http,
+                &server.uri(),
+                false,
+                "X",
+                first.checkpoint,
+                200,
+                None,
+            )
+            .await
+            .unwrap();
             assert_eq!(next.issues.len(), 1);
             assert_eq!(next.issues[0].key, format!("X-{}", group_size + 1));
             assert_eq!(next.checkpoint, Some(later_time.parse().unwrap()));
@@ -643,14 +713,14 @@ mod tests {
             .mount(&server)
             .await;
         let http = reqwest::Client::builder().no_proxy().build().unwrap();
-        let result = fetch_window(&http, &server.uri(), "X", None, 200, None).await;
+        let result = fetch_window(&http, &server.uri(), false, "X", None, 200, None).await;
         assert!(result
             .err()
             .unwrap()
             .to_string()
             .contains("changed during pagination"));
 
-        let recovered = fetch_window(&http, &server.uri(), "X", None, 200, None)
+        let recovered = fetch_window(&http, &server.uri(), false, "X", None, 200, None)
             .await
             .unwrap();
         let mut keys: Vec<_> = recovered.issues.iter().map(|issue| &issue.key).collect();
@@ -663,9 +733,17 @@ mod tests {
             Some("2026-01-02T00:00:00Z".parse().unwrap())
         );
 
-        let next = fetch_window(&http, &server.uri(), "X", recovered.checkpoint, 200, None)
-            .await
-            .unwrap();
+        let next = fetch_window(
+            &http,
+            &server.uri(),
+            false,
+            "X",
+            recovered.checkpoint,
+            200,
+            None,
+        )
+        .await
+        .unwrap();
         assert_eq!(next.issues.len(), 1);
         assert_eq!(next.issues[0].key, "X-1");
         assert_eq!(
@@ -684,7 +762,7 @@ mod tests {
             .mount(&server)
             .await;
         let http = reqwest::Client::builder().no_proxy().build().unwrap();
-        let result = fetch_window(&http, &server.uri(), "X", None, 200, None).await;
+        let result = fetch_window(&http, &server.uri(), false, "X", None, 200, None).await;
         assert!(result
             .err()
             .unwrap()
@@ -709,7 +787,7 @@ mod tests {
             .mount(&server)
             .await;
         let http = reqwest::Client::builder().no_proxy().build().unwrap();
-        let result = fetch_window(&http, &server.uri(), "X", None, 200, None).await;
+        let result = fetch_window(&http, &server.uri(), false, "X", None, 200, None).await;
         assert!(result
             .err()
             .unwrap()
@@ -725,13 +803,77 @@ mod tests {
                 .respond_with(ResponseTemplate::new(200).set_body_json(response))
                 .mount(&server)
                 .await;
-            let result = fetch_window(&http, &server.uri(), "X", None, 200, None).await;
+            let result = fetch_window(&http, &server.uri(), false, "X", None, 200, None).await;
             assert!(result
                 .err()
                 .unwrap()
                 .to_string()
                 .contains("inconsistent page total"));
         }
+    }
+
+    #[test]
+    fn only_cloud_sites_use_the_jql_search() {
+        assert!(is_jira_cloud("https://acme.atlassian.net"));
+        assert!(is_jira_cloud("https://api.atlassian.com/ex/jira/abc-123"));
+        assert!(!is_jira_cloud("https://issues.apache.org/jira"));
+        assert!(!is_jira_cloud(
+            "https://api.atlassian.com/ex/confluence/abc"
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_cloud_site_pages_the_jql_search_by_token_until_its_last_page() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(move |request: &Request| {
+                assert_eq!(request.url.path(), "/rest/api/2/search/jql");
+                assert!(!request.url.query_pairs().any(|(key, _)| key == "startAt"));
+                let token = request
+                    .url
+                    .query_pairs()
+                    .find(|(key, _)| key == "nextPageToken")
+                    .map(|(_, value)| value.into_owned());
+                let body = match token.as_deref() {
+                    None => json!({"issues": [listing_row(1, "2026-01-02T00:00:00Z")],
+                                   "nextPageToken": "p2", "isLast": false}),
+                    Some("p2") => json!({"issues": [listing_row(2, "2026-01-03T00:00:00Z")],
+                                         "isLast": true}),
+                    other => panic!("unexpected token {other:?}"),
+                };
+                ResponseTemplate::new(200).set_body_json(body)
+            })
+            .mount(&server)
+            .await;
+        let http = reqwest::Client::builder().no_proxy().build().unwrap();
+        let window = fetch_window(&http, &server.uri(), true, "X", None, 200, None)
+            .await
+            .unwrap();
+        let keys: Vec<_> = window
+            .issues
+            .iter()
+            .map(|issue| issue.key.as_str())
+            .collect();
+        assert_eq!(keys, ["X-1", "X-2"]);
+        assert_eq!(
+            window.checkpoint,
+            Some("2026-01-03T00:00:00Z".parse().unwrap())
+        );
+
+        // 末页之前不给 token，不能当作读完而确认 checkpoint
+        server.reset().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                json!({"issues": [listing_row(1, "2026-01-02T00:00:00Z")], "isLast": false}),
+            ))
+            .mount(&server)
+            .await;
+        let result = fetch_window(&http, &server.uri(), true, "X", None, 200, None).await;
+        assert!(result
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("no next page before its last page"));
     }
 
     /// **Jira 的时间戳不是 RFC3339。** `+0000` 没有冒号，chrono 的默认实现解不了。

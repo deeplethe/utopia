@@ -74,3 +74,20 @@ Agent rows for facts and conflicts carry their summary in place of two names. A 
 The status line as it stood on 2026-09-27, before status lines were cut to one line:
 
 > Decided 2026-09-14 · **no code on `dev`** · cut 1 was built in PR #699 — migration 0058 widening `agent_decisions` to `fact` and `conflict` with `summary` and `detail`, `queue_agent` walking low-confidence and stale facts then temporal conflicts after the duplicate rounds of the same `govern` job, every applied action revertible from the Agent queue — and that PR was **closed on 2026-09-17**, to re-land on the open graph once [0044](0044-the-ontology-is-a-view-over-what-documents-say.md) cut 2 has settled alignment · violations, ontology defects and concept mappings are cut 2 · **the decisions below stand; only the code was withdrawn**
+
+### 2026-10-20: the human conflict path lands first (#1131)
+
+The review split begins with people: a conflict card can close the old fact at a
+chosen date, retime the new fact's start, keep both, or reject the new fact. Dates
+carry the precision the person entered. Retiming changes only the start: an
+explicit end and its period mark remain, and an engine-derived end stays derived.
+
+The writer locks the affected timelines before fact and conflict rows, then
+checks that the conflict is still open on the live pair it locked. Fact rewrites,
+timeline reconciliation, the conflict's resolution and the actor's audit event
+commit together. A failed audit or stale pair writes nothing. `retimed_new` joins
+the existing conflict resolution vocabulary; existing rows need no backfill.
+
+This is the human slice of the accepted actions above. The governor still handles
+only duplicates. Proposals follow in a separate PR; automatic conflict application
+and undo require the real-model lease measurement requested in #1131's review.

@@ -2412,15 +2412,21 @@ pub async fn entity_history(
                              -- 人工改区间（302）。少了这一条，人做的修正在
                              -- 这条轴上归给「engine」——一个决策账本把人的
                              -- 决定记成机器的，比不记还坏
-                             'fact.time_corrected']
+                             'fact.time_corrected', 'conflict.retime_new']
                      -- 并入只可能由采纳造成，不会是 Review 里的拒绝
                      WHEN 'merged' THEN ARRAY['ontology.predicate_adopted']
                      ELSE ARRAY['fact.reject', 'conflict.reject_new',
                                 'ontology.adoption_reverted'] END)
                AND (a.target_id = COALESCE(ev.supersedes, ev.id)
-                    OR a.target_id IN (SELECT c.id FROM fact_conflicts c
-                                       WHERE c.old_fact_id = COALESCE(ev.supersedes, ev.id)
-                                          OR c.new_fact_id = ev.id)
+                    OR (a.action <> 'conflict.retime_new'
+                        AND a.target_id IN (SELECT c.id FROM fact_conflicts c
+                                            WHERE c.old_fact_id = COALESCE(ev.supersedes, ev.id)
+                                               OR c.new_fact_id = ev.id))
+                    -- 重定时改的是冲突里的新事实，修正行替的是它，上面那一跳对不上；
+                    -- 审计里记着它写下的那一行，直接认。旧事实若因此被对账重画，
+                    -- 那是引擎做的，不该算到这次决定头上
+                    OR (a.action = 'conflict.retime_new'
+                        AND a.detail->>'corrected_fact_id' = ev.id::text)
                     -- 采纳与撤销都记在关系类型上、一次动作改一批事实，
                     -- 靠 fact_adoptions 精确关联到具体哪几条（corrected 事件
                     -- 是新行、merged 是旧行，两头都认）

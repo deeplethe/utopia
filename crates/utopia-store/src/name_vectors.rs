@@ -79,31 +79,31 @@ pub async fn pending(
     Ok(rows)
 }
 
+const DROP_FOR_SOURCE_SQL: &str = "DELETE FROM name_vectors v
+          USING fact_evidence fe JOIN documents d ON d.id = fe.document_id
+          WHERE fe.fact_id = v.fact_id AND d.source_id = $1";
+
+const DROP_FOR_DOCUMENT_SQL: &str = "DELETE FROM name_vectors v USING fact_evidence fe
+          WHERE fe.fact_id = v.fact_id AND fe.document_id = $1";
+
 /// 来源刚开了身份名（0071 决定 6）：删掉有它文档证据的名字向量，与改配置同一个事务
 pub async fn drop_for_source(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     source_id: Uuid,
 ) -> AppResult<()> {
-    sqlx::query(
-        "DELETE FROM name_vectors v
-          USING fact_evidence fe JOIN documents d ON d.id = fe.document_id
-          WHERE fe.fact_id = v.fact_id AND d.source_id = $1",
-    )
-    .bind(source_id)
-    .execute(&mut **tx)
-    .await?;
+    sqlx::query(DROP_FOR_SOURCE_SQL)
+        .bind(source_id)
+        .execute(&mut **tx)
+        .await?;
     Ok(())
 }
 
 /// 身份来源的文档抽完（0071 决定 5）：散文先写下的名字向量，这篇给了它身份证据就删
 pub async fn drop_for_document(pool: &PgPool, document_id: Uuid) -> AppResult<()> {
-    sqlx::query(
-        "DELETE FROM name_vectors v USING fact_evidence fe
-          WHERE fe.fact_id = v.fact_id AND fe.document_id = $1",
-    )
-    .bind(document_id)
-    .execute(pool)
-    .await?;
+    sqlx::query(DROP_FOR_DOCUMENT_SQL)
+        .bind(document_id)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 

@@ -16,11 +16,12 @@ use crate::state::AppState;
 #[path = "review_routes_phrase_tests.rs"]
 mod phrase_tests;
 
+#[cfg(test)]
+#[path = "review_conflict_tests.rs"]
+mod conflict_tests;
+
 /// 一页多少条。**服务端的默认，不是上限**——前端可以要更少，多则被 clamp 挡住
 const REVIEW_PAGE: i64 = 10;
-
-/// 冲突双方的三元组快照：(旧主语, 旧宾语, 新主语, 新宾语, 谓词标签)。
-type ConflictSnapshot = (String, Option<String>, String, Option<String>, String);
 
 /// 事实快照（决策台账用）：reject 后事实从图里消失，台账必须自包含展示文本。
 /// 一律在动作执行前取。
@@ -226,14 +227,20 @@ pub async fn close_fact(
 
 #[derive(Deserialize)]
 pub struct ConflictBody {
-    /// close | keep | reject_new
+    /// close | retime_new | keep | reject_new
     pub action: String,
     /// close 且新事实无起点时必填
     #[serde(default)]
     pub close_at: Option<chrono::DateTime<chrono::Utc>>,
-    /// `close_at` 的精度（year | month | day），不给按日
+    /// `close_at` 的精度（year 到 second），不给按日
     #[serde(default)]
     pub close_at_precision: Option<String>,
+    /// retime_new 时必填：只改新事实起点，终点仍由原文或时间线定。
+    #[serde(default)]
+    pub new_from: Option<chrono::DateTime<chrono::Utc>>,
+    /// `new_from` 的精度（year 到 second），不给按日。
+    #[serde(default)]
+    pub new_from_precision: Option<String>,
 }
 
 /// 时态冲突裁决（S3：自动闭合拿不准的那些）。
@@ -244,59 +251,22 @@ pub async fn resolve_conflict(
     Json(body): Json<ConflictBody>,
 ) -> ApiResult<Json<serde_json::Value>> {
     require_kb(&state, &user, kb_id, Role::Editor).await?;
-    // 快照双方三元组：裁决会作废/改写事实，先抄后动
-    let snap: Option<ConflictSnapshot> = sqlx::query_as(
-        "SELECT os.canonical_name, oo.canonical_name, ns.canonical_name, no_.canonical_name,
-                r.label
-         FROM fact_conflicts c
-         JOIN facts fo ON fo.id = c.old_fact_id
-         JOIN facts fn_ ON fn_.id = c.new_fact_id
-         JOIN entities os ON os.id = fo.subject_id
-         LEFT JOIN entities oo ON oo.id = fo.object_id
-         JOIN entities ns ON ns.id = fn_.subject_id
-         LEFT JOIN entities no_ ON no_.id = fn_.object_id
-         JOIN relation_types r ON r.id = fo.predicate_id
-         WHERE c.id = $1 AND c.kb_id = $2",
-    )
-    .bind(conflict_id)
-    .bind(kb_id)
-    .fetch_optional(&state.pool)
-    .await
-    .ok()
-    .flatten();
-    let close_precision = world_precision(body.close_at_precision.as_deref())?;
-    utopia_store::temporal::resolve_conflict(
+    let precision = world_precision(body.close_at_precision.as_deref())?;
+    let new_precision = world_precision(body.new_from_precision.as_deref())?;
+    utopia_store::temporal::resolve_review_conflict(
         &state.pool,
         kb_id,
         conflict_id,
-        &body.action,
-        body.close_at,
-        close_precision,
+        utopia_store::temporal::ConflictDecision {
+            action: &body.action,
+            close_at: body.close_at,
+            close_precision: precision,
+            new_from: body.new_from,
+            new_precision,
+        },
+        user.id,
     )
     .await?;
-    if let Some((os, oo, ns, no, pred)) = snap {
-        let action = match body.action.as_str() {
-            "close" => "conflict.close_old",
-            "keep" => "conflict.keep_both",
-            _ => "conflict.reject_new",
-        };
-        let _ = utopia_store::audit::record(
-            &state.pool,
-            Some(kb_id),
-            user.id,
-            action,
-            "conflict",
-            Some(conflict_id),
-            json!({
-                "predicate": pred,
-                "old_subject": os, "old_object": oo,
-                "new_subject": ns, "new_object": no,
-                "close_at": body.close_at.map(|t| t.to_rfc3339()),
-                "close_at_precision": body.close_at.map(|_| close_precision),
-            }),
-        )
-        .await;
-    }
     state.emit_review(kb_id);
     Ok(Json(json!({ "ok": true })))
 }

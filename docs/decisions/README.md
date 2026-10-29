@@ -56,7 +56,7 @@ By domain; the domains are the files of [../design/](../design/README.md). **Sta
 | | Record | Status | Overtaken |
 |---|---|---|---|
 | 0041 | [A name is a claim about an entity](0041-a-name-is-a-claim-about-an-entity.md) | In progress |  |
-| 0071 | [A source may declare its names identities](0071-a-source-may-declare-its-names-identities.md) | In progress |  |
+| 0071 | [A source may declare its names identities](0071-a-source-may-declare-its-names-identities.md) | Implemented |  |
 
 ### [time](../design/time.md)
 
@@ -117,6 +117,7 @@ By domain; the domains are the files of [../design/](../design/README.md). **Sta
 | 0065 | [The OCR reader chooses its provider](0065-readers-choose-their-provider.md) | Implemented |  |
 | 0072 | [A source checkpoint ends at a timestamp boundary](0072-a-source-checkpoint-ends-at-a-timestamp-boundary.md) | In progress |  |
 | 0074 | [A Google Drive source is connected by a person](0074-a-google-drive-source-is-connected-by-a-person.md) | Implemented |  |
+| 0075 | [A ticket source says in the API where its reading stopped](0075-a-ticket-source-says-where-its-reading-stopped.md) | Implemented |  |
 
 ### [lakehouse-and-actions](../design/lakehouse-and-actions.md)
 

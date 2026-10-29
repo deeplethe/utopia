@@ -1,6 +1,6 @@
 # 0071 · A source may declare its names identities
 
-- **Status**: In progress · 2026-10-19 · [#1293](https://github.com/deeplethe/utopia/issues/1293) · open: decision 7
+- **Status**: Implemented · 2026-10-25 · #1333, #1390, #1425 · open: none
 - **Written**: 2026-10-19 (conventions in the [README](README.md))
 - **Related**: [0054](0054-a-source-may-push-statements-in-the-open-contract.md) decision 3 sends pushed statements down the same resolution path as prose, and this record narrows that for one kind of source; [0041](0041-a-name-is-a-claim-about-an-entity.md) owns name facts and name-vector recall; [#1248](https://github.com/deeplethe/utopia/issues/1248) meets the same problem from the merge side and is decided here as decision 7; [#1296](https://github.com/deeplethe/utopia/issues/1296) measured what the recall costs; [#1308](https://github.com/deeplethe/utopia/pull/1308) is the disjointness fix that stands on its own
 
@@ -41,7 +41,7 @@ One name fact can carry evidence from both an identity source and a prose docume
 - **On:** the update that sets the flag also deletes the stored vectors of name facts that now have identity evidence, in the same transaction. Leaving them in place and skipping them would put an evidence join into every `nearest` query, which is the per-mention cost #1296 measured.
 - **Off:** nothing is deleted. Those name facts become pending again, and the next extraction in the base backfills their vectors through `pending`, as it does for any name whose vector is missing. Recall for them returns from then on. Pairs that were never proposed while the flag was on are not proposed in retrospect.
 
-**7. A `same` verdict that touches an identity entity goes to a person.**
+**7. A `same` verdict that touches an identity entity goes to a person.** Implemented 2026-10-25.
 
 *Revised 2026-10-22 (#1248):* decision 1 said #1248 decides the merge side with the same flag; this is that decision. An identity entity is one with a name fact that has evidence from an identity source, the same join decision 4 uses. When the adjudicator returns `same` at or above `AUTO_CONF` for a pair where either side is an identity entity, the pair is escalated to human review with the reason `escalate_identity` instead of being merged. This holds on both paths that apply a verdict: `apply_verdict` in `adjudication.rs` with governance off, the second look included (#889), and `apply` in `governance.rs` with governance on. It reuses the execution gate's escalation (0027), so a person sees why the pair is waiting, not "the adjudicator was unsure". A `kept` verdict still closes the pair automatically, which keeps the queue short. A merge a person makes is unchanged.
 
