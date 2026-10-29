@@ -66,8 +66,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: ${{ github.event_name == 'push' }}
-      - name: Install PDF text extraction tools
-        run: sudo apt-get update && sudo apt-get install -y poppler-utils poppler-data
+      - name: Install PDF and PostgreSQL test tools
+        run: |
+          sudo apt-get update && sudo apt-get install -y poppler-utils poppler-data postgresql-client-16
+          echo '/usr/lib/postgresql/16/bin' >> "$GITHUB_PATH"
       # 库要先迁移好：store 的一百多个集成测试和 server 的多数 fixture 不自己跑迁移，
       # 对着空库并发起几百个测试会成片撞 relation "organizations" does not exist（#869）。
       # 不用 sqlx-cli——装它要一分多钟，而这个 job 在关键路径上；这个 example 复用

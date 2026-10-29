@@ -335,6 +335,10 @@ pub async fn cleanup_missing(
 #[path = "sources_cleanup_tests.rs"]
 mod cleanup_tests;
 
+#[cfg(test)]
+#[path = "sources_checkpoint_tests.rs"]
+mod checkpoint_tests;
+
 pub async fn delete(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
@@ -965,6 +969,7 @@ mod tests {
             last_sync_status: "never".into(),
             last_sync_error: None,
             last_sync_added: 0,
+            sync_checkpoint: None,
             ingest_token: Some("utp_x".into()),
             created_at: chrono::Utc::now(),
         };
