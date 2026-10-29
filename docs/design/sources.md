@@ -41,8 +41,10 @@ GitHub reads selected tickets' comments and events to the end, including beyond
 ten pages, before replacing a document. Explicit rate limits retry the current
 request at most three times with waits of at most 30 seconds each; longer hints
 fail immediately. Later ordinary job retries and source schedules do not preserve
-the provider's `Retry-After` deadline. Jira requires the search `total` to detect
-premature pagination endings. Custom batch progression is separate work in #1397
+the provider's `Retry-After` deadline. Jira Server and Data Center require the
+search `total` to detect premature pagination endings; Jira Cloud, which removed
+that search and gives no total, pages `search/jql` by token and requires a token
+on every page before `isLast` [#1453]. Custom batch progression is separate work in #1397
 [0072, revision 2026-10-23]. The source API carries the checkpoint on the
 list and on the create/update responses, so an operator can see where a round
 stopped rather than only that it succeeded; a kind that does not read by

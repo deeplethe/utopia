@@ -79,7 +79,7 @@ pub struct JqlSearchPage {
 }
 
 /// 只有 Cloud 撤掉了旧 `search`；Server/DC 站点换过去反而会 404。
-fn is_jira_cloud(base_url: &str) -> bool {
+pub fn is_jira_cloud(base_url: &str) -> bool {
     reqwest::Url::parse(base_url).is_ok_and(|url| match url.host_str() {
         Some("api.atlassian.com") => url.path().starts_with("/ex/jira"),
         Some(host) => host.ends_with(".atlassian.net"),
@@ -279,27 +279,8 @@ pub struct IssueWindow {
 }
 
 /// 复读固定的已选前缀，检测更新导致的 offset 位移；变化时不确认本轮 checkpoint。
+/// `cloud` 由调用方按 [`is_jira_cloud`] 给出，测试的本地 mock 才能走 Cloud 的翻页。
 pub async fn fetch_window(
-    http: &reqwest::Client,
-    base_url: &str,
-    project: &str,
-    since: Option<DateTime<Utc>>,
-    item_limit: usize,
-    auth: Option<&str>,
-) -> anyhow::Result<IssueWindow> {
-    fetch_window_on(
-        http,
-        base_url,
-        is_jira_cloud(base_url),
-        project,
-        since,
-        item_limit,
-        auth,
-    )
-    .await
-}
-
-async fn fetch_window_on(
     http: &reqwest::Client,
     base_url: &str,
     cloud: bool,
@@ -601,9 +582,17 @@ mod tests {
             .await;
         let http = reqwest::Client::builder().no_proxy().build().unwrap();
         let started = std::time::Instant::now();
-        let window = fetch_window(&http, &server.uri(), "X", None, 200, Some("Bearer fixture"))
-            .await
-            .unwrap();
+        let window = fetch_window(
+            &http,
+            &server.uri(),
+            false,
+            "X",
+            None,
+            200,
+            Some("Bearer fixture"),
+        )
+        .await
+        .unwrap();
         assert_eq!(window.issues.len(), 51);
         assert!(started.elapsed() >= Duration::from_secs(1));
         let requests = server.received_requests().await.unwrap();
@@ -630,7 +619,7 @@ mod tests {
             .await;
         let http = reqwest::Client::builder().no_proxy().build().unwrap();
         let since = Some("2026-01-02T00:00:00Z".parse().unwrap());
-        let window = fetch_window(&http, &server.uri(), "X", since, 200, None)
+        let window = fetch_window(&http, &server.uri(), false, "X", since, 200, None)
             .await
             .unwrap();
         assert!(window.issues.is_empty());
@@ -660,7 +649,7 @@ mod tests {
                 .mount(&server)
                 .await;
             let http = reqwest::Client::builder().no_proxy().build().unwrap();
-            let first = fetch_window(&http, &server.uri(), "X", None, 200, None)
+            let first = fetch_window(&http, &server.uri(), false, "X", None, 200, None)
                 .await
                 .unwrap();
             assert_eq!(first.issues.len(), group_size as usize);
@@ -675,9 +664,17 @@ mod tests {
                     .collect::<Vec<_>>()
             );
             assert_eq!(first.checkpoint, Some(group_time.parse().unwrap()));
-            let next = fetch_window(&http, &server.uri(), "X", first.checkpoint, 200, None)
-                .await
-                .unwrap();
+            let next = fetch_window(
+                &http,
+                &server.uri(),
+                false,
+                "X",
+                first.checkpoint,
+                200,
+                None,
+            )
+            .await
+            .unwrap();
             assert_eq!(next.issues.len(), 1);
             assert_eq!(next.issues[0].key, format!("X-{}", group_size + 1));
             assert_eq!(next.checkpoint, Some(later_time.parse().unwrap()));
@@ -716,14 +713,14 @@ mod tests {
             .mount(&server)
             .await;
         let http = reqwest::Client::builder().no_proxy().build().unwrap();
-        let result = fetch_window(&http, &server.uri(), "X", None, 200, None).await;
+        let result = fetch_window(&http, &server.uri(), false, "X", None, 200, None).await;
         assert!(result
             .err()
             .unwrap()
             .to_string()
             .contains("changed during pagination"));
 
-        let recovered = fetch_window(&http, &server.uri(), "X", None, 200, None)
+        let recovered = fetch_window(&http, &server.uri(), false, "X", None, 200, None)
             .await
             .unwrap();
         let mut keys: Vec<_> = recovered.issues.iter().map(|issue| &issue.key).collect();
@@ -736,9 +733,17 @@ mod tests {
             Some("2026-01-02T00:00:00Z".parse().unwrap())
         );
 
-        let next = fetch_window(&http, &server.uri(), "X", recovered.checkpoint, 200, None)
-            .await
-            .unwrap();
+        let next = fetch_window(
+            &http,
+            &server.uri(),
+            false,
+            "X",
+            recovered.checkpoint,
+            200,
+            None,
+        )
+        .await
+        .unwrap();
         assert_eq!(next.issues.len(), 1);
         assert_eq!(next.issues[0].key, "X-1");
         assert_eq!(
@@ -757,7 +762,7 @@ mod tests {
             .mount(&server)
             .await;
         let http = reqwest::Client::builder().no_proxy().build().unwrap();
-        let result = fetch_window(&http, &server.uri(), "X", None, 200, None).await;
+        let result = fetch_window(&http, &server.uri(), false, "X", None, 200, None).await;
         assert!(result
             .err()
             .unwrap()
@@ -782,7 +787,7 @@ mod tests {
             .mount(&server)
             .await;
         let http = reqwest::Client::builder().no_proxy().build().unwrap();
-        let result = fetch_window(&http, &server.uri(), "X", None, 200, None).await;
+        let result = fetch_window(&http, &server.uri(), false, "X", None, 200, None).await;
         assert!(result
             .err()
             .unwrap()
@@ -798,7 +803,7 @@ mod tests {
                 .respond_with(ResponseTemplate::new(200).set_body_json(response))
                 .mount(&server)
                 .await;
-            let result = fetch_window(&http, &server.uri(), "X", None, 200, None).await;
+            let result = fetch_window(&http, &server.uri(), false, "X", None, 200, None).await;
             assert!(result
                 .err()
                 .unwrap()
@@ -841,7 +846,7 @@ mod tests {
             .mount(&server)
             .await;
         let http = reqwest::Client::builder().no_proxy().build().unwrap();
-        let window = fetch_window_on(&http, &server.uri(), true, "X", None, 200, None)
+        let window = fetch_window(&http, &server.uri(), true, "X", None, 200, None)
             .await
             .unwrap();
         let keys: Vec<_> = window
@@ -863,7 +868,7 @@ mod tests {
             ))
             .mount(&server)
             .await;
-        let result = fetch_window_on(&http, &server.uri(), true, "X", None, 200, None).await;
+        let result = fetch_window(&http, &server.uri(), true, "X", None, 200, None).await;
         assert!(result
             .err()
             .unwrap()
