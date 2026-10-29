@@ -181,6 +181,9 @@ async fn reply(State(m): State<Model>, Json(body): Json<Value>) -> axum::respons
         .into_response()
 }
 
+#[path = "namesake_missing_subject_cases.rs"]
+mod missing_subject_cases;
+
 struct Fx {
     pool: sqlx::PgPool,
     state: AppState,
