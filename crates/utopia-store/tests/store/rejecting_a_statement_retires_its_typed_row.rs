@@ -1,5 +1,5 @@
-//! Rejecting an open statement queues the typed recompute, which retires a typed row whose
-//! statements are all gone and keeps one that another live statement still supports (#1366).
+//! 否决一条开放陈述会排一次类型化重算（#1366）：陈述全没了的类型化行退掉，
+//! 还有别的活陈述撑着的行留着。
 
 use sqlx::PgPool;
 use utopia_store::{graph, materialize, phrase_bindings};
@@ -15,7 +15,7 @@ async fn rejecting_a_statement_queues_the_recompute_and_retires_only_unsupported
     let [org, ws, kb, class, alone, shared, place, property, binding, only, first, second] =
         std::array::from_fn(|_| Uuid::now_v7());
     let run = async {
-        // Hill Mill's typed row stands on two statements, Harbor Bakery's on one
+        // Hill Mill 的类型化行由两条陈述撑着，Harbor Bakery 的只有一条
         sqlx::raw_sql(&format!(
             "INSERT INTO organizations(id,name) VALUES ('{org}','reject-typed');
              INSERT INTO workspaces(id,org_id,name) VALUES ('{ws}','{org}','reject-typed');
