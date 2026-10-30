@@ -699,7 +699,11 @@ fn num(v: &serde_json::Value) -> Option<f64> {
 fn text(v: &serde_json::Value) -> Option<String> {
     match v {
         serde_json::Value::String(s) => Some(s.trim().to_string()),
-        serde_json::Value::Number(n) => Some(n.to_string()),
+        // 数值属性存的是 f64（`normalize_attr_value`），读回来是 `3.0`；集合里写的是 `3`。
+        // 按 f64 的写法出字，`3.0` 才对得上 `3`
+        serde_json::Value::Number(n) => {
+            Some(n.as_f64().map_or_else(|| n.to_string(), |f| f.to_string()))
+        }
         serde_json::Value::Bool(b) => Some(b.to_string()),
         _ => None,
     }
@@ -1143,6 +1147,29 @@ mod tests {
             }],
         };
         let facts = vec![fact(1, 50, 10, json!(" 12.3 "))];
+        let spans = HashMap::from([(id(1), (None, None))]);
+        let (hits, _) = evaluate(&[rule], &facts, &spans, &[]);
+        assert_eq!(hits.len(), 1);
+    }
+
+    /// 数值属性的读数存成 f64：`3` 存进去读出来是 `3.0`，「属于 {3}」照样要命中
+    #[test]
+    fn a_stored_number_is_one_of_the_numbers_in_the_set() {
+        let rule = BusinessRule {
+            id: id(90),
+            join_predicate: None,
+            conclusion: Conclusion::Typing {
+                class: "Grade3".into(),
+            },
+            conditions: vec![Condition {
+                group: 0,
+                side: Side::X,
+                predicate: id(10),
+                op: Op::In,
+                operand: Operand::Set(vec!["3".into()]),
+            }],
+        };
+        let facts = vec![fact(1, 50, 10, json!(3.0))];
         let spans = HashMap::from([(id(1), (None, None))]);
         let (hits, _) = evaluate(&[rule], &facts, &spans, &[]);
         assert_eq!(hits.len(), 1);
