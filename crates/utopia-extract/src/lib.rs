@@ -883,6 +883,17 @@ fn day_digits(w: &str) -> Option<&str> {
 /// 不清，猜错一次就是一个错的截止日。
 pub fn written_date(s: &str) -> Option<(NaiveDate, &'static str)> {
     let s = s.trim();
+    // 后面跟着没有时区的钟点（「2024年3月17日 14:30」）：同 `parse_time`，钟点不是时刻，只取那一天
+    let s = match s.rsplit_once(char::is_whitespace) {
+        Some((date, clock))
+            if ["%H:%M", "%H:%M:%S"]
+                .iter()
+                .any(|f| chrono::NaiveTime::parse_from_str(clock, f).is_ok()) =>
+        {
+            date.trim_end()
+        }
+        _ => s,
+    };
     if let Some(found) = year_first_date(s) {
         return found;
     }
@@ -1346,6 +1357,30 @@ mod tests {
             read_time("17 Mar 2020").map(|(t, p)| (t.date_naive().to_string(), p)),
             Some(("2020-03-17".to_string(), "day"))
         );
+    }
+
+    /// 写成别的样子的日期后面跟着钟点：同 `parse_time` 的「2020-03-17 14:30」，钟点没有时区
+    /// 就不是时刻，只取那一天
+    #[test]
+    fn a_written_date_followed_by_a_clock_time_reads_as_its_day() {
+        use serde_json::json;
+        let day = |s: &str| normalize_attr_value("date", &json!(s));
+        for written in [
+            "2020年3月17日 14:30",
+            "2020年3月17日 9:05:30",
+            "2020/03/17 14:30",
+            "March 17, 2020 14:30",
+            "17 Mar 2020 08:00",
+        ] {
+            assert_eq!(day(written), Some(json!("2020-03-17")), "{written}");
+        }
+        assert_eq!(
+            read_time("2020年3月17日 14:30").map(|(t, p)| (t.date_naive().to_string(), p)),
+            Some(("2020-03-17".to_string(), "day"))
+        );
+        // 钟点读不出来、或前面不是日期的，照旧不收
+        assert_eq!(day("2020年3月17日 25:00"), None);
+        assert_eq!(day("Opens at 14:30"), None);
     }
 
     #[test]
