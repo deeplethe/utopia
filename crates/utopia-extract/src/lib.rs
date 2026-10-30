@@ -437,7 +437,8 @@ pub(crate) fn currency_unit(tok: &str) -> Option<&'static str> {
             "$" | "USD" | "usd" | "US$" | "dollar" | "dollars" | "美元" => "$",
             "€" | "EUR" | "eur" | "euro" | "euros" | "欧元" => "€",
             "£" | "GBP" | "gbp" | "pound" | "pounds" | "英镑" => "£",
-            "¥" | "JPY" | "jpy" | "yen" | "日元" => "¥",
+            // 中文排版的「￥」是全角的同一个符号
+            "¥" | "￥" | "JPY" | "jpy" | "yen" | "日元" => "¥",
             "CNY" | "cny" | "RMB" | "rmb" | "yuan" | "人民币" | "元" | "元人民币" | "人民币元" => {
                 "¥"
             }
@@ -1560,6 +1561,19 @@ mod an_attribute_value_is_read_in_its_declared_unit {
         assert_eq!(value("number", Some("人"), "超过一千人"), None);
         assert_eq!(value("date", None, "2023年底"), None);
         assert_eq!(value("bool", None, "尚未上市"), None);
+    }
+
+    /// 中文财务文本的金额多用全角的「￥」，与「¥」是同一个符号
+    #[test]
+    fn a_full_width_yen_sign_is_read_as_the_currency() {
+        assert_eq!(value("number", None, "￥5,000万"), Some(json!(5e7)));
+        assert_eq!(
+            value("number", Some("万元"), "￥5,000万"),
+            Some(json!(5000.0))
+        );
+        assert_eq!(value("number", Some("元"), "￥1,280"), Some(json!(1280.0)));
+        assert_eq!(value("number", Some("万美元"), "￥5,000万"), None);
+        assert!(literal_object("￥5000万", true));
     }
 
     #[test]
