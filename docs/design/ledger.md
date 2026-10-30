@@ -30,13 +30,13 @@ by itself: the temporal engine reads the chunk's origin and opens a `described_e
 instead of closing a correct fact [0040 d4, 0045 cut 3]. Its confidence is also capped below the
 review threshold, which is what puts it in front of a person.
 
-**Beside the row.** `statement_qualifiers (fact, role, value | entity)` keyed by the document's role
-word for open statements; `fact_qualifiers (fact, qualifier_type, value | entity)` keyed by a
+**Beside the row.** `statement_qualifiers (fact, role, chunk, value | entity)` keyed by the document's
+role word and the chunk that says it, for open statements [0070]; `fact_qualifiers (fact, qualifier_type, value | entity)` keyed by a
 declared attribute for typed rows, converted by the attribute's datatype, the unit read from the
 text (`$4 billion` becomes 4000000000 with unit `$`) and the declared unit only when the text
 carries none; a qualifier is not part of the edge's identity; every superseding writer copies
 qualifiers with the evidence [0037, #731]. Entity detail, graph edges and the MCP `entity_facts`
-tool return both: typed ones in `qualifiers`, role words in `statement_qualifiers` [#1267].
+tool return both: typed ones in `qualifiers`, role words in `statement_qualifiers`, each with the live chunks that say it [#1267, 0070].
 `time_mentions (fact, chunk, text, char_start)` hold verbatim time words [#731]. Names are value facts on `known_as` [0041]. `entities.description`
 marks a described, unnamed thing [#731].
 

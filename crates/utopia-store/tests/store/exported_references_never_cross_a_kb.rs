@@ -379,14 +379,25 @@ async fn new_cross_kb_writes_are_rejected_on_every_exported_edge() -> anyhow::Re
     // —— 开放陈述的属性（statement_qualifiers，0061）：行没有 kb 列，归属按
     //    所属 fact 的库判；别库的实体值会被铸进本库 IRI
     let err = sqlx::query(
-        "INSERT INTO statement_qualifiers (fact_id, role, entity_id)
-         VALUES ($1, 'as', $2)",
+        "INSERT INTO statement_qualifiers (fact_id, role, entity_id, chunk_id)
+         VALUES ($1, 'as', $2, $3)",
     )
     .bind(f.fact_a)
     .bind(f.ent_b)
+    .bind(f.chunk_a)
     .execute(&pool)
     .await;
     assert!(err.is_err(), "squalifier.entity→foreign 必须被拒");
+    // 角色词记在别库的块上（0070 决定 1）
+    let err = sqlx::query(
+        "INSERT INTO statement_qualifiers (fact_id, role, value, chunk_id)
+         VALUES ($1, 'lines', '\"1\"'::jsonb, $2)",
+    )
+    .bind(f.fact_a)
+    .bind(f.chunk_b)
+    .execute(&pool)
+    .await;
+    assert!(err.is_err(), "squalifier.chunk→foreign 必须被拒");
 
     // —— 时间提及（0061/0064）：提及自己的 kb 必须与它指的事实、段落同属一库
     let err = sqlx::query(
@@ -989,13 +1000,22 @@ async fn malformed_rows_fail_every_exported_edge_closed() -> anyhow::Result<()> 
         .bind(f.fact_b)
         .execute(&mut *tx)
         .await?;
-    // 开放陈述的属性值指着别库实体
+    // 开放陈述的属性值指着别库实体；另一个角色词记在别库的块上
     sqlx::query(
-        "INSERT INTO statement_qualifiers (fact_id, role, entity_id)
-         VALUES ($1, 'as', $2)",
+        "INSERT INTO statement_qualifiers (fact_id, role, entity_id, chunk_id)
+         VALUES ($1, 'as', $2, $3)",
     )
     .bind(f.fact_a)
     .bind(f.ent_b)
+    .bind(f.chunk_a)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO statement_qualifiers (fact_id, role, value, chunk_id)
+         VALUES ($1, 'lines', '\"1\"'::jsonb, $2)",
+    )
+    .bind(f.fact_a)
+    .bind(f.chunk_b)
     .execute(&mut *tx)
     .await?;
     // 时间提及两种坏法：归属在 A 却指着 B 的段落（体检扫得见——行按自己的
@@ -1466,6 +1486,7 @@ async fn malformed_rows_fail_every_exported_edge_closed() -> anyhow::Result<()> 
         "condition.predicate",
         "factsource.statement",
         "squalifier.entity",
+        "squalifier.chunk",
         "timemention.fact",
         "timemention.chunk",
         "binding.type",

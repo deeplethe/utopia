@@ -266,6 +266,14 @@ SELECT edge, kind, COUNT(*) AS rows FROM (
       LEFT JOIN entities e ON e.id = q.entity_id
      WHERE f.kb_id = $1 AND q.entity_id IS NOT NULL
     UNION ALL
+    -- @edge statement_qualifiers.chunk_id -> chunks.id
+    -- 角色词记在哪一块上：归属同样按所属 fact 的库判
+    SELECT 'squalifier.chunk', 'cross_kb', c.kb_id IS DISTINCT FROM f.kb_id
+      FROM statement_qualifiers q
+      JOIN facts f ON f.id = q.fact_id
+      LEFT JOIN chunks c ON c.id = q.chunk_id
+     WHERE f.kb_id = $1
+    UNION ALL
     -- @edge time_mentions.fact_id -> facts.id
     -- 时间提及以行自己的 kb 归属：指的事实与段落都必须同库
     SELECT 'timemention.fact', 'cross_kb', f.kb_id IS DISTINCT FROM t.kb_id
