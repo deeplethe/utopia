@@ -892,8 +892,14 @@ pub fn written_date(s: &str) -> Option<(NaiveDate, &'static str)> {
         .filter(|w| !w.is_empty())
         .collect();
     let is_number = |w: &str| w.chars().all(|c| c.is_ascii_digit());
+    // 前面写着星期几（「Tuesday, March 17, 2020」「Tue, 17 Mar 2020」）：它不改是哪天，
+    // 但得对得上那一天，对不上就说不清
+    let weekday = words
+        .first()
+        .and_then(|w| w.parse::<chrono::Weekday>().ok());
+    let words = &words[usize::from(weekday.is_some())..];
     // 日可以带序数后缀（March 17th、2nd March）；月名不带
-    let (day, month, year) = match words.as_slice() {
+    let (day, month, year) = match words {
         [m, d, y] if !is_number(m) && day_digits(d).is_some() && is_number(y) => {
             (day_digits(d), *m, *y)
         }
@@ -913,7 +919,10 @@ pub fn written_date(s: &str) -> Option<(NaiveDate, &'static str)> {
     })?;
     let year = year.parse().ok()?;
     match day {
-        Some(d) => NaiveDate::from_ymd_opt(year, month, d.parse().ok()?).map(|date| (date, "day")),
+        Some(d) => NaiveDate::from_ymd_opt(year, month, d.parse().ok()?)
+            .filter(|date| weekday.is_none_or(|w| chrono::Datelike::weekday(date) == w))
+            .map(|date| (date, "day")),
+        None if weekday.is_some() => None,
         None => NaiveDate::from_ymd_opt(year, month, 1).map(|date| (date, "month")),
     }
 }
@@ -1346,6 +1355,27 @@ mod tests {
             read_time("17 Mar 2020").map(|(t, p)| (t.date_naive().to_string(), p)),
             Some(("2020-03-17".to_string(), "day"))
         );
+    }
+
+    /// 新闻稿、信函的日期前面常写着星期几：它不改是哪天，只要对得上
+    #[test]
+    fn a_date_that_names_its_weekday_is_read() {
+        use serde_json::json;
+        let day = |s: &str| normalize_attr_value("date", &json!(s));
+        for written in [
+            "Tuesday, March 17, 2020",
+            "Tue, 17 Mar 2020",
+            "tuesday March 17th 2020",
+        ] {
+            assert_eq!(day(written), Some(json!("2020-03-17")), "{written}");
+        }
+        assert_eq!(
+            read_time("Monday, September 30, 2024").map(|(t, p)| (t.date_naive().to_string(), p)),
+            Some(("2024-09-30".to_string(), "day"))
+        );
+        // 星期几对不上那一天、或只写到月的，说不清
+        assert_eq!(day("Monday, March 17, 2020"), None);
+        assert_eq!(day("Tuesday, March 2020"), None);
     }
 
     #[test]
