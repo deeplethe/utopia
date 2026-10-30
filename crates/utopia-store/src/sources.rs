@@ -1,7 +1,7 @@
 //! 摄入来源仓储："来源即文件夹"——source 是容器，挂着它摄入的文档，可定时同步。
 
 use chrono::{DateTime, Utc};
-use sqlx::PgPool;
+use sqlx::{PgPool, Postgres, Transaction};
 use utopia_core::models::{Role, Source, SourceKind, SourceView, SyncRun, SOURCE_SECRET_KEYS};
 use utopia_core::{secrets, AppError, AppResult};
 use uuid::Uuid;
@@ -379,14 +379,46 @@ pub async fn due_sources(pool: &PgPool) -> AppResult<Vec<Source>> {
         .collect())
 }
 
-/// 标记入队（幂等：已在队列/运行中则返回 false，避免重复入队）。
-pub async fn mark_queued(pool: &PgPool, id: Uuid) -> AppResult<bool> {
+/// 状态、任务和 worker 通知一起提交；已在队列/运行中则返回 false。
+pub async fn enqueue_sync(pool: &PgPool, id: Uuid) -> AppResult<bool> {
+    let mut tx = pool.begin().await?;
+    let queued = mark_queued_tx(&mut tx, id).await?;
+    if queued {
+        crate::jobs::enqueue_with_max_attempts_tx(
+            &mut tx,
+            "sync_source",
+            serde_json::json!({ "source_id": id }),
+            3,
+        )
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(queued)
+}
+
+/// 换了 Drive 文件夹，即使旧同步正在运行，也要再排一次读取新配置。
+/// 配置由调用方先保存；这里只保证状态和后续任务一起提交。
+pub async fn enqueue_sync_after_config_change(pool: &PgPool, id: Uuid) -> AppResult<()> {
+    let mut tx = pool.begin().await?;
+    mark_queued_tx(&mut tx, id).await?;
+    crate::jobs::enqueue_with_max_attempts_tx(
+        &mut tx,
+        "sync_source",
+        serde_json::json!({ "source_id": id }),
+        3,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+async fn mark_queued_tx(tx: &mut Transaction<'_, Postgres>, id: Uuid) -> AppResult<bool> {
     let res = sqlx::query(
         "UPDATE sources SET last_sync_status = 'queued'
          WHERE id = $1 AND last_sync_status NOT IN ('queued', 'running')",
     )
     .bind(id)
-    .execute(pool)
+    .execute(&mut **tx)
     .await?;
     Ok(res.rows_affected() > 0)
 }

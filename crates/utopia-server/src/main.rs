@@ -233,20 +233,10 @@ async fn main() -> anyhow::Result<()> {
             match utopia_store::sources::due_sources(&sched_state.pool).await {
                 Ok(due) => {
                     for s in due {
-                        match utopia_store::sources::mark_queued(&sched_state.pool, s.id).await {
-                            Ok(true) => {
-                                if let Err(e) = utopia_store::jobs::enqueue(
-                                    &sched_state.pool,
-                                    "sync_source",
-                                    serde_json::json!({ "source_id": s.id }),
-                                )
-                                .await
-                                {
-                                    tracing::warn!(source_id = %s.id, error = %e, "同步任务入队失败");
-                                }
-                            }
-                            Ok(false) => {}
-                            Err(e) => tracing::warn!(source_id = %s.id, error = %e, "标记入队失败"),
+                        if let Err(e) =
+                            utopia_store::sources::enqueue_sync(&sched_state.pool, s.id).await
+                        {
+                            tracing::warn!(source_id = %s.id, error = %e, "同步任务入队失败");
                         }
                     }
                 }

@@ -133,13 +133,7 @@ pub async fn create(
     .await?;
     // 拉取型来源建好立即同步一次（有配置即产出，无需等下一个调度周期）
     if matches!(source.kind.as_str(), "url" | "rss" | "custom") {
-        let _ = utopia_store::sources::mark_queued(&state.pool, source.id).await;
-        utopia_store::jobs::enqueue(
-            &state.pool,
-            "sync_source",
-            json!({ "source_id": source.id }),
-        )
-        .await?;
+        utopia_store::sources::enqueue_sync(&state.pool, source.id).await?;
     }
     // api 来源：生成专属推送密钥（此后可随时经 get_token 查看）
     let mut ingest_token: Option<String> = None;
@@ -388,14 +382,8 @@ pub async fn sync_now(
 ) -> ApiResult<Json<serde_json::Value>> {
     require_kb(&state, &user, kb_id, Role::Editor).await?;
     source_in_kb(&state, kb_id, source_id).await?;
-    let queued = utopia_store::sources::mark_queued(&state.pool, source_id).await?;
+    let queued = utopia_store::sources::enqueue_sync(&state.pool, source_id).await?;
     if queued {
-        utopia_store::jobs::enqueue(
-            &state.pool,
-            "sync_source",
-            json!({ "source_id": source_id }),
-        )
-        .await?;
         state.emit_source(kb_id);
     }
     Ok(Json(json!({ "queued": queued })))
