@@ -1098,8 +1098,44 @@ fn spreadsheet_cell_text(cell: Option<&calamine::Data>) -> String {
         None | Some(calamine::Data::Empty) => String::new(),
         Some(calamine::Data::DateTime(d)) => excel_date(d),
         Some(calamine::Data::Float(f)) => excel_number(*f),
+        Some(calamine::Data::DurationIso(d)) => ods_time(d).unwrap_or_else(|| d.clone()),
         Some(other) => other.to_string(),
     }
+}
+
+/// ODS 的时刻格存的是 ISO 时长（`office:time-value="PT09H30M00S"`），不分一天里的钟点和
+/// 累计时长。照 xlsx 那两种格子的写法：不到一天的写钟点（`09:30`），满一天的写累计的
+/// 时分秒（`36:15:00`）。LibreOffice 常把秒写成 `59.999999998S`，按最近的整秒算
+fn ods_time(iso: &str) -> Option<String> {
+    let iso = iso.trim();
+    let (sign, body) = match iso.strip_prefix('-') {
+        Some(rest) => ("-", rest.strip_prefix('P')?),
+        None => ("", iso.strip_prefix('P')?),
+    };
+    let (days, mut clock) = body.split_once('T').unwrap_or((body, ""));
+    let mut seconds = match days.strip_suffix('D') {
+        Some(n) => n.parse::<f64>().ok()? * 86_400.0,
+        None if days.is_empty() => 0.0,
+        None => return None,
+    };
+    for (unit, scale) in [('H', 3_600.0), ('M', 60.0), ('S', 1.0)] {
+        if let Some((n, tail)) = clock.split_once(unit) {
+            seconds += n.parse::<f64>().ok()? * scale;
+            clock = tail;
+        }
+    }
+    if !clock.is_empty() || !seconds.is_finite() {
+        return None;
+    }
+    let seconds = seconds.round() as u64;
+    let (h, m, s) = (seconds / 3600, seconds / 60 % 60, seconds % 60);
+    Some(if h >= 24 || !sign.is_empty() {
+        format!("{sign}{h}:{m:02}:{s:02}")
+    } else if s == 0 {
+        format!("{h:02}:{m:02}")
+    } else {
+        format!("{h:02}:{m:02}:{s:02}")
+    })
 }
 
 /// 表头从第一排至少两格有字的行开始；这一块里纵向 merge 伸到的行也是表头。
