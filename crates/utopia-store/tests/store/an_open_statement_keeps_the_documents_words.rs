@@ -147,6 +147,7 @@ async fn an_open_statement_shows_under_its_phrase_and_reuses_its_row() -> anyhow
         graph::add_statement_qualifier(
             &pool,
             fact,
+            f.chunk_a,
             "amount",
             Some(&serde_json::json!({ "value": "$1.2 billion" })),
             None,
@@ -318,27 +319,39 @@ async fn an_open_statement_shows_under_its_phrase_and_reuses_its_row() -> anyhow
             Some(serde_json::json!({ "value": "$1.2 billion" }))
         );
         assert!(q[0].entity_id.is_none());
-        // 先写者留着
-        graph::add_statement_qualifier(
-            &pool,
-            fact,
-            "amount",
-            Some(&serde_json::json!({ "value": "$2 billion" })),
-            None,
+        // 角色词记在说它的那一块上：另一块的值另记一行，同一块再说一次不添行
+        for (chunk, amount) in [(f.chunk_b, "$2 billion"), (f.chunk_a, "$1.2 billion")] {
+            graph::add_statement_qualifier(
+                &pool,
+                fact,
+                chunk,
+                "amount",
+                Some(&serde_json::json!({ "value": amount })),
+                None,
+            )
+            .await?;
+        }
+        let amounts: Vec<(Uuid, serde_json::Value)> = sqlx::query_as(
+            "SELECT chunk_id, value FROM statement_qualifiers
+             WHERE fact_id = $1 AND role = 'amount' ORDER BY chunk_id",
         )
+        .bind(fact)
+        .fetch_all(&pool)
         .await?;
-        let q = &graph::statement_qualifiers_for(&pool, &[fact]).await?[&fact];
         assert_eq!(
-            q[0].value,
-            Some(serde_json::json!({ "value": "$1.2 billion" }))
+            amounts,
+            vec![
+                (f.chunk_a, serde_json::json!({ "value": "$1.2 billion" })),
+                (f.chunk_b, serde_json::json!({ "value": "$2 billion" })),
+            ]
         );
         // 值与实体必须恰好一个
         assert!(
-            graph::add_statement_qualifier(&pool, fact, "buyer", None, None)
+            graph::add_statement_qualifier(&pool, fact, f.chunk_a, "buyer", None, None)
                 .await
                 .is_err()
         );
-        graph::add_statement_qualifier(&pool, fact, "buyer", None, Some(f.acme)).await?;
+        graph::add_statement_qualifier(&pool, fact, f.chunk_a, "buyer", None, Some(f.acme)).await?;
         let q = &graph::statement_qualifiers_for(&pool, &[fact]).await?[&fact];
         let buyer = q.iter().find(|x| x.role == "buyer").unwrap();
         assert_eq!(buyer.entity_id, Some(f.acme));

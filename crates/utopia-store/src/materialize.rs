@@ -410,7 +410,7 @@ async fn materialize_in_tx(
         .bind(d.statement)
         .execute(&mut **tx)
         .await?;
-        // 证据与限定各抄一份：证据是同一段原文的同一处引文；限定照角色词原样带过去
+        // 证据每次都抄：证据是同一段原文的同一处引文
         sqlx::query(
             "INSERT INTO fact_evidence (fact_id, chunk_id, quote, document_id, doc_version,
                                         proposed_predicate, quote_start, quote_end)
@@ -423,15 +423,19 @@ async fn materialize_in_tx(
         .bind(d.statement)
         .execute(&mut **tx)
         .await?;
-        sqlx::query(
-            "INSERT INTO statement_qualifiers (fact_id, role, value, entity_id)
-             SELECT $1, role, value, entity_id FROM statement_qualifiers WHERE fact_id = $2
-             ON CONFLICT DO NOTHING",
-        )
-        .bind(fact)
-        .bind(d.statement)
-        .execute(&mut **tx)
-        .await?;
+        if new {
+            // 角色词只在建行时抄（0070 决定 1 的修订）：并进已有行的陈述可能说了别的值，
+            // 抄过来这一行就同时读到两个值；别的值由决定 4 带过来
+            sqlx::query(
+                "INSERT INTO statement_qualifiers (fact_id, role, value, entity_id, chunk_id)
+                 SELECT $1, role, value, entity_id, chunk_id FROM statement_qualifiers WHERE fact_id = $2
+                 ON CONFLICT DO NOTHING",
+            )
+            .bind(fact)
+            .bind(d.statement)
+            .execute(&mut **tx)
+            .await?;
+        }
     }
     // 3a. 已批准的规则算隐含行（0044 决定 3 第五片）。读数只查缓存：缓存里没有的这一轮
     //     不算，`read_phrases` 填上之后再来。短语规则按陈述触发，类别词规则按实体触发
