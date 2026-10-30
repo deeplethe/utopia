@@ -128,8 +128,10 @@ AND serve the questions. Rules:\n\
 Do not propose an element that binds nothing.\n\
 - Prefer serving a question. An element that serves no question must bind at least two statements' \
 worth of shapes, or be a class that several kind words name.\n\
-- Write the definition for the aligner, in the language of the ontology: one or two sentences saying \
-what the property asserts, what its subject and object are, and what it does NOT cover.\n\
+- Write every label and definition in the language of the documents (the phrases, kind words and \
+quotes below), even where the ontology or these instructions use another. The definition is for the \
+aligner: one or two sentences saying what the property asserts, what its subject and object are, and \
+what it does NOT cover.\n\
 - A property whose object is a value (a number, a date, text) is an attribute: value=true with a \
 datatype (number | date | text | bool) and no ranges. Otherwise value=false with domains and ranges \
 as class keys, existing or proposed in this same answer.\n\
@@ -524,6 +526,7 @@ mod tests {
         }];
         let m = build_proposal_messages(&sigs, &kws, &glossary, &qs);
         assert_eq!(m.len(), 2);
+        assert!(m[0].content.contains("in the language of the documents"));
         let user = &m[1].content;
         assert!(user.contains("Other existing properties"), "{user}");
         assert!(user.contains("- p999 · somethingElse"), "{user}");
