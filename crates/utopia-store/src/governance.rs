@@ -768,7 +768,11 @@ pub async fn loop_calls_today(pool: &PgPool, kb_id: Uuid) -> AppResult<i64> {
 /// **名字事实排在后面，引文就是名字本身的不要**（0041）。名字事实置信度 1.0，
 /// 按置信度排它每块都赢，而「这一块写了它的名字」的引文往往只是那个名字——
 /// 给裁决的 agent 一串光秃秃的名字，等于没给原文。带整句引文的别名（「简称海探1」）
-/// 照样留着，那正是判断是不是一个东西要看的
+/// 照样留着，那正是判断是不是一个东西要看的。
+///
+/// 同块的不同引文不能去重成一条：获奖段落中两条陈述共用一个名字时，按块去重
+/// 只给裁决器管理奖那句，技术奖那句永远读不到。按块和引文去重重复事实，先给各块
+/// 一段再补后续段落，仍守调用方的条数上限，避免长块独占全部来源。
 pub async fn quotes_of(
     pool: &PgPool,
     kb_id: Uuid,
@@ -776,9 +780,12 @@ pub async fn quotes_of(
     limit: i64,
 ) -> AppResult<Vec<(String, String)>> {
     let rows: Vec<(String, String)> = sqlx::query_as(
-        "SELECT filename, quote FROM (
-           SELECT DISTINCT ON (fe.chunk_id) d.filename,
-                  COALESCE(NULLIF(fe.quote, ''), left(c.text, 240)) AS quote
+        "WITH passages AS (
+           SELECT DISTINCT ON (fe.chunk_id, COALESCE(NULLIF(fe.quote, ''), left(c.text, 240)))
+                  fe.chunk_id, d.filename,
+                  COALESCE(NULLIF(fe.quote, ''), left(c.text, 240)) AS quote,
+                  coalesce(r.builtin AND r.key = 'known_as', false) AS is_name,
+                  f.confidence
            FROM facts f
            -- 谓词可以为空（0010），LEFT JOIN 才不丢那些事实
            LEFT JOIN relation_types r ON r.id = f.predicate_id
@@ -789,8 +796,14 @@ pub async fn quotes_of(
              AND (f.subject_id = $2 OR f.object_id = $2)
              AND NOT (coalesce(r.builtin AND r.key = 'known_as', false)
                       AND lower(trim(coalesce(fe.quote, ''))) = lower(f.object_value->>'value'))
-           ORDER BY fe.chunk_id, coalesce(r.builtin AND r.key = 'known_as', false), f.confidence DESC
-         ) q
+           ORDER BY fe.chunk_id, quote, is_name, f.confidence DESC, f.id
+         ), ranked AS (
+           SELECT *, row_number() OVER (
+             PARTITION BY chunk_id ORDER BY is_name, confidence DESC, quote
+           ) AS within_chunk FROM passages
+         )
+         SELECT filename, quote FROM ranked
+         ORDER BY is_name, within_chunk, chunk_id, quote
          LIMIT $3",
     )
     .bind(kb_id)
