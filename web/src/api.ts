@@ -265,6 +265,10 @@ export interface SourceView {
   last_sync_status: "never" | "queued" | "running" | "ok" | "failed";
   last_sync_error: string | null;
   last_sync_added: number;
+  /** 工单来源读到了哪里（ADR 0072）：消费到的更新时刻，且那一刻的整组都读完了。
+   *  null = 没有游标（首轮同步，或这一类来源不用游标）。说的是「读到哪」，
+   *  不是 `last_sync_at` 的「这一轮什么时候跑」 */
+  sync_checkpoint: string | null;
   doc_count: number;
   missing_count: number;
   /** 全文补全那一块；**不是 RSS 全文来源的就是 null**，不用再拿 kind 与
@@ -962,10 +966,12 @@ export interface ConflictItem {
   old_subject: string;
   old_object: string | null;
   old_valid_from: string | null;
+  old_valid_from_precision: string | null;
   new_fact_id: string;
   new_subject: string;
   new_object: string | null;
   new_valid_from: string | null;
+  new_valid_from_precision: string | null;
   new_confidence: number;
 }
 
@@ -2595,9 +2601,11 @@ export const api = {
     kbId: string,
     conflictId: string,
     body: {
-      action: "close" | "keep" | "reject_new";
+      action: "close" | "retime_new" | "keep" | "reject_new";
       close_at?: string;
       close_at_precision?: string;
+      new_from?: string;
+      new_from_precision?: string;
     },
   ) =>
     request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/conflicts/${conflictId}`, {

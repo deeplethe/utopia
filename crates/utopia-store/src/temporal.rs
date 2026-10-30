@@ -851,7 +851,11 @@ pub async fn reconcile_predicate(
 
 /// 撤掉一条事实（人判它是抽取错误）：它从来不在，时间线按剩下的行重算——关在它开始时的
 /// 前任重新接上。先锁时间线再作废（见模块头）。返回有没有撤掉一行；已经作废的不算
-pub async fn retract(pool: &PgPool, kb_id: Uuid, fact_id: Uuid) -> AppResult<bool> {
+pub async fn retract<'a>(
+    pool: impl sqlx::Acquire<'a, Database = Postgres>,
+    kb_id: Uuid,
+    fact_id: Uuid,
+) -> AppResult<bool> {
     let mut tx = pool.begin().await?;
     let timelines = timelines_of(&mut *tx, kb_id, &[fact_id], None).await?;
     lock_timelines(&mut tx, kb_id, &timelines).await?;
@@ -1437,9 +1441,9 @@ pub async fn list_conflicts(
     let rows: Vec<ConflictView> = sqlx::query_as(
         "SELECT c.id, c.reason, c.created_at, r.label AS predicate_label,
                 c.old_fact_id, os.canonical_name AS old_subject,
-                oo.canonical_name AS old_object, fo.valid_from AS old_valid_from,
+                oo.canonical_name AS old_object, fo.valid_from AS old_valid_from, fo.valid_from_precision AS old_valid_from_precision,
                 c.new_fact_id, ns.canonical_name AS new_subject,
-                no_.canonical_name AS new_object, fn_.valid_from AS new_valid_from,
+                no_.canonical_name AS new_object, fn_.valid_from AS new_valid_from, fn_.valid_from_precision AS new_valid_from_precision,
                 fn_.confidence AS new_confidence
          FROM fact_conflicts c
          JOIN facts fo ON fo.id = c.old_fact_id
@@ -1461,84 +1465,8 @@ pub async fn list_conflicts(
     Ok(rows)
 }
 
-/// 人工裁决：close（旧事实闭合于 close_at 或新事实起点）/ keep（并存不矛盾）/
-/// reject_new（新事实是抽取错误，作废）。
-/// 一条待裁决的冲突：旧事实、新事实、新事实的起点及其精度
-type ConflictRow = (Uuid, Uuid, Option<DateTime<Utc>>, Option<String>);
-
-pub async fn resolve_conflict(
-    pool: &PgPool,
-    kb_id: Uuid,
-    conflict_id: Uuid,
-    resolution: &str,
-    close_at: Option<DateTime<Utc>>,
-    close_at_precision: &str,
-) -> AppResult<()> {
-    let row: Option<ConflictRow> = sqlx::query_as(
-        "SELECT c.old_fact_id, c.new_fact_id, fn_.valid_from, fn_.valid_from_precision
-         FROM fact_conflicts c JOIN facts fn_ ON fn_.id = c.new_fact_id
-         WHERE c.id = $1 AND c.kb_id = $2 AND c.status = 'open'",
-    )
-    .bind(conflict_id)
-    .bind(kb_id)
-    .fetch_optional(pool)
-    .await?;
-    let Some((old_fact_id, new_fact_id, new_from, new_from_precision)) = row else {
-        return Err(utopia_core::AppError::NotFound);
-    };
-
-    let stored = match resolution {
-        "close" => {
-            // 闭合点带着它的精度走：人给了日期就用人给的精度，没给就闭合在新事实的
-            // 起点——那个起点是几月还是几号，闭合点就是几月还是几号。从前一律写 day，
-            // 「2023 年 6 月接任」把前任闭合成了 6 月 1 日
-            let (at, precision) = match close_at {
-                Some(at) => (at, close_at_precision),
-                None => (
-                    new_from.ok_or_else(|| {
-                        utopia_core::AppError::invalid(
-                            "close_at_required",
-                            "close_at is required when the new fact has no start time",
-                        )
-                    })?,
-                    new_from_precision.as_deref().unwrap_or("day"),
-                ),
-            };
-            close_superseded(pool, old_fact_id, at, precision).await?;
-            "closed"
-        }
-        "keep" => "kept_both",
-        "reject_new" => {
-            retract(pool, kb_id, new_fact_id).await?;
-            // 波及：同一新事实撞出的其他 open 冲突一并出队（新事实已死，无从裁起）
-            sqlx::query(
-                "UPDATE fact_conflicts
-                 SET status = 'resolved', resolution = 'rejected_new', resolved_at = now()
-                 WHERE new_fact_id = $1 AND status = 'open' AND id <> $2",
-            )
-            .bind(new_fact_id)
-            .bind(conflict_id)
-            .execute(pool)
-            .await?;
-            "rejected_new"
-        }
-        other => {
-            return Err(utopia_core::AppError::Validation(format!(
-                "Unknown resolution: {other}"
-            )))
-        }
-    };
-    sqlx::query(
-        "UPDATE fact_conflicts SET status = 'resolved', resolution = $3, resolved_at = now()
-         WHERE id = $1 AND kb_id = $2",
-    )
-    .bind(conflict_id)
-    .bind(kb_id)
-    .bind(stored)
-    .execute(pool)
-    .await?;
-    Ok(())
-}
+mod conflicts;
+pub use conflicts::{resolve_conflict, resolve_review_conflict, ConflictDecision};
 
 /// 一条谓词的一端挂着**两个以上开放值**的持有者——唯一性没声明（或声明来晚了）
 /// 时账本的样子（#341）。这是给人看的提议依据，不是判决：`declared` 为假时它说

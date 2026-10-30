@@ -92,6 +92,7 @@ pub async fn list(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<SourceView>> {
                 listed_source.sync_interval_minutes, listed_source.sync_cron,
                 listed_source.last_sync_at, listed_source.last_sync_status,
                 listed_source.last_sync_error, listed_source.last_sync_added,
+                listed_source.sync_checkpoint,
                 (SELECT count(*) FROM documents d
                  WHERE d.source_id = listed_source.id AND d.deleted_at IS NULL) AS doc_count,
                 (SELECT count(*) FROM documents d
