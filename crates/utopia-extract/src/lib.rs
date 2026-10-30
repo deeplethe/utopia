@@ -471,7 +471,8 @@ fn scan_quantity(s: &str, strict: bool) -> Option<Quantity> {
     if s.is_empty() {
         return None;
     }
-    let (body, percent) = match s.strip_suffix('%') {
+    // 中文排版的百分号常是全角的「％」
+    let (body, percent) = match s.strip_suffix(['%', '％']) {
         Some(b) => (b.trim_end(), true),
         None => (s, false),
     };
@@ -1584,5 +1585,20 @@ mod an_attribute_value_is_read_in_its_declared_unit {
         for name in ["3M", "7天", "2023年底", "星河科技", "董事长兼总经理", "K2"] {
             assert!(!literal_object(name, false), "{name}");
         }
+    }
+
+    /// 中文排版的百分号常是全角的「％」：与半角的是同一个量，带着同一个单位
+    #[test]
+    fn a_full_width_percent_sign_is_a_percentage() {
+        assert!(literal_object("12.5％", true));
+        assert_eq!(
+            super::parse_quantity("12.5％"),
+            Some((12.5, Some("%".to_string())))
+        );
+        assert_eq!(
+            super::parse_quantity("-3.2 ％"),
+            super::parse_quantity("-3.2%")
+        );
+        assert_eq!(value("number", Some("%"), "12.5％"), Some(json!(12.5)));
     }
 }
