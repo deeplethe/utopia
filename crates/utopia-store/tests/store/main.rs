@@ -84,6 +84,7 @@ mod a_retired_account;
 mod a_retraction_leaves_the_graph;
 mod a_review_has_a_summary;
 mod a_review_page_is_assembled_in_batches;
+mod a_rewritten_statement_keeps_its_section_dates;
 mod a_rule_computes_what_it_concludes;
 mod a_rule_concludes_a_type;
 mod a_rule_reads_what_a_rule_concluded;
