@@ -107,6 +107,24 @@ pub async fn drop_for_document(pool: &PgPool, document_id: Uuid) -> AppResult<()
     Ok(())
 }
 
+/// 合并把重复名字的证据抄到了存活的名字上（#1426）：其中有了身份证据的，删掉向量
+pub async fn drop_with_identity_evidence(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    facts: &[Uuid],
+) -> AppResult<()> {
+    if facts.is_empty() {
+        return Ok(());
+    }
+    sqlx::query(concat!(
+        "DELETE FROM name_vectors v WHERE v.fact_id = ANY($1) AND ",
+        has_identity_evidence!("v.fact_id")
+    ))
+    .bind(facts)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
 /// 写一批名字向量：`(fact_id, entity_id, embedding)`。同一条事实重写就覆盖（换了模型
 /// 重算）。第一次写下这个维度的向量，索引就该排上了（0035）。
 /// 写的时候再查一次身份证据：补向量算到一半，来源开了身份名或身份文档抽完删过一轮，

@@ -1,6 +1,6 @@
 # 0071 · A source may declare its names identities
 
-- **Status**: Implemented · 2026-10-25 · #1333, #1390, #1425 · open: none
+- **Status**: Implemented · 2026-10-25 · #1333, #1390, #1425, migration 0125 · open: none
 - **Written**: 2026-10-19 (conventions in the [README](README.md))
 - **Related**: [0054](0054-a-source-may-push-statements-in-the-open-contract.md) decision 3 sends pushed statements down the same resolution path as prose, and this record narrows that for one kind of source; [0041](0041-a-name-is-a-claim-about-an-entity.md) owns name facts and name-vector recall; [#1248](https://github.com/deeplethe/utopia/issues/1248) meets the same problem from the merge side and is decided here as decision 7; [#1296](https://github.com/deeplethe/utopia/issues/1296) measured what the recall costs; [#1308](https://github.com/deeplethe/utopia/pull/1308) is the disjointness fix that stands on its own
 
@@ -47,6 +47,8 @@ One name fact can carry evidence from both an identity source and a prose docume
 
 Why a person and not a stricter threshold: an identity source has already said what its names are. Decisions 2 to 4 remove the pairs that name vectors and the single-candidate split would raise, so what is left are containment and type-drift pairs and the cross-source duplicate (one thing pushed under two names by two producers). Those are exactly the cases where the model's `same` is a guess about a claim the producer made, and a wrong merge of identities is what #1248 measured: on a small local model, 40 automatic merges with governance off, nearly all wrong (a method into its file, two unrelated types). A person sees few of them because the vectors are off. Raising `AUTO_CONF` for these pairs would still let a confident wrong verdict through, and a per-base switch is a dead end (below).
 
+**A merge keeps the identity evidence of a name it dedupes.** *Revised 2026-10-30 (#1426):* `merge_entities` invalidates a duplicate name fact, and its evidence stayed on the invalidated row. An entity whose name came from an identity source, merged into one that already held that name from prose with an earlier `recorded_at`, stopped being an identity entity, so decisions 2 and 7 no longer reached it. The merge now copies the duplicate's evidence onto the surviving fact, one row per chunk, and deletes the surviving name's vector if the copy makes it an identity name (decision 5). `entity_merges` records the copied pairs. Undoing the merge deletes them, following `supersedes` because a rewrite of the surviving fact carries its evidence forward, and the revived duplicate still has its own. The name is then pending again, as in decision 6. In a chain S→T→C, undoing only S→T leaves the copy on C's name until T→C is undone too, which errs toward a person.
+
 **A NULL-typed holder takes the declared class.** *Revised 2026-10-23 (#1390):* this note said a holder with `type_id IS NULL` keeps its class and left the choice to the next PR. A typed identity mention that attaches to such a holder now gives it the declared class, as the type-drift path does and with the same helper, so a class a person removed stays removed.
 
 ## Not doing
@@ -67,3 +69,4 @@ Why a person and not a stricter threshold: an identity source has already said w
 - `a_name_with_identity_evidence_gets_no_vector_even_when_prose_names_it_too` (decision 5).
 - Turning the flag on deletes the identity names' vectors; turning it off makes them pending again (decision 6).
 - `a_same_verdict_on_an_identity_entity_waits_for_a_person`: with governance off and with it on, a `same` verdict at or above `AUTO_CONF` on a pair with one identity side leaves both entities in place and an open review with `escalate_identity`; a `kept` verdict on the same pair still closes it (decision 7).
+- `a_merge_keeps_the_identity_evidence_of_the_name_it_dedupes`, `undoing_a_merge_leaves_the_survivors_own_evidence` and `undoing_a_merge_takes_the_copied_evidence_off_a_rewritten_name` (#1426).
