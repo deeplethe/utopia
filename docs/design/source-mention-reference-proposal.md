@@ -1,90 +1,92 @@
-# 来源提及引用：同名主体混同的设计提案
+# Source-mention references: a proposal for conflated namesake subjects
 
-状态：供讨论；尚未形成 ADR 或修改开放抽取/推送契约。关联 #1136、#1193；跨语言召回仍由 #709 追踪。
+Status: for discussion; no ADR or change to the open extraction/push contract yet. Related: #1136 and #1193. Cross-script recall remains tracked by #709.
 
-后续补齐的具体字段、失败策略、兼容分流与实验结果见[内部协议草案](source-mention-reference-contract-draft.md)。该草案给出建议决定，仍需评审后形成 ADR，尚未接入生产。
+The subsequent [internal protocol draft](source-mention-reference-contract-draft.md) specifies fields, failure handling, compatibility routing and experimental results. Its recommendations still require review and an ADR; they are not in production.
 
-## 已复现的损失
+## Reproduced information loss
 
-identity 语料的获奖段落写着：
+The awards passage in the identity corpus reads:
 
 > 财务部总监张伟获得年度管理奖。工程部工程师张伟获得年度技术奖。
 
-2026-10-22 冻结实验中四份实际模型回复，都只列一个 named 张伟，两条获奖陈述的 subject 都是同一字符串。2026-10-28 用当前 dev `1142792` 的 `utopia_extract::open::parse_open_response` 直接读取四份回复，均保留一个张伟主体。另一个控制把两个同名项放进 e，解析器保留首项并将第二项计为 skipped；同一人兼任的控制也只有一个主体，当前表示法无法用这一结果区分二者。
+In English: finance director Zhang Wei receives the annual management award; engineer Zhang Wei receives the annual technical award. The Chinese quotation remains unchanged because it is the actual regression input.
 
-完整语料金标准给这两位获奖人不同身份；两个职衔本身不证明两个人。复现并未运行新模型，也未证明当前 dev 的真实模型错误率。
+All four recorded model replies from the frozen 2026-10-22 experiment list only one named Zhang Wei, with the same subject string for both award statements. On 2026-10-28, calling `utopia_extract::open::parse_open_response` from then-current dev `1142792` directly on those replies retained one Zhang Wei subject in every case. A separate control put two same-name entries in e; the parser retained the first and counted the second as skipped. A control where one person held both roles also retained one subject. The representation cannot distinguish these cases from that result.
 
-链路中三个需要共同处理的位置：
+The full corpus gold assigns different identities to the two award recipients; two job titles alone do not prove two people. This reproduction made no new model calls and does not measure the current dev model error rate.
 
-- `crates/utopia-extract/src/open.rs`：e 按 name_key 去重，s/n 用名字引用。
-- `crates/utopia-server/src/extraction_open.rs`：local 和 known_by_name 是名字到单个实体的映射。
-- `crates/utopia-server/src/extraction.rs`：resolve_handle 的 response_claims 会排除同一回复已占用的实体。新增两次提及而保留这个规则，也可能强制误拆兼任两职的同一人。
+Three parts of the path must be addressed together:
 
-所以本提案分别验收“事实来自哪一次提及”和“这次提及是哪一个实体”。不同提及不是 cannot-link，同一名字也不是 same 的证明。
+- `crates/utopia-extract/src/open.rs`: e deduplicates by name_key; s/n reference names.
+- `crates/utopia-server/src/extraction_open.rs`: local and known_by_name map a name to one entity.
+- `crates/utopia-server/src/extraction.rs`: resolve_handle's response_claims excludes entities already claimed in the response. Adding two mentions while retaining this rule can force a false split of one person holding two roles.
 
-## 方案比较与试验结论
+The proposal therefore validates both which mention a fact belongs to and which entity that mention identifies. Different mentions do not imply cannot-link; a shared name does not prove same.
 
-| 表达 | 优点 | 已知不足 |
+## Alternatives and experimental findings
+
+| Representation | Benefit | Known limitation |
 |---|---|---|
-| 继续用完整来源称谓作名字 | 使用现有格式 | 不能表达相同文字的不同出现；职位可能被误当名字或身份 |
-| 回复复制引文和提及文字，服务端定位 | 无需相信模型给的字符偏移/实体 ID | 重复整句、一句两个同名者不能唯一定位 |
-| 服务端给片段索引，回复引用索引并复制文字 | 可以约束回复所属的当前块和原文片段 | 单片段仍可有多个同名者；细分方式、输入成本与版本有效期需测量 |
+| Keep using the full source description as a name | Uses the existing format | Cannot express different occurrences of identical text; roles may be mistaken for names or identity. |
+| Copy the quote and mention text; locate them on the server | Does not trust model-supplied offsets or entity IDs | Repeated sentences or two namesakes in one sentence may not locate uniquely. |
+| Supply server fragment indexes; copy text and reference an index | Constrains the reply to the current chunk and source fragment | One fragment may still contain namesakes; fragment boundaries, input cost and version validity need measurement. |
 
-复制引文的独立离线原型通过 13 项预期检查：两个奖项分别定位、Markdown/emoji、PDF 空白、重复句、同句两次同名、伪造/缺失/错块、重叠匹配、空引文和同人转岗。这里的“通过”包含正确拒绝不能唯一定位的引用，不代表身份解析已修复。
+The independent copied-quote prototype passed 13 expected checks: separately located awards, Markdown/emoji, PDF whitespace, repeated sentences, two same-name mentions in one sentence, fabricated/missing/wrong-chunk references, overlapping matches, empty quotes and one person changing roles. Passing includes correctly rejecting ambiguous references; it does not mean identity resolution is fixed.
 
-**建议取舍：** 不直接实现仅靠复制引文的最终契约。先用服务端来源片段引用补齐歧义，并要求当前片段内提及仍可唯一定位；无法唯一定位时明确保留失败原因。具体字段、片段粒度和输入 tokens 通过后再记录 ADR。不能让模型自由编造数据库实体 ID，也不能默默选择第一次匹配。
+**Recommendation:** do not implement a final contract based only on copied quotes. First add server source-fragment references to address ambiguity, while still requiring the mention to locate uniquely inside its current fragment. Preserve an explicit failure reason when it cannot. Agree on the fields, fragment granularity and input-token cost before recording the ADR. Models must not invent database entity IDs, and the server must not silently choose the first match.
 
-## 需要共同确认的契约
+## Contract decisions to agree on
 
-1. 提及位置以当前 chunk/version 为边界，服务端计算字符坐标；沿用当前字符单位，不将字节偏移混入。空白折叠必须能映射回原文。
-2. s 的主语、实体宾语，n 的所属对象，以及限定项的引用必须使用一致机制。已知实体列表需能表达多个同名记录。
-3. 对新模型回复使用明确的格式版本；旧模型回复保持旧语义。新格式引用损坏不能静默退回按名字取首项。
-4. ADR 0054 的 statements 推送继续接受原有格式及 null quote；本提案不将模型复制原文的规则直接施加到客户端。任何公共扩展另行讨论。
-5. 引文存在、位置合法、主体归属和身份判断是不同检查。共享句子不能自动成为每个主体的独占身份证据。
-6. 有两个明确候选时，每次提及仅用自己的有效旁证解析；同一人多次提及允许归到相同实体。真实类型不兼容和已判不同的约束保留。
-7. 没有候选或没有足够依据时，不因角色/引用不同强制造两个人。先确认现有 drop/未完成信号是否能保留原文和准确报告缺失；若确实需要新状态，则先讨论其契约，不夹带整个未消歧生命周期。
-8. 重抽和后续分块不能让 known_by_name 再把不同提及压成一个；重复提及也不应反复新增实体或人工审核。
+1. Bound mention locations to the current chunk/version and compute character coordinates on the server. Keep the existing character units; do not mix in byte offsets. Whitespace normalization must map back to the original text.
+2. Use one reference mechanism for subjects and entity objects in s, owners in n, and qualifiers. The known-entity list must represent multiple same-name records.
+3. Give new model replies an explicit format version while preserving legacy reply semantics. A broken new-format reference must not silently fall back to the first name match.
+4. Statements pushes under ADR 0054 keep accepting their existing format and null quotes. Do not impose the model's copied-source rule on clients; discuss any public extension separately.
+5. Quote existence, valid location, subject ownership and identity are separate checks. A shared sentence must not automatically become exclusive identity evidence for every subject.
+6. With two clear candidates, resolve each mention using only its own valid evidence. Repeated mentions of one person may resolve to the same entity. Preserve genuinely incompatible types and prior different decisions.
+7. With no candidates or insufficient evidence, do not force two entities merely because roles or refs differ. First establish whether existing drop/unfinished signals preserve the source and report missing work accurately. If a new state is necessary, discuss its contract first rather than adding an entire unresolved-entity lifecycle.
+8. Re-extraction and later chunks must not let known_by_name collapse distinct mentions again. Repeated mentions must not repeatedly add entities or human reviews.
 
-这些问题是实现前的决定点。CONTRIBUTING 对数据模型、本体契约、公开 API 要求先讨论并形成 ADR；开放抽取解析器被 statements 推送复用，因此这里先提供设计与证据，没有改公共协议。
+These decisions precede implementation. CONTRIBUTING requires discussion and an ADR for data models, ontology contracts and public APIs. Statements pushes reuse the open extraction parser, so this PR supplies design and evidence without changing that public protocol.
 
-## 实施与验收边界
+## Implementation and acceptance scope
 
-一份最小实现贯通 parser → 提及校验 → resolver 上下文 → fact evidence。固定测试覆盖以下两类核心控制，且均跑正反顺序：
+A minimal implementation must connect parser → mention validation → resolver context → fact evidence. Fixed tests cover both core controls in both orders:
 
-- 既有两个由完整来源确认的候选，新回复正确表达两次张伟：奖项分别归正确实体。
-- 明示同一个人兼任/转岗：两次提及可归同一实体，不能由 response_claims 排除而强拆。
+- Two existing candidates with identities established by the complete sources, and a new reply correctly expressing two Zhang Wei mentions: each award belongs to the correct entity.
+- An explicit same-person dual-role or role-change case: both mentions may resolve to one entity without response_claims forcing a split.
 
-另测主宾同名、重复片段、跨句/共享/错块/旧版本引用、截断、未分类候选、旧格式、显式别名、known 列表、记忆日志、身份来源，以及重复导入。无声丢弃事实或减少覆盖不算解决归属。
+Also cover same-name subject/object pairs, repeated fragments, cross-sentence/shared/wrong-chunk/stale-version references, truncation, unclassified candidates, legacy format, explicit aliases, known lists, memory logs, identity sources and repeated imports. Silently dropping facts or reducing coverage does not resolve ownership.
 
-四份旧回复没有表达两次主体，不能要求新解析器从缺失信息中恢复金标准。新提示词能否改善原始输出，需要另一次固定模型、同会话的多库比较。保留原 identity 语料与 scorer，并报告错并/错拆、覆盖、实体、人工与调用成本。若新增回归无法排除，候选保持草稿。
+The four old replies did not represent two subjects. A new parser cannot be required to reconstruct gold from missing information. Whether a new prompt improves raw output requires a separate same-session multi-KB comparison with a fixed model. Preserve the original identity corpus and scorer; report false merges/splits, coverage, entities, human work and call costs. Keep a candidate draft when new regressions cannot be excluded.
 
-## 跨语言测量对下一步的约束
+## Constraints from cross-script measurements
 
-这是独立问题，不加入主体修复实现。八个冻结的首次跨语言状态上，当前 0.60 门槛找回李娜/Li Na 为 0/8；去重且要求唯一互近邻的离线对照为 8/8；只用现有对象 canonical name 匹配的邻接对照为 0/8。
+This is a separate problem, outside the subject-ownership implementation. Across eight frozen first cross-script states, the current 0.60 threshold recalled 李娜/Li Na in 0/8 cases; an offline control with deduplication and unique mutual nearest neighbours recalled 8/8; an adjacency control using only exact neighbour canonical names recalled 0/8.
 
-这不是可直接接入的召回方案：仅两条同类型候选时任意两条都是互近邻。固定 BGE 向量中，财务部总监张伟/工程部工程师张伟（不同人）cosine≈0.7720；财务部总监张伟/澜海研究院财务部总监张伟（同一人）≈0.8196，两对都互为最近邻，也都已超过当前门槛。这个反例说明互近邻仍需要身份裁决和候选预算，不能证明新增通道的噪音可接受。
+This is not a production-ready recall design: with only two same-type candidates, any pair are mutual nearest neighbours. With fixed BGE vectors, the finance director Zhang Wei and engineer Zhang Wei (different people) have cosine≈0.7720; the finance director Zhang Wei and the Lanhai Institute finance director Zhang Wei (the same person) have cosine≈0.8196. Both pairs are mutual nearest neighbours and exceed the current threshold. This counterexample shows that mutual neighbours still need identity adjudication and candidate budgets; it does not establish acceptable noise for a new channel.
 
-八个状态共享同一语料，不提供独立泛化证据。邻接对照也只测试了准确名字匹配，没有实现完整的别名/关系语义/来源有效性检查。下一步是在 #709 范围内测可验证的邻接桥接；未得到可靠噪音与安全证据前不接入生产。
+All eight states share one corpus and provide no independent generalization evidence. The adjacency control tested only exact name matching, not complete alias, relation-semantic or source-validity checks. The next step under #709 is to measure verifiable adjacency bridges. Do not add a production channel without reliable noise and safety evidence.
 
-后续只读原型把邻接条件收窄为“当前有效来源支持的同一关系、同一方向、同一个邻居实体”，只用现行名字事实解析邻居，最多提议两个候选，同分组超出预算就弃权。八次目标仍为 0/8，进一步核对得到：
+A subsequent read-only prototype required the same relation, direction and neighbour entity, supported by currently valid sources. It resolved neighbours using current name facts, proposed at most two candidates and abstained when a tied group exceeded that budget. Target recall remained 0/8. Further inspection found:
 
-| 历史状态 | 第一次跨语言查询缺少的结构 |
+| Historical states | Structure missing at the first cross-script query |
 |---|---|
-| 正序四次（0043、0174、0300、0437） | 已存李娜没有连接其他实体的关系边；新回复把宾语写成 named=0 的 `sea trials of Haitan-2`，没有表达李娜与装备的已绑定共同边 |
-| 逆序四次（0086、0218、0353、0483） | 已存 Li Na 只有一条开放的 `lead → sea trials of Haitan-2`，尚无已绑定关系；新回复的宾语是“耐压舱技术规格”或“理事会成员”，装备仅在部分限定项中出现 |
+| Four forward runs (0043, 0174, 0300, 0437) | Stored 李娜 has no relation edge to another entity. The new reply gives a named=0 object, `sea trials of Haitan-2`, without a bound shared edge between Li Na and the equipment. |
+| Four reverse runs (0086, 0218, 0353, 0483) | Stored Li Na has only an open `lead → sea trials of Haitan-2` statement, with no bound relation. The new reply's object is “耐压舱技术规格” (pressure-hull technical specifications) or “理事会成员” (council member); equipment appears only in some qualifiers. |
 
-这些编号来自冻结快照的 `candidate-NNNN` 文件，不是新的模型运行。限定项里的装备不能未经语义确认就改写成主体直接负责该装备，共现的研究院也不能被补成任职关系。因此此处的否定结果针对已有有效、已绑定图边，未证明所有开放事实或限定项方案都无效；继续降低名字门槛也不能修复这些结构缺失。
+These numbers refer to frozen `candidate-NNNN` snapshots, not new model runs. Equipment in a qualifier cannot be rewritten as a direct responsibility relation without semantic justification, nor can a co-occurring institute become an employment relation. This negative result concerns existing valid, bound graph edges; it does not rule out every open-fact or qualifier design. Lowering the name threshold cannot repair this missing structure.
 
-原型冻结后另编写了 4 个开发控制和 28 个合成保留控制，覆盖显式邻居别名、共享机构、总机构/中心、类型未知/不兼容、编号、已判不同、身份来源、失效/伪造引文、重复提及等。正反输入顺序共 64 行、448 项原型检查符合预期；保留控制中的新提议有 7 个真候选、2 个错误候选，另有 1 项由原有显式名字通道召回。公共机构仍会误提议另一位同事或下属中心；这些是特意构造的图输入，不能当成真实精度估计或生产队列验证。来源位置合法、共同邻居和身份相同仍需分别判断。
+After freezing the prototype, four development controls and 28 synthetic held-out controls were added, covering explicit neighbour aliases, shared organizations, parent organizations/centres, unknown/incompatible types, identifiers, prior different decisions, identity sources, stale/fabricated quotes and repeated mentions. Both input orders produced 64 rows and 448 prototype checks matching expectations. New held-out proposals included seven true and two false candidates; one further target was recalled by the existing explicit-name channel. Shared organizations still proposed a different colleague or a subordinate centre. These deliberately constructed graphs do not estimate real precision or validate the production queue. Source location, a common neighbour and shared identity remain separate questions.
 
-本轮据此否决这份“单跳已绑定共同邻居”原型的生产接入。#709 保持开放；下一份实验先检验开放事实/限定项能否提供有归属、可解释的邻接关系，再准备独立真实语料及裁决安全测量。
+This evidence rejects production integration of the one-hop bound-common-neighbour prototype. #709 remains open. The next experiment should first test whether open facts/qualifiers provide owned, explainable adjacency, then prepare independent real-corpus and adjudication-safety measurements.
 
-## 本次验证的范围
+## Scope of the recorded validation
 
-- 直接调用生产 Rust parser：6 组（4 份实际失败回复、重复 e 声明、同人兼任控制）。
-- 来源位置原型：13 项，包含应拒绝的歧义输入。
-- 原始请求/前状态：4 份，均保存请求及快照哈希。
-- 跨语言离线对照：8 个冻结状态；另有 2 组固定向量的对抗候选池。
-- 新真实模型/嵌入调用：0。没有修改合并策略、提示词、数据库或推送 API。
+- Direct production Rust parser calls: six groups (four real failure replies, duplicate e declarations and a same-person dual-role control).
+- Source-location prototype: 13 checks, including ambiguous inputs that must be rejected.
+- Original requests and prior states: four, with request and snapshot hashes retained.
+- Offline cross-script comparison: eight frozen states, plus two adversarial candidate pools with fixed vectors.
+- New real-model/embedding calls: zero. No merge-policy, prompt, database or push-API changes.
 
-本文件请求的是来源引用契约的评审，不将实验原型或字段草案标为已接受的决定。
+This document requests review of the source-reference contract. It does not present experimental prototypes or draft fields as accepted decisions.

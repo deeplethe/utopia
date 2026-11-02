@@ -1,17 +1,19 @@
-# 来源提及引用：可评审的内部协议草案
+# Source-mention references: an internal protocol draft for review
 
-状态：提案，未接受、未实施；供 #1454 / #1136 讨论后形成 ADR。不是 statements 公共协议的新版本。设计理由见[来源提及引用提案](source-mention-reference-proposal.md)。
+Status: proposed, neither accepted nor implemented. This draft is for discussion under #1454 / #1136 before an ADR. It is not a new version of the public statements protocol. See the [source-mention reference proposal](source-mention-reference-proposal.md) for the reasoning.
 
-## 建议采用的决定
+## Recommended decisions
 
-1. **模型本轮的 ref 标识一次提及，实体仍由服务器解析。** 同样的 surface 可有 m0、m1；不同 ref 不构成 cannot-link。服务器以 `(chunk_id, doc_version, text_hash, start_char, end_char)` 校验和去重一次出现，不接受模型给出的数据库实体 ID 或可信偏移。
-2. **引用先校验，写图在后。** 服务器发出 source 标记及片段 f0、f1，模型复制当前片段的文字。片段、引文、提及都必须唯一定位；坐标由服务器算，单位沿用 Unicode scalar，空白折叠保留回原文的映射。所有被使用的引用通过后才允许该块写入。
-3. **本轮名字映射按 ref，文档已知列表按实体 ID。** s 的主语、实体宾语，n 的 owner 和实体限定项均引用 ref。known 是可含同名多行的列表，以服务器临时 k0/k1 区分；这些只是候选提示。已有候选、类型及人工约束仍由服务器检查，不把模型选择提示当绑定授权。
-4. **旧入口独立，新入口不降级。** 未启用新模型模式仍走原 e/s/n/t；启用后只读带 version=2 的内部回复。引用损坏不能退回名字映射。statements 推送继续原协议，保留 null quote、身份来源和记忆待确认；现有入口本来就拒绝协议之外的字段。
+1. **A model response ref identifies a mention; the server still resolves the entity.** The same surface text may have refs m0 and m1. Different refs do not establish a cannot-link constraint. The server validates and deduplicates an occurrence using `(chunk_id, doc_version, text_hash, start_char, end_char)`; it does not accept model-supplied database entity IDs or trust model-supplied offsets.
+2. **Validate references before writing the graph.** The server supplies a source marker and fragments f0, f1; the model copies text from the current fragment. The fragment, quote and mention must each locate uniquely. The server computes coordinates in the existing Unicode scalar units, retaining a mapping from collapsed whitespace to the original text. Every reference used by a chunk must validate before that chunk can write to the graph.
+3. **Key the current response's name map by ref and the document's known list by entity ID.** Subjects and entity objects in s, owners in n, and entity-valued qualifiers all use refs. The known list may contain several records with the same name, distinguished by temporary server labels k0/k1. These are candidate hints only. The server still checks candidates, types and human constraints; a model's candidate hint does not authorize binding.
+4. **Keep the legacy entry point separate; do not downgrade the new one.** Without the new model mode, use the existing e/s/n/t format. With it enabled, accept only internal responses with version=2. Invalid references cannot fall back to name-based mapping. Statements pushes retain their protocol, including null quotes, identity sources and memories awaiting confirmation; the existing entry point already rejects fields outside its protocol.
 
-## 请求与回复的最小例子
+## Minimal request and response
 
-服务器提供的片段来自当前不可变块内容；标记同时绑定块 ID、版本、完整文本 hash 及片段布局。文本不变而分片边界变化时，旧标记也必须失效。模型只回一个不透明的摘要标记，不回数据库 ID 或位置。这里用简写 S 便于阅读，真实校验不使用这个简写。片段文字只发一次，不让模型返回字符偏移。
+Server fragments come from the current immutable chunk. The marker binds the chunk ID, version, full-text hash and fragment layout. Changing fragment boundaries must invalidate the old marker even when the text is unchanged. The model returns only an opaque digest marker, not database IDs or positions. S below is a readability shorthand, not an actual validation token. Fragment text is sent once; the model does not return character offsets.
+
+The Chinese source text below is retained verbatim from the regression corpus: the finance director Zhang Wei receives the management award, and the engineer Zhang Wei receives the technical award.
 
 ```text
 source: S
@@ -35,34 +37,34 @@ f1: 工程部工程师张伟获得年度技术奖。
 }
 ```
 
-实体宾语写 `"object":"m1"`，与 value 二选一；实体限定项写 `{"instrument":{"entity_ref":"m2"}}`，字面限定项写 `{"amount":{"value":"5万元"}}`；别名写 `{"owner":"m0","name":"另一个名字","fragment":"f0","quote":"包含这项别名的原文"}`。引用必须落在这一条陈述或别名自己的引文范围内。类别词、时间词仍是原文的说法；它们完整的 wire 适配和现有 t 语义要在实现前纳入 ADR，不能把原型未覆盖的字段当成已迁移。
+An entity object uses `"object":"m1"`, mutually exclusive with value. An entity-valued qualifier uses `{"instrument":{"entity_ref":"m2"}}`; a literal qualifier uses `{"amount":{"value":"CNY 50,000"}}`. An alias uses `{"owner":"m0","name":"another name","fragment":"f0","quote":"source text containing this alias"}`. References must fall within that statement's or alias's own quote. Class and time terms retain their source wording. Their complete wire adaptation and the existing t semantics must be included in the ADR before implementation; fields absent from the prototype are not already migrated.
 
-同句两位张伟可分别复制“财务部张伟向”和“工程部张伟致谢”等只含自己一次出现的定位片段；s 仍保存完整陈述引文。重复整句则选各自的服务器片段 ID。无法唯一定位时拒绝该块，不能选第一次匹配。
+When one sentence contains two people called Zhang Wei, each mention can copy a locating span containing only its own occurrence, such as “财务部张伟向” (finance's Zhang Wei addressing someone) and “工程部张伟致谢” (engineering's Zhang Wei being thanked). The statement still retains its full quote. Repeated whole sentences use their respective server fragment IDs. Reject the chunk if a reference cannot locate uniquely; never choose the first match.
 
-## 定位与身份上下文的边界
+## Location and identity context are separate
 
-片段划分只是定位工具。离线原型用标点分片，单换行保留为空白；小数点不切。缩写或其他划分边界可使用已有整块的虚拟 whole 定位入口，不额外复制全文；whole 的文字不直接成为 resolver 身份旁证。
+Fragment boundaries are a locating aid. The offline prototype splits at punctuation, treats a single newline as whitespace and does not split decimal points. Abbreviations or other boundary cases can use a virtual whole locator over the existing chunk, without sending the full text again. Text from whole does not automatically become identity context for the resolver.
 
-合法定位只证明这些文字在那里，不证明模型给的主宾角色或身份判断正确。候选比较仍需当前提及自己有归属的线索；共享/冲突引文不授权改判。原有旧格式的 object-only 保护不因新协议取消。新格式的实体宾语可表达独立提及，但其定位文字何时可成为解析上下文，需要作为本提案的明确评审点，不能静默扩大原有旁证范围。
+A valid location proves that the text exists there, not that the model assigned the correct subject, object or identity. Candidate comparisons still require evidence owned by the current mention; shared or conflicting quotes do not authorize a changed decision. The new protocol does not remove the legacy object-only protection. Entity objects in the new format can represent independent mentions, but when their locating text may become resolution context is an explicit review question, not an implicit expansion of the evidence scope.
 
-已知一个人兼任两职时，m0/m1 可以解析到同一个 ID；不能将第一次解析的结果加入第二次提及的排除项。调用方真正的排除项、明确类型不兼容和已判不同保持有效。只有两个职位、两个 ref 或两个片段不证明是两个人。
+If one person is known to hold both roles, m0/m1 may resolve to the same ID. Do not add the first resolution result to the second mention's exclusions. Actual caller exclusions, explicitly incompatible types and prior different decisions remain effective. Two roles, refs or fragments alone do not prove two people.
 
-## 失败、兼容和冷启动
+## Failure, compatibility and cold starts
 
-| 输入情况 | 建议结果 |
+| Input | Proposed outcome |
 |---|---|
-| 错块/旧版本/变更后的 hash、伪造/缺失/重复定位、悬空/重复 ref、截断新回复 | 写图前失败；使用现有 CHUNK_UNEXTRACTED、unextracted 和 graph_error，报告未完成与覆盖损失；不把有效片段的存在算成整块完成 |
-| 合法来源，两次提及有明确的既有候选 | 各自解析，允许同实体 ID；源位置与身份结果分别验证 |
-| 合法来源，多次同名，但冷启动没有能区分身份的依据 | 不以 ref 个数决定实体个数。该切片先保留未完成，报告原因；不新建未消歧池、不永久 kept，不通过少写事实宣称归属已修复 |
-| 旧模型或旧 statements 请求 | 保持原入口；null quote 和既有公开字段含义不变 |
-| 记忆日志要求确认、身份名来源、人工决定/撤回 | 沿用原有授权与执行保护；合法来源坐标不是新授权 |
+| Wrong chunk, stale version, changed hash, fabricated/missing/ambiguous location, dangling/duplicate ref, or truncated new-format response | Fail before graph writes. Use existing CHUNK_UNEXTRACTED, unextracted and graph_error signals, and report unfinished work and coverage loss. Valid fragments alone do not make the chunk complete. |
+| Valid sources with clear existing candidates for both mentions | Resolve each mention, allowing the same entity ID. Validate source location separately from identity. |
+| Valid sources with repeated names, but no basis for distinguishing identities in a cold start | Do not derive entity count from ref count. This slice leaves the chunk unfinished with a reason. Do not add an unresolved-entity pool or permanent kept state, or claim a fix by writing fewer facts. |
+| Legacy model or statements request | Retain the existing entry point, null quotes and public field semantics. |
+| Memory logs requiring confirmation, identity-name sources, human decisions or reverts | Retain existing authorization and execution protections. Valid source coordinates grant no new authorization. |
 
-现有未完成信号能保存块原文和失败原因，但生产默认没有保存全部原始模型回复的保证；实验录带另行保存完整回复及哈希。新模式严格拒绝残缺引用会降低部分覆盖，必须单列，不能套用旧解析器宽容恢复的成功计数。重试采用现有机制，不增加模型调用轮数或新的持久化状态。
+Existing unfinished signals retain the chunk text and failure reason, but production defaults do not guarantee retention of every raw model response. Experiments separately record complete replies and hashes. Strict rejection of incomplete references may reduce coverage and must be reported separately; it cannot inherit successful counts from the legacy parser's tolerant recovery. Retry through the existing mechanism, without adding model-call rounds or persisted states.
 
-## 已验证与仍待验证
+## Verified and outstanding
 
-- 引用原型 33 个具名场景、正反输入共 66 行，含 PDF 空白、Unicode、小数、缩写、主宾/限定项/别名引用、片段布局变化和应拒绝输入；不是生产解析器验收。
-- 将三个合法例子的输入交给未修改的生产 resolver：两人分别归属、同人兼任、同句同名主宾，正反种子与提及顺序共 12 行均选中预期既有 ID，新增实体为 0。保留旧 response_claims 排除方式的 4 行同人控制均误拆并新增一个实体。
-- 实际执行的是原型校验和生产 resolver；未运行新的生产 extraction/apply 或完整事实写入，所以没有宣称 A02/A03 的生产验收已完成。现有 statements 相关 19 项测试在数据库/PDF 强制检查环境通过。
+- The reference prototype covers 33 named scenarios in both input orders: 66 rows including PDF whitespace, Unicode, decimals, abbreviations, subject/object/qualifier/alias references, fragment-layout changes and expected rejections. This is not acceptance of a production parser.
+- Three valid examples were passed to the unchanged production resolver: separate identities, one person holding two roles, and same-name subject/object mentions in one sentence. Across seed and mention orders, all 12 rows selected the expected existing IDs and created no entities. Four same-person controls retaining the old response_claims exclusions incorrectly split the person and each created one entity.
+- The prototype validator and production resolver actually ran. New production extraction/apply and complete fact writes did not, so these results do not establish production acceptance of A02/A03. The 19 existing statements-related tests passed with database/PDF checks required.
 
-下一份生产切片须补齐类别/时间、known、多块/重抽、冷热启动、实体宾语旁证范围和完整 A01–A11 的数据库验收；通过后再做同会话十六库对照。请求评审上述决定、冷启动失败策略及实体宾语的旁证边界。确认并落 ADR 前不切换生产模式，也不据此关闭 #1136。
+The next production slice must cover class/time fields, known, multiple chunks and re-extraction, warm and cold starts, the entity-object evidence boundary, and complete database acceptance for A01–A11. Only then run a same-session 16-KB comparison. Review is requested on the decisions above, cold-start failure policy and entity-object evidence boundary. Do not switch production modes or close #1136 before agreement and a landed ADR.
