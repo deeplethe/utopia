@@ -87,7 +87,7 @@ pulldown-cmark = { version = "0.13", default-features = false }
 chardetng = "1"
 encoding_rs = "0.8"
 quick-xml = "0.42"
-zip = { version = "6", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 csv = "1"
 
 # 本体导入：Oxigraph 拆出来的小而专的解析器，只解析不推理——
