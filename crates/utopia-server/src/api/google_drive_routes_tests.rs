@@ -1,6 +1,7 @@
 //! 连接流程的几道关卡与「谁连上的谁来选」（0074 决定 3、5），连真库跑。
 //! 测试环境没配 OAuth 客户端：过了所有关卡的回调停在「没配置」，不会去敲 Google
 use super::*;
+use crate::auth::SessionOrToken;
 use std::sync::Arc;
 use utopia_core::models::User;
 
@@ -251,7 +252,10 @@ async fn the_source_settings_cannot_rewrite_a_drive_connection() -> anyhow::Resu
     let before = fx.config().await?;
     let _ = super::super::sources_routes::update(
         State(fx.state.clone()),
-        AuthUser(fx.colleague.clone()),
+        SessionOrToken {
+            user: fx.colleague.clone(),
+            pat: None,
+        },
         Path((fx.kb, fx.source)),
         Json(super::super::sources_routes::UpdateBody {
             name: None,
