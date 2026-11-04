@@ -4,7 +4,7 @@
 //! 一条陈述「Harbor Bakery —is based in→ Port Ellen」，签名 (is based in, organization,
 //! place) 绑到 headquartered_in：算出一条类型化行，谓词是它，证据与限定抄过来，
 //! `from_statement_id` 指回陈述；再跑一遍什么都不动；带 mood 的陈述不算；另一份文档
-//! 的同一句并进同一行（两条来源、两条证据）；作废其中一条陈述，行还在、来源少一条；
+//! 的同一句并进同一行（两条来源、两条证据），它说的另一个 since 不跟进来，行只读建行那条的，它说的 until 行还没有、跟进来；作废其中一条陈述，行还在、来源少一条；
 //! 绑定翻成 reverse，旧行作废、新行主宾对调；绑定改成 none，行作废、不再补。
 //!
 //! 没有 `UTOPIA_DATABASE_URL` 时跳过而不是失败。自建自拆，绝不碰已有的库。
@@ -133,21 +133,35 @@ async fn a_bound_statement_becomes_a_typed_fact() -> anyhow::Result<()> {
                 .bind(doc)
                 .execute(&pool)
                 .await?;
-                anyhow::Ok(())
+                anyhow::Ok(chunk)
             }
         };
-        evidence_of(stated, "bakery.txt").await?;
-        evidence_of(again, "bakery-2.txt").await?;
+        let stated_chunk = evidence_of(stated, "bakery.txt").await?;
+        let again_chunk = evidence_of(again, "bakery-2.txt").await?;
+        let planned_chunk = evidence_of(planned, "bakery-plan.txt").await?;
+        // 并进来的那条还说了 until：行没有这个角色，要跟进来
+        for (statement, chunk, role, value) in [
+            (stated, stated_chunk, "since", "2019"),
+            (again, again_chunk, "since", "2021"),
+            (again, again_chunk, "until", "2024"),
+        ] {
+            sqlx::query(
+                "INSERT INTO statement_qualifiers (fact_id, role, value, chunk_id)
+                 VALUES ($1, $3, to_jsonb($4::text), $2)",
+            )
+            .bind(statement)
+            .bind(chunk)
+            .bind(role)
+            .bind(value)
+            .execute(&pool)
+            .await?;
+        }
         sqlx::query(
-            "INSERT INTO statement_qualifiers (fact_id, role, value) VALUES ($1, 'since', '\"2019\"'::jsonb)",
-        )
-        .bind(stated)
-        .execute(&pool)
-        .await?;
-        sqlx::query(
-            "INSERT INTO statement_qualifiers (fact_id, role, value) VALUES ($1, 'mood', '\"will\"'::jsonb)",
+            "INSERT INTO statement_qualifiers (fact_id, role, value, chunk_id)
+             VALUES ($1, 'mood', '\"will\"'::jsonb, $2)",
         )
         .bind(planned)
+        .bind(planned_chunk)
         .execute(&pool)
         .await?;
 
@@ -207,13 +221,26 @@ async fn a_bound_statement_becomes_a_typed_fact() -> anyhow::Result<()> {
                 .bind(typed_id)
                 .fetch_one(&pool)
                 .await?;
-        let qualifiers: Vec<String> = sqlx::query_scalar(
-            "SELECT role FROM statement_qualifiers WHERE fact_id = $1 ORDER BY role",
+        // 并进来的那条说 since 2021：行已有 since，不抄，只读建行那条的 2019；
+        // 它说的 until 行还没有，跟进来
+        let qualifiers: Vec<(String, String, Uuid)> = sqlx::query_as(
+            "SELECT role, value #>> '{}', chunk_id FROM statement_qualifiers
+              WHERE fact_id = $1 ORDER BY role",
         )
         .bind(typed_id)
         .fetch_all(&pool)
         .await?;
-        assert_eq!((sources, evidence, qualifiers), (3, 2, vec!["since".to_string()]));
+        assert_eq!(
+            (sources, evidence, qualifiers),
+            (
+                3,
+                2,
+                vec![
+                    ("since".to_string(), "2019".to_string(), stated_chunk),
+                    ("until".to_string(), "2024".to_string(), again_chunk),
+                ]
+            )
+        );
 
         // 再跑一遍：什么都不动
         assert_eq!(materialize(&pool, kb).await?, Outcome::default());
