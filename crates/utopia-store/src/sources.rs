@@ -112,7 +112,14 @@ pub fn rss_full_content_enabled(kind: &str, config: &serde_json::Value) -> AppRe
 /// cron 的下一次触发时刻（服务器本地时区）。
 fn cron_next_after(expr: &str, after: DateTime<Utc>) -> Option<DateTime<Utc>> {
     use std::str::FromStr;
-    let schedule = cron::Schedule::from_str(&format!("0 {expr}")).ok()?;
+    // 改成存名字之前保存的来源，表达式里还是数字星期：同样按标准 cron 读，
+    // 不然存着 `1-5` 的来源照旧周日到周四同步
+    let mut fields: Vec<&str> = expr.split_whitespace().collect();
+    let names = fields.get(4).copied().and_then(weekday_names);
+    if let Some(names) = &names {
+        fields[4] = names;
+    }
+    let schedule = cron::Schedule::from_str(&format!("0 {}", fields.join(" "))).ok()?;
     let local_after = after.with_timezone(&chrono::Local);
     schedule
         .after(&local_after)
@@ -664,6 +671,21 @@ mod tests {
         );
         assert_eq!(validate_cron("0 9 * * 0").unwrap(), "0 9 * * Sun");
         assert_eq!(validate_cron("0 9 * * 5-7").unwrap(), "0 9 * * Fri,Sat,Sun");
+    }
+
+    #[test]
+    fn a_source_saved_with_weekday_numbers_runs_on_standard_cron_days() {
+        use chrono::TimeZone;
+        // 2026-10-31 是周六；`1-5` 的下一次是周一，不是周日
+        let saturday = chrono::Local
+            .with_ymd_and_hms(2026, 10, 31, 12, 0, 0)
+            .unwrap()
+            .with_timezone(&Utc);
+        let monday = chrono::Local
+            .with_ymd_and_hms(2026, 11, 2, 9, 0, 0)
+            .unwrap()
+            .with_timezone(&Utc);
+        assert_eq!(cron_next_after("0 9 * * 1-5", saturday), Some(monday));
     }
 
     #[test]
