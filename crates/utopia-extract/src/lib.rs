@@ -562,12 +562,22 @@ fn scan_quantity(s: &str, strict: bool) -> Option<Quantity> {
 }
 
 /// 财报的写法：括号里的数是负数。`(1,234)` → `-1,234`，`$(1.2) billion` → `$-1.2 billion`，
-/// `(12.5%)` → `-12.5%`。括号前只许有一个货币，括号里只许是数
+/// `(12.5%)` → `-12.5%`。括号前只许有一个货币，括号里只许是数，括号后只许是量级词、
+/// 货币或 `%`：「(1) 1,200 employees」「(2024) 500」里的括号是编号和年份，不是负号
 fn accounting_negative(s: &str) -> Option<String> {
     let (head, rest) = s.split_once('(')?;
     let (inner, after) = rest.split_once(')')?;
     if !head.trim().is_empty() && currency_unit(head.trim()).is_none() {
         return None;
+    }
+    let mut tail = after.trim();
+    tail = tail.strip_suffix('%').unwrap_or(tail).trim_end();
+    while !tail.is_empty() {
+        let (tok, next) = next_token(tail);
+        if magnitude(&tok.to_ascii_lowercase()).is_none() && currency_unit(tok).is_none() {
+            return None;
+        }
+        tail = next.trim_start();
     }
     let digits = inner.trim().strip_suffix('%').unwrap_or(inner.trim());
     if !digits.starts_with(|c: char| c.is_ascii_digit())
@@ -1513,6 +1523,9 @@ mod tests {
         // 括号里不是数、括号前不是货币的，照旧读不出
         assert_eq!(n("(see note 4)"), None);
         assert_eq!(n("Q3 (12)"), None);
+        // 括号后面跟着别的数：括号是编号或年份，不是负号
+        assert_eq!(n("(1) 1,200 employees"), None);
+        assert_eq!(n("(2024) 500"), None);
         // 宾语判定不跟着变：点了名的「(1984)」仍是一个东西
         assert!(!literal_object("(1984)", true));
     }
