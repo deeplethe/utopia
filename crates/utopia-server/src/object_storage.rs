@@ -271,12 +271,18 @@ mod tests {
         assert!(client("s3", &cfg).is_ok());
     }
 
-    /// 文件夹名里带 `#`、`[]` 的前缀照原样列：桶里的 key 就是这么写的
+    /// 文件夹名里带 `#`、`[]` 或中文的前缀照原样列：桶里的 key 就是这么写的。
+    /// `Path::from` 把非 ASCII 的字节也转义，`合同/2024` 从前一个对象也列不出来
     #[tokio::test]
     async fn a_prefix_with_symbols_lists_its_objects() {
         use object_store::memory::InMemory;
         let store = InMemory::new();
-        for key in ["Case #12/brief.txt", "Q1 [final]/plan.md", "other/x.txt"] {
+        for key in [
+            "Case #12/brief.txt",
+            "Q1 [final]/plan.md",
+            "合同/2024/租约.pdf",
+            "other/x.txt",
+        ] {
             store
                 .put(&StorePath::parse(key).unwrap(), "hello".into())
                 .await
@@ -285,6 +291,7 @@ mod tests {
         for (prefix, want) in [
             ("Case #12", "s3://b/Case #12/brief.txt"),
             ("Q1 [final]/", "s3://b/Q1 [final]/plan.md"),
+            ("合同/2024", "s3://b/合同/2024/租约.pdf"),
         ] {
             let (objs, _) = fetch("s3", &store, "b", Some(prefix)).await.unwrap();
             let keys: Vec<&str> = objs.iter().map(|o| o.external_key.as_str()).collect();
