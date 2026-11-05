@@ -886,9 +886,10 @@ pub fn written_date(s: &str) -> Option<(NaiveDate, &'static str)> {
     if let Some(found) = year_first_date(s) {
         return found;
     }
-    // 月份写成名字的：句点（缩写后面那个）与逗号只是标点
+    // 月份写成名字的：句点（缩写后面那个）与逗号只是标点；Excel、Oracle 导出的「17-Mar-2020」
+    // 用连字符隔开，月份是名字，一样说得清
     let words: Vec<&str> = s
-        .split(|c: char| c.is_whitespace() || c == ',' || c == '.')
+        .split(|c: char| c.is_whitespace() || c == ',' || c == '.' || c == '-')
         .filter(|w| !w.is_empty())
         .collect();
     let is_number = |w: &str| w.chars().all(|c| c.is_ascii_digit());
@@ -1346,6 +1347,26 @@ mod tests {
             read_time("17 Mar 2020").map(|(t, p)| (t.date_naive().to_string(), p)),
             Some(("2020-03-17".to_string(), "day"))
         );
+    }
+
+    /// 表格导出常见的「17-Mar-2020」：月份是名字，日月顺序说得清
+    #[test]
+    fn a_date_with_hyphens_and_a_month_name_is_read() {
+        use serde_json::json;
+        let day = |s: &str| normalize_attr_value("date", &json!(s));
+        assert_eq!(day("17-Mar-2020"), Some(json!("2020-03-17")));
+        assert_eq!(day("17-MAR-2020"), Some(json!("2020-03-17")));
+        assert_eq!(day("1-January-2021"), Some(json!("2021-01-01")));
+        assert_eq!(day("Mar-2020"), Some(json!("2020-03")));
+        assert_eq!(
+            read_time("30-Sep-2025").map(|(t, p)| (t.date_naive().to_string(), p)),
+            Some(("2025-09-30".to_string(), "day"))
+        );
+        // 全是数字的照旧说不清；两位的年照旧不猜；ISO 的写法照旧原样留着
+        assert_eq!(day("04-03-2020"), None);
+        assert_eq!(day("17-Mar-20"), None);
+        assert_eq!(day("mid-March 2020"), None);
+        assert_eq!(day("2020-03-17"), Some(json!("2020-03-17")));
     }
 
     #[test]
