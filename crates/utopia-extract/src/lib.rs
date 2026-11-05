@@ -763,11 +763,16 @@ pub fn attribute_value(
     };
     // 声明的单位拆成量级和其余：「万元」→ (4, 元)，「million dollars」→ (6, dollars)
     // 币种写在前面的「USD million」「€ million」，量级在末尾
+    // 表头上的单位常写复数：「USD millions」「$ thousands」「thousands of dollars」
+    let unit_magnitude = |tok: &str| {
+        let tok = tok.to_ascii_lowercase();
+        magnitude(&tok).or_else(|| magnitude(tok.strip_suffix('s')?))
+    };
     let (tok, rest) = next_token(declared);
     let trailing = declared
         .rsplit_once(char::is_whitespace)
-        .and_then(|(head, last)| Some((magnitude(&last.to_ascii_lowercase())?, head.trim())));
-    let (exponent, base) = match magnitude(&tok.to_ascii_lowercase()) {
+        .and_then(|(head, last)| Some((unit_magnitude(last)?, head.trim())));
+    let (exponent, base) = match unit_magnitude(tok) {
         Some(m) => (m, rest.trim()),
         None => trailing.unwrap_or((0, declared)),
     };
@@ -1551,6 +1556,28 @@ mod an_attribute_value_is_read_in_its_declared_unit {
             value("number", Some("million dollars"), "$5 billion"),
             Some(json!(5000.0))
         );
+    }
+
+    /// 财报表头的单位多是复数：「USD millions」「$ thousands」，量级照样认
+    #[test]
+    fn a_unit_with_a_plural_magnitude_is_read_in_that_magnitude() {
+        assert_eq!(
+            value("number", Some("USD millions"), "$5 billion"),
+            Some(json!(5000.0))
+        );
+        assert_eq!(
+            value("number", Some("$ thousands"), "$2.5 million"),
+            Some(json!(2500.0))
+        );
+        assert_eq!(
+            value("number", Some("thousands of dollars"), "$2.5 million"),
+            Some(json!(2500.0))
+        );
+        assert_eq!(
+            value("number", Some("Millions"), "5 billion"),
+            Some(json!(5000.0))
+        );
+        assert_eq!(value("number", Some("USD millions"), "€30 million"), None);
     }
 
     /// 换不了的不换：货币对不上、读不出数的，宁缺勿脏
