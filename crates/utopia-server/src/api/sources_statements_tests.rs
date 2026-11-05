@@ -562,6 +562,32 @@ async fn a_tombstone_marks_the_item_missing_and_a_new_push_revives_it() -> anyho
 /// 密钥的查看和轮换对 `statements` 来源和 `api` 来源一样可用：创建时给过一次的密钥
 /// 之后还查得到，轮换后旧密钥立刻失效、新密钥能推。端到端跑服务时抓到的：这两个接口
 /// 原来只认 `api`
+/// api 来源的墓碑按 external_id 认身份，不用再带文件名；正常推送缺文件名照旧不收
+#[tokio::test]
+async fn an_api_tombstone_needs_only_its_external_id() -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    let (status, body) = f
+        .push_api(&json!({ "filename": "note-7.md", "content": "Kitchen inventory.", "external_id": "note-7" }))
+        .await?;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = f
+        .push_api(&json!({ "external_id": "note-7", "deleted": true }))
+        .await?;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["action"], "marked_missing");
+    let (status, body) = f
+        .push_api(&json!({ "content": "Kitchen inventory.", "external_id": "note-8" }))
+        .await?;
+    assert_ne!(
+        status,
+        StatusCode::OK,
+        "a push with content still needs its filename: {body}"
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn the_push_token_can_be_viewed_and_rotated_like_an_api_source() -> anyhow::Result<()> {
     let Some(f) = Fixture::new().await? else {
