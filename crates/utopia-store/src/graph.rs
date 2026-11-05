@@ -2109,11 +2109,19 @@ pub async fn confirm_fact(pool: &PgPool, kb_id: Uuid, fact_id: Uuid) -> AppResul
 /// 否决的是开放陈述时，随后排一次类型化重算（#1366）：它物化出的类型化行要等重算才退
 /// （`materialize` 的第 1、2 步按 `typed_fact_sources` 看每一个支撑者，还有别的活陈述撑着的
 /// 行照旧留着），而否决本身只写 `invalidated_at`，不排的话这一行一直要等到下一次对齐。
-/// 先作废、后排：反过来的话重算可能在作废提交之前跑完，读到的陈述还活着。排着就不重复
+/// 先作废、后排：反过来的话重算可能在作废提交之前跑完，读到的陈述还活着。排着就不重复。
+/// 排失败只记日志：作废已经提交，报错的话重试这次否决只会拿到 404，而下一次对齐照样会重算
 pub async fn reject_fact(pool: &PgPool, kb_id: Uuid, fact_id: Uuid) -> AppResult<()> {
     if !crate::temporal::retract(pool, kb_id, fact_id).await? {
         return Err(AppError::NotFound);
     }
+    if let Err(e) = queue_typed_recompute(pool, kb_id, fact_id).await {
+        tracing::warn!(%kb_id, %fact_id, error = %e, "否决后的类型化重算没能入队");
+    }
+    Ok(())
+}
+
+async fn queue_typed_recompute(pool: &PgPool, kb_id: Uuid, fact_id: Uuid) -> AppResult<()> {
     let open: Option<bool> = sqlx::query_scalar("SELECT layer = 'open' FROM facts WHERE id = $1")
         .bind(fact_id)
         .fetch_optional(pool)
