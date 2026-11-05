@@ -7,6 +7,8 @@
 //!
 //! 回放那一支多绑一个时刻参数，顺序跟着挪了一位，所以也要走一遍。
 //!
+//! `exact` 只回同名的那几个（#1479），总数同样只数它们。
+//!
 //! 没有 `UTOPIA_DATABASE_URL` 时跳过而不是失败。自建自拆，绝不碰已有的库。
 
 use sqlx::PgPool;
@@ -105,7 +107,7 @@ async fn a_search_puts_the_exact_name_first() -> anyhow::Result<()> {
             busy(&pool, kb, store, rel, city).await?;
         }
         let (rows, total) =
-            utopia_store::graph::search_entities(&pool, kb, "Apple", 8, 0, None).await?;
+            utopia_store::graph::search_entities(&pool, kb, "Apple", 8, 0, None, false).await?;
         assert_eq!(total, 10);
         assert_eq!(rows.len(), 8);
         assert_eq!(rows[0].id, apple, "the entity named exactly Apple comes first");
@@ -118,6 +120,7 @@ async fn a_search_puts_the_exact_name_first() -> anyhow::Result<()> {
             8,
             0,
             Some(chrono::Utc::now()),
+            false,
         )
         .await?;
         assert_eq!(rows[0].id, apple, "the same holds when replaying a moment");
@@ -130,9 +133,27 @@ async fn a_search_puts_the_exact_name_first() -> anyhow::Result<()> {
             busy(&pool, kb, lab, rel, city).await?;
         }
         let (rows, total) =
-            utopia_store::graph::search_entities(&pool, kb, "ibm", 8, 0, None).await?;
+            utopia_store::graph::search_entities(&pool, kb, "ibm", 8, 0, None, false).await?;
         assert_eq!(total, 10);
         assert_eq!(rows[0].id, ibm, "an entity whose name is exactly IBM comes first");
+
+        // 只要同名的（#1479）：名字里带 Apple / IBM 的那些不在结果里，总数也不数它们
+        let (rows, total) =
+            utopia_store::graph::search_entities(&pool, kb, "apple", 8, 0, None, true).await?;
+        assert_eq!((rows.len(), total), (1, 1));
+        assert_eq!(rows[0].id, apple);
+        let (rows, total) = utopia_store::graph::search_entities(
+            &pool,
+            kb,
+            "IBM",
+            8,
+            0,
+            Some(chrono::Utc::now()),
+            true,
+        )
+        .await?;
+        assert_eq!((rows.len(), total), (1, 1), "an exact alias, also when replaying");
+        assert_eq!(rows[0].id, ibm);
         anyhow::Ok(())
     }
     .await;

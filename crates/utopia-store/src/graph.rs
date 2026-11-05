@@ -1619,6 +1619,9 @@ pub async fn profile_distances(
 /// **名字完全相同的排在最前**（规范名或现行的别名），再按度数。只按度数的话，
 /// 问「Apple」而库里有九个事实更多的「Apple Store …」，叫 Apple 的那个排到第十，
 /// 对话与 MCP 的工具只读前八条——它找不到，按名字读事实时读成了另一个
+///
+/// `exact` 只要名字完全相同的那几个（#1479）：已知全名的读者不必等 `ILIKE '%q%'`
+/// 扫遍整个库——没有索引能服务它，一次要十几秒。过滤用的就是排序那一句
 pub async fn search_entities(
     pool: &PgPool,
     kb_id: Uuid,
@@ -1628,29 +1631,46 @@ pub async fn search_entities(
     // 记录轴（0019）：给了就按**当时**回放——列出当时可见的实体（合并之前的被并者
     // 还在，之后才建的不在），度数按当时谁持有事实来数，与回放中的画布一致
     as_of: Option<chrono::DateTime<chrono::Utc>>,
+    exact: bool,
 ) -> AppResult<(Vec<GraphNode>, i64)> {
     let pattern = format!("%{}%", text.trim());
-    let named = crate::names::has_name_like("e", 2);
     // 同名的键与召回同一种写法（`resolution` 里 `has_name_in` 的用法）：规整之后小写
-    let exact = vec![crate::resolution::normalize_name(text).to_lowercase()];
+    let names = vec![crate::resolution::normalize_name(text).to_lowercase()];
+    let same_name = |param: usize| {
+        format!(
+            "(lower(e.canonical_name) = ANY(${param}) OR {})",
+            crate::names::has_name_in("e", 1, param)
+        )
+    };
+    let matches = |param: usize| {
+        if exact {
+            same_name(param)
+        } else {
+            format!(
+                "(e.canonical_name ILIKE $2 OR {})",
+                crate::names::has_name_like("e", 2)
+            )
+        }
+    };
     // 不回放时 SQL 里没有时刻参数，与从前逐字相同；回放时才多绑一个
     let visible = |param: usize| crate::record_axis::entity_visible_at("e", as_of.map(|_| param));
     let rewind = as_of.map(|_| 6);
     let sql = format!(
         "{} WHERE e.kb_id = $1 AND {visible}
-         AND (e.canonical_name ILIKE $2 OR {named})
-         ORDER BY (lower(e.canonical_name) = ANY($5) OR {same_name}) DESC,
+         AND {matches}
+         ORDER BY {same_name} DESC,
                   degree DESC, e.canonical_name, e.id LIMIT $3 OFFSET $4",
         node_sql(rewind, rewind),
         visible = visible(6),
-        same_name = crate::names::has_name_in("e", 1, 5),
+        matches = matches(5),
+        same_name = same_name(5),
     );
     let mut nodes_query = sqlx::query_as::<_, GraphNode>(&sql)
         .bind(kb_id)
         .bind(&pattern)
         .bind(limit)
         .bind(offset)
-        .bind(&exact);
+        .bind(&names);
     if let Some(t) = as_of {
         nodes_query = nodes_query.bind(t);
     }
@@ -1658,12 +1678,14 @@ pub async fn search_entities(
     let count_sql = format!(
         "SELECT count(*) FROM entities e
           WHERE e.kb_id = $1 AND {visible}
-            AND (e.canonical_name ILIKE $2 OR {named})",
-        visible = visible(3),
+            AND {matches}",
+        visible = visible(4),
+        matches = matches(3),
     );
     let mut count_query = sqlx::query_as::<_, (i64,)>(&count_sql)
         .bind(kb_id)
-        .bind(&pattern);
+        .bind(&pattern)
+        .bind(&names);
     if let Some(t) = as_of {
         count_query = count_query.bind(t);
     }
