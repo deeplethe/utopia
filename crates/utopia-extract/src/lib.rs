@@ -477,6 +477,18 @@ fn scan_quantity(s: &str, strict: bool) -> Option<Quantity> {
     };
     // 1. 前缀货币：符号紧贴，或 ISO 码/单词后跟空格
     let mut rest = body;
+    // 负号写在货币符号前面（「-$5 million」，亏损多这么写）：先拿下来，数读出来再还给它
+    let mut negative = false;
+    if let Some(r) = rest.strip_prefix(['-', '−']) {
+        if r.chars()
+            .next()
+            .and_then(|c| currency_unit(&c.to_string()))
+            .is_some()
+        {
+            negative = true;
+            rest = r;
+        }
+    }
     let mut currency: Option<&'static str> = None;
     if let Some(c) = rest.chars().next() {
         if let Some(u) = currency_unit(&c.to_string()) {
@@ -499,10 +511,16 @@ fn scan_quantity(s: &str, strict: bool) -> Option<Quantity> {
         .map(|(i, _)| i)
         .unwrap_or(rest.len());
     let (num, after) = rest.split_at(num_end);
-    let cleaned: String = num
-        .chars()
-        .filter(|c| !matches!(c, ',' | '_'))
-        .map(|c| if c == '−' { '-' } else { c })
+    let cleaned: String = negative
+        .then_some('-')
+        .into_iter()
+        .chain(num.chars().filter(|c| !matches!(c, ',' | '_')).map(|c| {
+            if c == '−' {
+                '-'
+            } else {
+                c
+            }
+        }))
         .collect();
     let mut n: f64 = cleaned.parse().ok()?;
     // 3. 数字后面：紧贴或空格隔开的量级词、货币词，逐个吃；吃不动的就是「其余」
@@ -1243,6 +1261,24 @@ mod tests {
             Some(json!(35000.0))
         );
         assert_eq!(normalize_attr_value("number", &json!("about ten")), None);
+    }
+
+    /// 亏损常把负号写在货币符号前面：「-$5 million」与「$-5 million」是同一个数
+    #[test]
+    fn a_minus_sign_before_the_currency_is_read_as_negative() {
+        use serde_json::json;
+        let n = |s: &str| normalize_attr_value("number", &json!(s));
+        assert_eq!(n("-$5 million"), Some(json!(-5e6)));
+        assert_eq!(n("−€30 million"), Some(json!(-3e7)));
+        assert_eq!(n("-$1,250"), Some(json!(-1250.0)));
+        assert_eq!(n("-£0.5"), Some(json!(-0.5)));
+        assert_eq!(
+            attribute_value("number", Some("万元"), &json!("-¥2.3亿")),
+            Some(json!(-23000.0))
+        );
+        // 负号后面不是货币符号的不动：列表里的「- 5 people」照旧不是数
+        assert_eq!(super::parse_quantity("- 5"), None);
+        assert_eq!(n("-$-5"), None);
     }
 
     #[test]
