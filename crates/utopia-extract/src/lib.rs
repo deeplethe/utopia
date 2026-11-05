@@ -499,6 +499,10 @@ fn scan_quantity(s: &str, strict: bool) -> Option<Quantity> {
         .map(|(i, _)| i)
         .unwrap_or(rest.len());
     let (num, after) = rest.split_at(num_end);
+    // 「5000余万元」「300多人」：余、多说的是一个界，不是这个数（同 `strip_approx` 里的「超过」）
+    if after.trim_start().starts_with(['余', '多']) {
+        return None;
+    }
     let cleaned: String = num
         .chars()
         .filter(|c| !matches!(c, ',' | '_'))
@@ -1560,6 +1564,16 @@ mod an_attribute_value_is_read_in_its_declared_unit {
         assert_eq!(value("number", Some("人"), "超过一千人"), None);
         assert_eq!(value("date", None, "2023年底"), None);
         assert_eq!(value("bool", None, "尚未上市"), None);
+    }
+
+    /// 「余」「多」写在数后面，说的是一个界，同「超过」：从前「5000余万元」读成 5000
+    #[test]
+    fn a_figure_followed_by_yu_or_duo_is_a_bound_not_a_value() {
+        assert_eq!(value("number", None, "5000余万元"), None);
+        assert_eq!(value("number", Some("元"), "5000余万元"), None);
+        assert_eq!(value("number", Some("万元"), "5000多万元"), None);
+        assert_eq!(value("number", Some("人"), "300多人"), None);
+        assert_eq!(value("number", Some("人"), "300人"), Some(json!(300.0)));
     }
 
     #[test]
