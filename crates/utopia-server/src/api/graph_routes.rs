@@ -135,6 +135,9 @@ pub struct EntitySearchQuery {
     /// 不给就是当下
     #[serde(default)]
     pub as_of: Option<String>,
+    /// 只要名字完全相同的（规范名或现行的别名，#1479）：知道全名的读者不必等一次全库扫描
+    #[serde(default)]
+    pub exact: bool,
 }
 
 pub async fn search_entities(
@@ -158,6 +161,7 @@ pub async fn search_entities(
         query.limit.unwrap_or(10).clamp(1, 100),
         query.offset.unwrap_or(0).max(0),
         as_of,
+        query.exact,
     )
     .await?;
     Ok(Json(json!({ "entities": entities, "total": total })))
