@@ -161,15 +161,9 @@ fn quarter_around(t: DateTime<Utc>, fiscal_year_end: Option<(u32, u32)>) -> Opti
 }
 
 /// 一个期间的起止（写明的数字部分）。写在终点的季度是那一季的最后一个月：
-/// 「第一季度到第三季度」止于 9 月，不能停在第三季度的头一个月。
+/// 「第一季度到第三季度」止于 9 月，同 [`parts_to_end`]。
 fn period_bounds(from: &DateParts, to: &DateParts) -> Option<(Bound, Bound)> {
-    let (end, end_p) = parts_to_time(to)?;
-    let (end, end_p) = if to.quarter.is_some() {
-        (end.checked_add_months(Months::new(2))?, "month")
-    } else {
-        (end, end_p)
-    };
-    Some((parts_to_time(from)?, (end, end_p)))
+    Some((parts_to_time(from)?, parts_to_end(to)?))
 }
 
 /// 形状决定字在世界轴上占哪一段（决定 7：形状另存，这里只算区间）。
