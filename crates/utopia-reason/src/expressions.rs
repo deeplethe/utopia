@@ -90,6 +90,10 @@ impl DatePart {
                 Self::Month,
             )
         } else if text.len() == 4 {
+            // 四位数字才是年：`parse` 也收 "+202"、"-123"，它们不是存下来的年精度
+            if !text.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
             let year: i32 = text.parse().ok()?;
             (NaiveDate::from_ymd_opt(year, 1, 1)?, Self::Year)
         } else {
@@ -466,6 +470,10 @@ mod tests {
             None
         );
         assert_eq!(expr.evaluate(&|_| Some(Scalar::Text("2024".into()))), None);
+        let year = Expr::from_json(&json!({"date_trunc":"year","expr":{"attr":id(1)}})).unwrap();
+        for input in ["+202", "-123"] {
+            assert_eq!(year.evaluate(&|_| Some(Scalar::Text(input.into()))), None);
+        }
         for input in [
             "2023-02-29",
             "2024-02-30",
