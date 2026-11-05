@@ -670,15 +670,13 @@ fn satisfies(c: &Condition, value: &serde_json::Value, bound: &HashMap<Uuid, &At
     match (&c.op, &c.operand) {
         (Op::Present, _) => !value.is_null(),
         // 值不在集合里就算满足；**没有值不算**——那是「没记」，不是「不是它」
-        (Op::NotIn, Operand::Set(set)) => {
-            !value.is_null() && text(value).is_some_and(|v| !set.iter().any(|s| s == &v))
-        }
+        (Op::NotIn, Operand::Set(set)) => !value.is_null() && in_set(value, set) == Some(false),
         (Op::Gt, Operand::Num(n)) => num(value).is_some_and(|v| v > *n),
         (Op::Gte, Operand::Num(n)) => num(value).is_some_and(|v| v >= *n),
         (Op::Lt, Operand::Num(n)) => num(value).is_some_and(|v| v < *n),
         (Op::Lte, Operand::Num(n)) => num(value).is_some_and(|v| v <= *n),
         (Op::Between, Operand::Range(lo, hi)) => num(value).is_some_and(|v| v >= *lo && v <= *hi),
-        (Op::In, Operand::Set(set)) => text(value).is_some_and(|s| set.iter().any(|x| x == &s)),
+        (Op::In, Operand::Set(set)) => in_set(value, set) == Some(true),
         // op 与操作数形状对不上：库里的 CHECK 挡了大部分，剩下的当不满足
         _ => false,
     }
@@ -695,15 +693,28 @@ fn num(v: &serde_json::Value) -> Option<f64> {
     }
 }
 
+/// 集合成员（0029）。读数与集合里的一项都读得出数时按数比：数值属性存成 f64，
+/// 读回来是 `3.0`，集合里写的是 `3`；写成 `[3.0]` 的集合存的又是 "3.0"。按字比
+/// 两头总有一头对不上。别的照旧按字面比。读数连字面都没有时是 `None`
+fn in_set(value: &serde_json::Value, set: &[String]) -> Option<bool> {
+    let v = text(value)?;
+    let n = match value {
+        serde_json::Value::Number(n) => n.as_f64(),
+        serde_json::Value::String(s) => s.trim().parse::<f64>().ok(),
+        _ => None,
+    }
+    .filter(|n| n.is_finite());
+    Some(
+        set.iter()
+            .any(|x| x == &v || n.is_some_and(|n| x.trim().parse::<f64>().is_ok_and(|x| x == n))),
+    )
+}
+
 /// 类别。数字与布尔也转成字面形态参与集合比较，理由同上。
 fn text(v: &serde_json::Value) -> Option<String> {
     match v {
         serde_json::Value::String(s) => Some(s.trim().to_string()),
-        // 数值属性存的是 f64（`normalize_attr_value`），读回来是 `3.0`；集合里写的是 `3`。
-        // 按 f64 的写法出字，`3.0` 才对得上 `3`
-        serde_json::Value::Number(n) => {
-            Some(n.as_f64().map_or_else(|| n.to_string(), |f| f.to_string()))
-        }
+        serde_json::Value::Number(n) => Some(n.to_string()),
         serde_json::Value::Bool(b) => Some(b.to_string()),
         _ => None,
     }
@@ -1171,8 +1182,19 @@ mod tests {
         };
         let facts = vec![fact(1, 50, 10, json!(3.0))];
         let spans = HashMap::from([(id(1), (None, None))]);
-        let (hits, _) = evaluate(&[rule], &facts, &spans, &[]);
+        let (hits, _) = evaluate(std::slice::from_ref(&rule), &facts, &spans, &[]);
         assert_eq!(hits.len(), 1);
+        // 集合里写成 `[3.0]` 的（`parse_operand` 存成 "3.0"），读数 3 也是其中之一
+        let mut rule = rule;
+        rule.conditions[0].operand = Operand::Set(vec!["3.0".into()]);
+        let facts = vec![fact(1, 50, 10, json!(3))];
+        let (hits, _) = evaluate(std::slice::from_ref(&rule), &facts, &spans, &[]);
+        assert_eq!(hits.len(), 1);
+        // 不是数的照旧按字面比
+        rule.conditions[0].operand = Operand::Set(vec!["3".into()]);
+        let facts = vec![fact(1, 50, 10, json!("三"))];
+        let (hits, _) = evaluate(&[rule], &facts, &spans, &[]);
+        assert!(hits.is_empty());
     }
 
     /// 阈值抬高到读数之上，同一份数据就不再命中——降/升阈值重跑是 0021 的验收项
