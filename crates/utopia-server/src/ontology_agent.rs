@@ -91,7 +91,7 @@ pub async fn propose_with(
         tracing::info!(%kb_id, "本体代理已有一份在跑，这次跳过");
         return Ok(());
     }
-    let result = propose_locked(state, kb_id, &settings, &client, full_glossary).await;
+    let result = propose_locked(state, &kb, &settings, &client, full_glossary).await;
     let _ = sqlx::query("SELECT pg_advisory_unlock(hashtext('propose_ontology'), hashtext($1))")
         .bind(kb_id.to_string())
         .execute(&mut *guard)
@@ -116,11 +116,12 @@ struct Merged {
 
 async fn propose_locked(
     state: &AppState,
-    kb_id: Uuid,
+    kb: &utopia_core::models::KnowledgeBase,
     settings: &utopia_core::models::LlmSettings,
     client: &utopia_llm::LlmClient,
     full_glossary: bool,
 ) -> anyhow::Result<()> {
+    let kb_id = kb.id;
     let pool = &state.pool;
     let classes = utopia_store::graph::entity_types(pool, kb_id).await?;
     let props = utopia_store::ontology::relation_type_views(pool, kb_id).await?;
@@ -430,7 +431,13 @@ async fn propose_locked(
         let sig_ids: HashSet<i64> = sig_batch.iter().map(|s| s.id).collect();
         let word_ids: HashSet<i64> = word_batch.iter().map(|w| w.id).collect();
         let glossary = glossary_for(b * SIGNATURES_PER_CALL..(b + 1) * SIGNATURES_PER_CALL);
-        let messages = agent::build_proposal_messages(sig_batch, word_batch, &glossary, &q_items);
+        let messages = agent::build_proposal_messages(
+            sig_batch,
+            word_batch,
+            &glossary,
+            &q_items,
+            &kb.ontology_lang,
+        );
         let reply =
             match chat_retrying_rate_limits_at(state, settings, client, &messages, Some(0.0)).await
             {

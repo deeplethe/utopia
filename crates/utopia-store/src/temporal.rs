@@ -1091,12 +1091,12 @@ async fn rewrite_end_tx(
     };
     let corrected = Uuid::now_v7();
     sqlx::query(
-        "INSERT INTO facts (id, kb_id, subject_id, predicate_id, object_id, object_value,
+        "INSERT INTO facts (id, kb_id, subject_id, predicate_id, layer, phrase, object_id, object_value,
                             valid_from, valid_from_precision, valid_from_grade,
                             valid_to, valid_to_precision, confidence, supersedes,
                             attested_from, attested_by, attested_to, end_derived,
                             from_statement_id, implied, corrected_ends, end_after_period)
-         SELECT $1, kb_id, subject_id, predicate_id, object_id, object_value,
+         SELECT $1, kb_id, subject_id, predicate_id, layer, phrase, object_id, object_value,
                 valid_from, valid_from_precision, valid_from_grade, $3, $4, confidence, id,
                 attested_from, attested_by,
                 CASE WHEN $4::text = 'unknown' THEN COALESCE($5, now()) END, $6,
@@ -1177,15 +1177,15 @@ pub async fn rehome_tx(
     }
     let moved = Uuid::now_v7();
     sqlx::query(
-        "INSERT INTO facts (id, kb_id, subject_id, predicate_id, object_id, object_value,
+        "INSERT INTO facts (id, kb_id, subject_id, predicate_id, layer, phrase, object_id, object_value,
                             valid_from, valid_from_precision, valid_to, valid_to_precision,
                             confidence, derived_by_rule, supersedes,
-                            attested_from, attested_to, end_derived,
+                            attested_from, attested_by, attested_to, end_derived,
                             from_statement_id, implied, corrected_ends, end_after_period)
-         SELECT $1, kb_id, COALESCE($3, subject_id), predicate_id, COALESCE($4, object_id),
-                object_value, valid_from, valid_from_precision, valid_to, valid_to_precision,
-                confidence, derived_by_rule, id, attested_from, attested_to, end_derived,
-                from_statement_id, implied, corrected_ends, end_after_period
+         SELECT $1, kb_id, COALESCE($3, subject_id), predicate_id, layer, phrase,
+                COALESCE($4, object_id), object_value, valid_from, valid_from_precision, valid_to, valid_to_precision,
+                confidence, derived_by_rule, id, attested_from, attested_by,
+                attested_to, end_derived, from_statement_id, implied, corrected_ends, end_after_period
          FROM facts WHERE id = $2",
     )
     .bind(moved)
@@ -1258,6 +1258,8 @@ async fn copy_qualifiers(
 }
 
 /// 证据引用随修正行复制。表层谓词一起搬：纠正的是时间区间，不是原文说了什么。
+/// 章节日期也一起搬（0104）：开放陈述改挂、改区间之后删掉一篇文档，见证照还在的证据
+/// 重算（`documents::reattest_tx`），新行的证据没带章节日期就退回文档自己的日期
 async fn copy_evidence(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     from: Uuid,
@@ -1265,9 +1267,9 @@ async fn copy_evidence(
 ) -> AppResult<()> {
     sqlx::query(
         "INSERT INTO fact_evidence (fact_id, chunk_id, quote, proposed_predicate, document_id, doc_version,
-                                    quote_start, quote_end)
+                                    quote_start, quote_end, attested_at, attested_by)
          SELECT $1, chunk_id, quote, proposed_predicate, document_id, doc_version,
-                quote_start, quote_end
+                quote_start, quote_end, attested_at, attested_by
          FROM fact_evidence WHERE fact_id = $2
          ON CONFLICT DO NOTHING",
     )
@@ -1326,14 +1328,14 @@ pub async fn correct_interval(
     let corrected = Uuid::now_v7();
     // 标记变了也算终点变了（#994）：人把显示的 2024 改成 2025，存的时刻没动，说的却是另一年
     let inserted: Option<(Uuid,)> = sqlx::query_as(
-        "INSERT INTO facts (id, kb_id, subject_id, predicate_id, object_id, object_value,
+        "INSERT INTO facts (id, kb_id, subject_id, predicate_id, layer, phrase, object_id, object_value,
                             valid_from, valid_from_precision,
                             valid_to, valid_to_precision, confidence, supersedes,
-                            attested_from, attested_to,
+                            attested_from, attested_by, attested_to,
                             from_statement_id, implied, corrected_ends, end_after_period)
-         SELECT $1, kb_id, subject_id, predicate_id, object_id, object_value,
+         SELECT $1, kb_id, subject_id, predicate_id, layer, phrase, object_id, object_value,
                 $3, $4, $5, $6, confidence, id,
-                attested_from,
+                attested_from, attested_by,
                 CASE WHEN $6::text = 'unknown' THEN COALESCE(attested_to, now()) END,
                 from_statement_id, implied,
                 CASE WHEN start_marked AND end_marked THEN 'both'

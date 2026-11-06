@@ -60,6 +60,28 @@ pub(crate) async fn source_in_kb(
     Ok(source)
 }
 
+/// 改、删、清缺失、重抽一个来源。令牌只管推送型，与建来源同一条线（0014 决定 6）：
+/// 改得动 `url` 的地址，漏出去的令牌就能让服务器去敲任意地址。会话照旧管所有来源
+async fn source_to_manage(
+    state: &AppState,
+    caller: &SessionOrToken,
+    kb_id: Uuid,
+    source_id: Uuid,
+) -> ApiResult<utopia_core::models::Source> {
+    caller.require_write(Some(kb_id))?;
+    require_kb(state, &caller.user, kb_id, Role::Editor).await?;
+    let source = source_in_kb(state, kb_id, source_id).await?;
+    if caller.pat.is_some() && !is_push_kind(&source.kind) {
+        return Err(utopia_core::AppError::CodedForbidden {
+            code: "token_source_kind",
+            message: "A token manages only statements or api sources; other kinds take a session"
+                .into(),
+        }
+        .into());
+    }
+    Ok(source)
+}
+
 pub async fn list(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
@@ -263,12 +285,11 @@ pub struct ScheduleBody {
 
 pub async fn update(
     State(state): State<AppState>,
-    AuthUser(user): AuthUser,
+    caller: SessionOrToken,
     Path((kb_id, source_id)): Path<(Uuid, Uuid)>,
     Json(body): Json<UpdateBody>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    require_kb(&state, &user, kb_id, Role::Editor).await?;
-    let existing = source_in_kb(&state, kb_id, source_id).await?;
+    let existing = source_to_manage(&state, &caller, kb_id, source_id).await?;
     // 凭据只进不出：响应从不回显，表单留空 / 没传 = 保留库里原值
     let mut config = body
         .config
@@ -294,11 +315,14 @@ pub async fn update(
     let _ = utopia_store::audit::record(
         &state.pool,
         Some(kb_id),
-        user.id,
+        caller.user.id,
         "source.updated",
         "source",
         Some(source_id),
-        json!({ "name": body.name, "config_changed": config.is_some() }),
+        utopia_store::audit::via_token(
+            json!({ "name": body.name, "config_changed": config.is_some() }),
+            caller.token_id(),
+        ),
     )
     .await;
     Ok(Json(json!({ "source": mask_secrets(source) })))
@@ -307,14 +331,13 @@ pub async fn update(
 /// 批量删除该来源下所有"不在来源中"的文档（url 对账 / custom 墓碑标出的）。
 pub async fn cleanup_missing(
     State(state): State<AppState>,
-    AuthUser(user): AuthUser,
+    caller: SessionOrToken,
     Path((kb_id, source_id)): Path<(Uuid, Uuid)>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    require_kb(&state, &user, kb_id, Role::Editor).await?;
-    source_in_kb(&state, kb_id, source_id).await?;
+    source_to_manage(&state, &caller, kb_id, source_id).await?;
     let ids = utopia_store::documents::list_missing(&state.pool, source_id).await?;
     for id in &ids {
-        utopia_store::documents::delete(&state.pool, kb_id, *id, Some(user.id)).await?;
+        utopia_store::documents::delete(&state.pool, kb_id, *id, Some(caller.user.id)).await?;
         let search = state.search.clone();
         let did = id.to_string();
         tokio::task::spawn_blocking(move || search.delete_document(&did))
@@ -341,12 +364,11 @@ mod checkpoint_tests;
 
 pub async fn delete(
     State(state): State<AppState>,
-    AuthUser(user): AuthUser,
+    caller: SessionOrToken,
     Path((kb_id, source_id)): Path<(Uuid, Uuid)>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    require_kb(&state, &user, kb_id, Role::Editor).await?;
     // Memory 来源常驻：记忆空间不因来源整理而蒸发（记忆文档本身可在 Library 删除）
-    let source = source_in_kb(&state, kb_id, source_id).await?;
+    let source = source_to_manage(&state, &caller, kb_id, source_id).await?;
     if source.kind == utopia_store::memory::MEMORY_SOURCE_KIND {
         return Err(utopia_core::AppError::invalid(
             "memory_source_permanent",
@@ -359,11 +381,11 @@ pub async fn delete(
     let _ = utopia_store::audit::record(
         &state.pool,
         Some(kb_id),
-        user.id,
+        caller.user.id,
         "source.deleted",
         "source",
         Some(source_id),
-        json!({}),
+        utopia_store::audit::via_token(json!({}), caller.token_id()),
     )
     .await;
     Ok(Json(json!({ "ok": true })))
@@ -861,14 +883,10 @@ async fn handle_statements_push(
 /// 走正常管道——实体消解、事实去重、时态冲突照常，既有人工决策全部保留。
 pub async fn re_extract(
     State(state): State<AppState>,
-    AuthUser(user): AuthUser,
+    caller: SessionOrToken,
     Path((kb_id, source_id)): Path<(Uuid, Uuid)>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    require_kb(&state, &user, kb_id, Role::Editor).await?;
-    let source = utopia_store::sources::get(&state.pool, source_id).await?;
-    if source.kb_id != kb_id {
-        return Err(utopia_core::AppError::NotFound.into());
-    }
+    let source = source_to_manage(&state, &caller, kb_id, source_id).await?;
     // `queue_extraction` 自己也会把这种来源的文档滤掉，那样这里回的是「排了 0 篇」。
     // 点按钮的人该听到的是为什么
     if !source.extracts() {
@@ -887,11 +905,14 @@ pub async fn re_extract(
     let _ = utopia_store::audit::record(
         &state.pool,
         Some(kb_id),
-        user.id,
+        caller.user.id,
         "source.re_extract",
         "source",
         Some(source_id),
-        json!({ "name": source.name, "documents": ids.len() }),
+        utopia_store::audit::via_token(
+            json!({ "name": source.name, "documents": ids.len() }),
+            caller.token_id(),
+        ),
     )
     .await;
     Ok(Json(json!({ "queued": ids.len() })))
