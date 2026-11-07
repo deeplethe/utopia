@@ -415,7 +415,7 @@ async fn keys(pool: &sqlx::MySqlPool) -> anyhow::Result<Keys> {
 
 #[cfg(test)]
 mod tests {
-    use super::{cell_kind, Cell, MysqlEngine, QueryEngine, SchemaColumn};
+    use super::{cell_kind, time_text, Cell, MysqlEngine, QueryEngine, SchemaColumn};
     use sqlx::mysql::MySqlPoolOptions;
     use uuid::Uuid;
 
