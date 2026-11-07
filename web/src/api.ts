@@ -265,6 +265,10 @@ export interface SourceView {
   last_sync_status: "never" | "queued" | "running" | "ok" | "failed";
   last_sync_error: string | null;
   last_sync_added: number;
+  /** 工单来源读到了哪里（ADR 0072）：消费到的更新时刻，且那一刻的整组都读完了。
+   *  null = 没有游标（首轮同步，或这一类来源不用游标）。说的是「读到哪」，
+   *  不是 `last_sync_at` 的「这一轮什么时候跑」 */
+  sync_checkpoint: string | null;
   doc_count: number;
   missing_count: number;
   /** 全文补全那一块；**不是 RSS 全文来源的就是 null**，不用再拿 kind 与
@@ -962,10 +966,12 @@ export interface ConflictItem {
   old_subject: string;
   old_object: string | null;
   old_valid_from: string | null;
+  old_valid_from_precision: string | null;
   new_fact_id: string;
   new_subject: string;
   new_object: string | null;
   new_valid_from: string | null;
+  new_valid_from_precision: string | null;
   new_confidence: number;
 }
 
@@ -2595,9 +2601,11 @@ export const api = {
     kbId: string,
     conflictId: string,
     body: {
-      action: "close" | "keep" | "reject_new";
+      action: "close" | "retime_new" | "keep" | "reject_new";
       close_at?: string;
       close_at_precision?: string;
+      new_from?: string;
+      new_from_precision?: string;
     },
   ) =>
     request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/conflicts/${conflictId}`, {
@@ -2808,19 +2816,20 @@ export const api = {
       },
     ),
 
-  testSettings: (workspaceId: string) =>
+  /** 只测 `card` 那一张卡，回来的也只有那一项（#1424） */
+  testSettings: (workspaceId: string, card: "chat" | "embed" | "ocr" | "transcribe") =>
     request<{
       /** `ok` only when all three request shapes the jobs send pass; `checks` has each one (#1354) */
-      chat: {
+      chat?: {
         ok: boolean;
         reply?: string;
         error?: string;
         checks?: Record<"plain" | "streaming" | "tools", { ok: boolean; timed_out?: boolean; error?: string }>;
       };
-      embed: { ok: boolean; dim?: number; error?: string };
+      embed?: { ok: boolean; dim?: number; error?: string };
       ocr?: { ok: boolean; version?: string | null; error?: string };
       transcribe?: { ok: boolean; error?: string };
-    }>(`/api/v1/workspaces/${workspaceId}/settings/test`, { method: "POST" }),
+    }>(`/api/v1/workspaces/${workspaceId}/settings/test?card=${card}`, { method: "POST" }),
   /** 读扫描件的服务、转写模型各自一个保存：存它们不碰对话与嵌入那几列。
    *  `requeued`：因为缺它而等着的文件，这一存重新排进了处理队列几份 */
   saveOcrSettings: (

@@ -79,7 +79,10 @@ RRF score ranks hits within one query only; it is not comparable across queries 
 page fuses 100 candidates per channel where chat fuses 24, so the search page can rank the same
 query differently from chat and from before #1271. Pages join up only while the base is unchanged
 between requests, and each channel counts its ranks before the final `as_of` filter, so a
-historical page can skip rank numbers.
+historical page can skip rank numbers. A `source_id` of the base (another base's source is a 404)
+and, for a push source, an `external_id_prefix` limit both channels to that source's documents
+before fusion, so the base's other hits cannot take the candidates a filter after fusion would
+lose; the prefix compares against the key `pushed_key` builds (#1271).
 
 **`remember`** writes a memory document at once; its statements go through open extraction and wait
 in `pending_facts`; the assistant says the sentence is recorded and its statements will be shown

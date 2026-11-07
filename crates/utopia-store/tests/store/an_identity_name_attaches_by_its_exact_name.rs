@@ -272,3 +272,140 @@ async fn turning_the_flag_on_drops_the_sources_name_vectors_and_off_makes_them_p
     })
     .await
 }
+
+/// `entity` 现行的名字事实。
+async fn live_name(pool: &PgPool, entity: Uuid) -> anyhow::Result<Uuid> {
+    Ok(sqlx::query_scalar(
+        "SELECT f.id FROM facts f JOIN relation_types r ON r.id = f.predicate_id
+          WHERE f.subject_id = $1 AND r.key = $2 AND f.invalidated_at IS NULL",
+    )
+    .bind(entity)
+    .bind(utopia_store::names::KNOWN_AS)
+    .fetch_one(pool)
+    .await?)
+}
+
+/// #1426：人把身份来源的实体并进一个早就从散文里记下同名的实体。存活的名字留住身份证据，
+/// 它仍是身份实体；撤回合并只收回抄过去的那些。
+#[tokio::test]
+async fn a_merge_keeps_the_identity_evidence_of_the_name_it_dedupes() -> anyhow::Result<()> {
+    use utopia_store::execution_gate::{hold_for_merge, Hold};
+    use utopia_store::resolution::{merge_entities, revert_merge};
+    in_kb(|pool, kb, project, _| async move {
+        let (_, identity) = chunk(&pool, kb, Some(json!({"names": "identity"}))).await?;
+        let (_, prose) = chunk(&pool, kb, None).await?;
+        let keeper = holder(&pool, kb, Some(project), "acme/a.ts").await?;
+        let kept_name = named(&pool, kb, keeper, "acme/a.ts", &[prose]).await?;
+        name_vectors::set(&pool, kb, &[(kept_name, keeper, vec![1.0, 0.0, 0.0])]).await?;
+        let pushed = holder(&pool, kb, Some(project), "acme/a.ts").await?;
+        named(&pool, kb, pushed, "acme/a.ts", &[identity]).await?;
+        let bystander = holder(&pool, kb, Some(project), "acme/z.ts").await?;
+        let evidence = |fact: Uuid| {
+            let pool = pool.clone();
+            async move {
+                let mut chunks: Vec<Uuid> =
+                    sqlx::query_scalar("SELECT chunk_id FROM fact_evidence WHERE fact_id = $1")
+                        .bind(fact)
+                        .fetch_all(&pool)
+                        .await?;
+                chunks.sort();
+                anyhow::Ok(chunks)
+            }
+        };
+        let mut both = vec![identity, prose];
+        both.sort();
+
+        let merge = merge_entities(&pool, kb, pushed, keeper, None, "test").await?;
+        assert_eq!(live_name(&pool, keeper).await?, kept_name);
+        assert_eq!(evidence(kept_name).await?, both);
+        assert_eq!(
+            hold_for_merge(&pool, kb, keeper, bystander).await?,
+            Some(Hold::Identity)
+        );
+        assert_eq!(vectors(&pool, kb).await?, Vec::<Uuid>::new());
+
+        revert_merge(&pool, kb, merge).await?;
+        assert_eq!(evidence(kept_name).await?, vec![prose]);
+        assert_eq!(
+            evidence(live_name(&pool, pushed).await?).await?,
+            vec![identity]
+        );
+        assert_ne!(
+            hold_for_merge(&pool, kb, keeper, bystander).await?,
+            Some(Hold::Identity)
+        );
+        assert!(pending_entities(&pool, kb).await?.contains(&keeper));
+        Ok(())
+    })
+    .await
+}
+
+/// 存活行原本就有的同一分块证据是它自己的，撤回合并不动。
+#[tokio::test]
+async fn undoing_a_merge_leaves_the_survivors_own_evidence() -> anyhow::Result<()> {
+    use utopia_store::resolution::{merge_entities, revert_merge};
+    in_kb(|pool, kb, project, _| async move {
+        let (_, prose) = chunk(&pool, kb, None).await?;
+        let keeper = holder(&pool, kb, Some(project), "acme/a.ts").await?;
+        let kept_name = named(&pool, kb, keeper, "acme/a.ts", &[prose]).await?;
+        let other = holder(&pool, kb, Some(project), "acme/a.ts").await?;
+        named(&pool, kb, other, "acme/a.ts", &[prose]).await?;
+        let merge = merge_entities(&pool, kb, other, keeper, None, "test").await?;
+        revert_merge(&pool, kb, merge).await?;
+        let kept: Vec<Uuid> =
+            sqlx::query_scalar("SELECT chunk_id FROM fact_evidence WHERE fact_id = $1")
+                .bind(kept_name)
+                .fetch_all(&pool)
+                .await?;
+        assert_eq!(kept, vec![prose]);
+        Ok(())
+    })
+    .await
+}
+
+/// 合并之后存活的名字可能被改写：人改了区间，证据随行到新行上。撤回合并要从现在持有它的
+/// 那一行收回，不管存活行原本属于哪一边。
+#[tokio::test]
+async fn undoing_a_merge_takes_the_copied_evidence_off_a_rewritten_name() -> anyhow::Result<()> {
+    use utopia_store::graph::Validity;
+    use utopia_store::resolution::{merge_entities, revert_merge};
+    in_kb(|pool, kb, project, _| async move {
+        let (_, identity) = chunk(&pool, kb, Some(json!({"names": "identity"}))).await?;
+        let (_, prose) = chunk(&pool, kb, None).await?;
+        // 散文的名字先记，无论往哪边并都是它存活
+        for prose_moves in [false, true] {
+            let name = format!("acme/{prose_moves}.ts");
+            let prose_holder = holder(&pool, kb, Some(project), &name).await?;
+            let kept_name = named(&pool, kb, prose_holder, &name, &[prose]).await?;
+            let identity_holder = holder(&pool, kb, Some(project), &name).await?;
+            named(&pool, kb, identity_holder, &name, &[identity]).await?;
+            let (source, target) = if prose_moves {
+                (prose_holder, identity_holder)
+            } else {
+                (identity_holder, prose_holder)
+            };
+            let merge = merge_entities(&pool, kb, source, target, None, "test").await?;
+            utopia_store::temporal::correct_interval(
+                &pool,
+                kept_name,
+                Validity {
+                    from: Some(chrono::Utc::now() - chrono::Duration::days(30)),
+                    from_precision: Some("day"),
+                    ..Default::default()
+                },
+            )
+            .await?
+            .expect("the surviving name is live");
+            revert_merge(&pool, kb, merge).await?;
+            let live = live_name(&pool, prose_holder).await?;
+            let chunks: Vec<Uuid> =
+                sqlx::query_scalar("SELECT chunk_id FROM fact_evidence WHERE fact_id = $1")
+                    .bind(live)
+                    .fetch_all(&pool)
+                    .await?;
+            assert_eq!(chunks, vec![prose], "prose_moves = {prose_moves}");
+        }
+        Ok(())
+    })
+    .await
+}

@@ -1,5 +1,5 @@
 //! 审计日志：谁在何时对什么做了什么。纯审计——只记录与展示，不承载回滚等衍生功能。
-//! 记录失败绝不影响业务操作（调用方一律 `let _ =`）。
+//! 普通事件由调用方尽力记录；审核裁决用 `record_on` 与图修改一起提交。
 
 use sqlx::PgPool;
 use utopia_core::models::AuditEventView;
@@ -69,16 +69,39 @@ pub async fn record_opt(
     target_id: Option<Uuid>,
     detail: serde_json::Value,
 ) -> AppResult<()> {
+    let mut conn = pool.acquire().await?;
+    record_on(
+        &mut conn,
+        kb_id,
+        actor_id,
+        action,
+        target_kind,
+        target_id,
+        detail,
+    )
+    .await
+}
+
+/// Reviewed graph changes must not commit without their actor's decision.
+pub async fn record_on(
+    conn: &mut sqlx::PgConnection,
+    kb_id: Option<Uuid>,
+    actor_id: Option<Uuid>,
+    action: &str,
+    target_kind: &str,
+    target_id: Option<Uuid>,
+    detail: serde_json::Value,
+) -> AppResult<()> {
     let ctx = client_context();
     // 身份快照：用户日后被删除时（0025 之后行会留下），台账仍认得出是谁，而不是
     // 只剩一串 UUID。此刻查是可靠的——操作正在发生，人还在。
     let actor_label: Option<String> = match actor_id {
-        Some(id) => sqlx::query_scalar("SELECT email FROM users WHERE id = $1")
-            .bind(id)
-            .fetch_optional(pool)
-            .await
-            .ok()
-            .flatten(),
+        Some(id) => {
+            sqlx::query_scalar("SELECT email FROM users WHERE id = $1")
+                .bind(id)
+                .fetch_optional(&mut *conn)
+                .await?
+        }
         None => None,
     };
     sqlx::query(
@@ -97,7 +120,7 @@ pub async fn record_opt(
     .bind(ctx.ip)
     .bind(ctx.user_agent)
     .bind(actor_label)
-    .execute(pool)
+    .execute(&mut *conn)
     .await?;
     Ok(())
 }
