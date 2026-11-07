@@ -2231,6 +2231,7 @@ pub async fn merge_entities(
     .fetch_all(&mut *tx)
     .await?;
     let mut dup_ids = Vec::new();
+    let (mut copied_to, mut copied_chunks) = (Vec::new(), Vec::new());
     for (ids,) in dups {
         // 先给存活行接上来源，否则下一次物化可能作废它，再按原文重建，丢掉人的修正。
         // 旧行的链接暂留：撤回合并还用得上；物化按它原有的规则清理失效链接。
@@ -2243,6 +2244,25 @@ pub async fn merge_entities(
         .bind(&ids[1..])
         .execute(&mut *tx)
         .await?;
+        // 证据也抄一份（#1426）：身份来源的名字证据要是只留在作废的那条上，存活方就不再是
+        // 身份实体，精确名挂靠和合并前的人工把关（0071 决定 2、7）都认不出它。
+        // 同一分块存活行已有的不动；抄过去的记进账本，撤回合并时只删这些
+        let copied: Vec<Uuid> = sqlx::query_scalar(
+            "INSERT INTO fact_evidence (fact_id, chunk_id, quote, document_id, doc_version,
+                    proposed_predicate, quote_start, quote_end, attested_at, attested_by)
+             SELECT DISTINCT ON (chunk_id) $1, chunk_id, quote, document_id, doc_version,
+                    proposed_predicate, quote_start, quote_end, attested_at, attested_by
+               FROM fact_evidence WHERE fact_id = ANY($2)
+              ORDER BY chunk_id, array_position($2, fact_id)
+             ON CONFLICT DO NOTHING
+             RETURNING chunk_id",
+        )
+        .bind(ids[0])
+        .bind(&ids[1..])
+        .fetch_all(&mut *tx)
+        .await?;
+        copied_to.extend(std::iter::repeat_n(ids[0], copied.len()));
+        copied_chunks.extend(copied);
         dup_ids.extend_from_slice(&ids[1..]);
     }
     if !dup_ids.is_empty() {
@@ -2252,6 +2272,8 @@ pub async fn merge_entities(
             .await?;
         invalidated.extend(dup_ids);
     }
+    // 抄过去的若是身份证据，存活的名字就不该再留向量（0071 决定 5）
+    crate::name_vectors::drop_with_identity_evidence(&mut tx, &copied_to).await?;
 
     // 画像加权合并
     let (profile, profile_n) = match (&target.profile_embedding, &source.profile_embedding) {
@@ -2356,8 +2378,8 @@ pub async fn merge_entities(
         "INSERT INTO entity_merges (id, kb_id, source_id, target_id,
                 moved_subject_facts, moved_object_facts, invalidated_facts,
                 target_profile_before, target_profile_n_before, target_type_before,
-                merged_by, reason)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+                merged_by, reason, copied_evidence_facts, copied_evidence_chunks)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
     )
     .bind(merge_id)
     .bind(kb_id)
@@ -2371,6 +2393,8 @@ pub async fn merge_entities(
     .bind(target.type_id)
     .bind(merged_by)
     .bind(reason)
+    .bind(&copied_to)
+    .bind(&copied_chunks)
     .execute(&mut *tx)
     .await?;
 
@@ -2430,6 +2454,8 @@ struct MergeRow {
     moved_subject_facts: Vec<Uuid>,
     moved_object_facts: Vec<Uuid>,
     invalidated_facts: Vec<Uuid>,
+    copied_evidence_facts: Vec<Uuid>,
+    copied_evidence_chunks: Vec<Uuid>,
     target_profile_before: Option<Vector>,
     target_profile_n_before: i32,
     target_type_before: Option<Uuid>,
@@ -2470,8 +2496,8 @@ async fn with_rewrites(
 pub async fn revert_merge(pool: &PgPool, kb_id: Uuid, merge_id: Uuid) -> AppResult<()> {
     let m: MergeRow = sqlx::query_as(
         "SELECT source_id, target_id, moved_subject_facts, moved_object_facts,
-                invalidated_facts, target_profile_before,
-                target_profile_n_before, target_type_before, reverted_at
+                invalidated_facts, copied_evidence_facts, copied_evidence_chunks,
+                target_profile_before, target_profile_n_before, target_type_before, reverted_at
          FROM entity_merges WHERE id = $1 AND kb_id = $2",
     )
     .bind(merge_id)
@@ -2546,6 +2572,23 @@ pub async fn revert_merge(pool: &PgPool, kb_id: Uuid, merge_id: Uuid) -> AppResu
             crate::temporal::rehome_tx(&mut tx, id, subject, object).await?;
         }
     }
+    // 合并时抄到存活行上的证据删掉：重复的那条复活了，证据还在它身上（#1426）。
+    // 存活行之后可能被改写过（人改区间、时间线闭合、上面的搬回），证据随行复制到了新行上，
+    // 所以顺着 supersedes 删到底，跟 `with_rewrites` 同一条链。
+    // 存活的名字因此不再有身份证据的话，它重新等着补向量，跟来源关掉身份名一样（0071 决定 6）
+    sqlx::query(
+        "WITH RECURSIVE chain(fact_id, chunk_id) AS (
+             SELECT * FROM unnest($1::uuid[], $2::uuid[])
+             UNION
+             SELECT f.id, c.chunk_id FROM facts f JOIN chain c ON f.supersedes = c.fact_id
+         )
+         DELETE FROM fact_evidence fe USING chain c
+          WHERE fe.fact_id = c.fact_id AND fe.chunk_id = c.chunk_id",
+    )
+    .bind(&m.copied_evidence_facts)
+    .bind(&m.copied_evidence_chunks)
+    .execute(&mut *tx)
+    .await?;
     sqlx::query("UPDATE facts SET invalidated_at = NULL WHERE id = ANY($1)")
         .bind(&m.invalidated_facts)
         .execute(&mut *tx)

@@ -1,8 +1,8 @@
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::Json;
 use serde::Deserialize;
 use serde_json::json;
-use utopia_core::models::Role;
+use utopia_core::models::{LlmSettings, Role};
 use utopia_llm::ChatMessage;
 use uuid::Uuid;
 
@@ -322,59 +322,86 @@ fn check(r: &anyhow::Result<()>) -> serde_json::Value {
     }
 }
 
+/// 设置页的四张模型卡，各有一个「测试」
+#[derive(Deserialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ModelCard {
+    Chat,
+    Embed,
+    Ocr,
+    Transcribe,
+}
+
+#[derive(Deserialize)]
+pub struct TestQuery {
+    /// 只测这一张卡。缺席 = 四张都测
+    pub card: Option<ModelCard>,
+}
+
 /// 连通性测试：对话按任务的三种请求形状各试一次（见 [`chat_checks`]）；embedding 试算一条并
-/// 返回维度；版面识别服务问一声健康。
+/// 返回维度；版面识别服务问一声健康。带 `?card=`（[`ModelCard`]）只测那一张卡，回来的也只有
+/// 那一项；不带就四张都测（#1424）。
 pub async fn test(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
     Path(workspace_id): Path<Uuid>,
+    Query(q): Query<TestQuery>,
 ) -> ApiResult<Json<serde_json::Value>> {
     utopia_store::workspaces::require_role(&state.pool, user.id, workspace_id, Role::Admin).await?;
-    let Some(s) = utopia_store::settings::get(&state.pool, workspace_id).await? else {
-        return Ok(Json(
-            json!({ "chat": { "ok": false, "error": "Not configured" },
-                               "embed": { "ok": false, "error": "Not configured" },
-                               "ocr": { "ok": false, "error": "Not configured" },
-                               "transcribe": { "ok": false, "error": "Not configured" } }),
-        ));
-    };
+    let s = utopia_store::settings::get(&state.pool, workspace_id).await?;
+    Ok(Json(probe(s.as_ref(), q.card).await))
+}
 
-    let chat_result = match llm_util::chat_probe_client(&s) {
-        None => json!({ "ok": false, "error": "Not configured" }),
-        Some(client) => chat_checks(&client).await,
-    };
+/// 只测点了的那张卡（#1424）。从前四张卡共用一次测试，按任意一张四套一起测；自 #1363 起
+/// 对话一测要发三问，测嵌入、读扫描件的卡也跟着白花这几问的 token。回来的只有测了的那几项
+async fn probe(s: Option<&LlmSettings>, only: Option<ModelCard>) -> serde_json::Value {
+    let wants = |card| only.is_none_or(|c| c == card);
+    let not_configured = || json!({ "ok": false, "error": "Not configured" });
+    let mut out = serde_json::Map::new();
 
-    let embed_result = match llm_util::embed_client(&s) {
-        None => json!({ "ok": false, "error": "Not configured" }),
-        Some(client) => match client.embed(&["connectivity test".to_string()]).await {
-            Ok(v) if !v.is_empty() => json!({ "ok": true, "dim": v[0].len() }),
-            Ok(_) => json!({ "ok": false, "error": "Empty response" }),
-            Err(e) => json!({ "ok": false, "error": e.to_string() }),
-        },
-    };
+    if wants(ModelCard::Chat) {
+        let chat_result = match s.and_then(llm_util::chat_probe_client) {
+            None => not_configured(),
+            Some(client) => chat_checks(&client).await,
+        };
+        out.insert("chat".into(), chat_result);
+    }
 
-    let ocr_result = match crate::readers::Ocr::from_settings(&s) {
-        None => json!({ "ok": false, "error": "Not configured" }),
-        Some(ocr) => match ocr.health().await {
-            Ok(h) => json!({ "ok": true, "version": h["version"] }),
-            Err(e) => json!({ "ok": false, "error": format!("{e:#}") }),
-        },
-    };
+    if wants(ModelCard::Embed) {
+        let embed_result = match s.and_then(llm_util::embed_client) {
+            None => not_configured(),
+            Some(client) => match client.embed(&["connectivity test".to_string()]).await {
+                Ok(v) if !v.is_empty() => json!({ "ok": true, "dim": v[0].len() }),
+                Ok(_) => json!({ "ok": false, "error": "Empty response" }),
+                Err(e) => json!({ "ok": false, "error": e.to_string() }),
+            },
+        };
+        out.insert("embed".into(), embed_result);
+    }
 
-    let transcribe_result = match crate::readers::Transcriber::from_settings(&s) {
-        None => json!({ "ok": false, "error": "Not configured" }),
-        Some(t) => match t.check().await {
-            Ok(()) => json!({ "ok": true }),
-            Err(e) => json!({ "ok": false, "error": format!("{e:#}") }),
-        },
-    };
+    if wants(ModelCard::Ocr) {
+        let ocr_result = match s.and_then(crate::readers::Ocr::from_settings) {
+            None => not_configured(),
+            Some(ocr) => match ocr.health().await {
+                Ok(h) => json!({ "ok": true, "version": h["version"] }),
+                Err(e) => json!({ "ok": false, "error": format!("{e:#}") }),
+            },
+        };
+        out.insert("ocr".into(), ocr_result);
+    }
 
-    Ok(Json(json!({
-        "chat": chat_result,
-        "embed": embed_result,
-        "ocr": ocr_result,
-        "transcribe": transcribe_result,
-    })))
+    if wants(ModelCard::Transcribe) {
+        let transcribe_result = match s.and_then(crate::readers::Transcriber::from_settings) {
+            None => not_configured(),
+            Some(t) => match t.check().await {
+                Ok(()) => json!({ "ok": true }),
+                Err(e) => json!({ "ok": false, "error": format!("{e:#}") }),
+            },
+        };
+        out.insert("transcribe".into(), transcribe_result);
+    }
+
+    out.into()
 }
 
 #[cfg(test)]
@@ -513,5 +540,43 @@ mod tests {
             1,
             "the streamed and tool shapes are not sent when the plain one fails"
         );
+    }
+
+    /// #1424：按嵌入卡的「测试」，对话模型一问都收不到；不指定卡的旧调用照旧四项都回
+    #[tokio::test]
+    async fn testing_one_card_sends_nothing_to_the_others() {
+        let chat = endpoint(false).await;
+        let s = utopia_core::models::LlmSettings {
+            workspace_id: uuid::Uuid::nil(),
+            chat_base_url: Some(chat.uri()),
+            chat_api_key: None,
+            chat_model: Some("scripted".into()),
+            embed_base_url: None,
+            embed_api_key: None,
+            embed_model: None,
+            embed_dim: None,
+            updated_at: chrono::Utc::now(),
+            ocr_base_url: None,
+            ocr_api_key: None,
+            ocr_backend: None,
+            ocr_provider: "mineru".into(),
+            ocr_model: None,
+            transcribe_base_url: None,
+            transcribe_api_key: None,
+            transcribe_model: None,
+            chat_reasoning_effort: None,
+        };
+
+        let out = super::probe(Some(&s), Some(super::ModelCard::Embed)).await;
+        assert_eq!(
+            out,
+            serde_json::json!({ "embed": { "ok": false, "error": "Not configured" } })
+        );
+        assert!(bodies(&chat).await.is_empty());
+
+        let all = super::probe(Some(&s), None).await;
+        let cards: Vec<_> = all.as_object().unwrap().keys().collect();
+        assert_eq!(cards, ["chat", "embed", "ocr", "transcribe"], "{all}");
+        assert_eq!(bodies(&chat).await.len(), 3);
     }
 }
