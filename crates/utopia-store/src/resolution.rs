@@ -176,10 +176,9 @@ pub fn recall_keys(normalized: &str) -> Vec<String> {
 ///
 /// **本体说了算，这张表只是没声明时的退路。** 判两个类能不能指同一个东西，先看
 /// `owl:disjointWith`（`entity_type_disjoint`，含继承：Person ⟂ Organization 就让
-/// Corporation ⟂ Person）——声明了互斥的一律分开，哪怕它们在类层级上是一家；
-/// 没声明的再看类层级（同一支系当易混，#226），最后才是这三个硬 key。
-/// 没装包也没声明的库里这三个 key 不存在，于是所有跨类型同名判 `Disjoint`——
-/// 变严不变松，不会错合（0016 B3）
+/// Corporation ⟂ Person）——声明了互斥的一律分开，哪怕它们在类层级上是一家。
+/// 没声明互斥、两个类又都判出来了，同名进审阅，不管是不是一家、在不在这张表里
+/// （0041 d4）。这张表仍把 organization / project / product 标成易混。
 pub const CONFUSABLE_TYPE_KEYS: &[&str] = &["organization", "project", "product"];
 
 /// 单次消解最多入队的漂移审核对（防同名大组刷爆审核队列）。
@@ -192,7 +191,7 @@ enum TypeDrift {
     Recall,
     /// 两个易混具体类型：新建 + 审核对
     Review,
-    /// 硬互斥（person vs organization 等，含未知自定义类型）：完全分开
+    /// 两个具体类型不在易混表里。消解里只有本体声明了互斥才按这档分开。
     Disjoint,
 }
 
@@ -1012,7 +1011,7 @@ struct CrossCandidate {
     canonical_name: String,
     // None = 这个候选还没判出类型（0009）
     type_key: Option<String>,
-    // 同上；`types_are_kin` 要按 id 走类层级
+    // 同上；声明的互斥按 id 对
     type_id: Option<Uuid>,
     profile_embedding: Option<Vector>,
     profile_n: i32,
@@ -1066,40 +1065,6 @@ async fn declared_disjoint_from(
     .fetch_all(pool)
     .await?;
     Ok(rows.into_iter().map(|(id,)| id).collect())
-}
-
-/// 两个类是不是一家的：一方是另一方的祖先，或者两者共有一个**不是根**的祖先。
-///
-/// `CONFUSABLE_TYPE_KEYS` 那张三 key 的硬表是给没装包的库准备的；装了 schema.org
-/// 之后同一家公司会被抽成 Organization / Corporation / OnlineBusiness 三种类型，
-/// 全都在 Organization 之下，却一对都过不了硬表，于是三个同名实体并存、
-/// 审阅队列里一条都没有，面板还指着 Review 说"去那里合并"（#226）。
-///
-/// 根不算共同祖先：schema.org 里万物皆 Thing，算上它 Person 与 Organization
-/// 也成了一家。没有根的词汇表（W3C Org 的 Organization 自己就是顶）靠
-/// 祖先/后代那一半接住
-async fn types_are_kin(pool: &PgPool, a: Uuid, b: Uuid) -> AppResult<bool> {
-    let (kin,): (bool,) = sqlx::query_as(
-        "WITH RECURSIVE up_a(id) AS (
-             SELECT $1::uuid
-             UNION
-             SELECT p.parent_id FROM entity_type_parents p JOIN up_a ON p.child_id = up_a.id
-         ), up_b(id) AS (
-             SELECT $2::uuid
-             UNION
-             SELECT p.parent_id FROM entity_type_parents p JOIN up_b ON p.child_id = up_b.id
-         )
-         SELECT EXISTS (SELECT 1 FROM up_a WHERE id = $2)
-             OR EXISTS (SELECT 1 FROM up_b WHERE id = $1)
-             OR EXISTS (SELECT 1 FROM up_a JOIN up_b USING (id)
-                         WHERE EXISTS (SELECT 1 FROM entity_type_parents p
-                                        WHERE p.child_id = up_a.id))",
-    )
-    .bind(a)
-    .bind(b)
-    .fetch_one(pool)
-    .await?;
-    Ok(kin)
 }
 
 fn confusable_reviews(
@@ -1161,7 +1126,8 @@ async fn adopt_type(
 /// 同类型召回为空时的跨类型处置（类型漂移）。
 /// concept 兜底型候选跑既有画像分层：高相似直接 ATTACH（漂移的召回修复，concept
 /// 侧类型升格为具体类型），灰区/无从判别 → 宁分勿合新建 + 审核对；易混具体类型
-/// 一律新建 + 审核对（同名 + 类型摇摆本身就是信号，不设相似度门槛）；硬互斥忽略。
+/// 一律新建 + 审核对（同名 + 类型摇摆本身就是信号，不设相似度门槛）；本体声明了
+/// 互斥的忽略，其余两个都判出来的类进审阅。
 #[allow(clippy::too_many_arguments)]
 async fn resolve_type_drift(
     pool: &PgPool,
@@ -1215,13 +1181,10 @@ async fn resolve_type_drift(
             // 本体说这两类互斥：哪怕硬表说易混、类层级说一家，也分开。
             // 声明是人写下的判断，启发式只是没声明时的猜测
             drift = TypeDrift::Disjoint;
-        } else if drift == TypeDrift::Disjoint {
-            // 硬表判不上的，再看类层级：同一支系下的同名当易混，进审阅队列
-            if let (Some(a), Some(b)) = (type_id, c.type_id) {
-                if types_are_kin(pool, a, b).await? {
-                    drift = TypeDrift::Review;
-                }
-            }
+        } else if drift == TypeDrift::Disjoint && type_id.is_some() && c.type_id.is_some() {
+            // 硬表判不上、本体也没声明互斥。一家的和两家都不是的都进审阅：
+            // 只有声明的互斥才排除候选（0041 d4）。一侧还没判出类型的走 Recall。
+            drift = TypeDrift::Review;
         }
         match drift {
             TypeDrift::Recall => recall_cands.push(c),
