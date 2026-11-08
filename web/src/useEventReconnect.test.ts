@@ -236,9 +236,26 @@ describe("KB stream reconnect", () => {
       source.emit("graph");
       await vi.advanceTimersByTimeAsync(100);
     }
-    await vi.advanceTimersByTimeAsync(OVERVIEW_SETTLE_MS - 1_000 - 1);
+    await vi.advanceTimersByTimeAsync(OVERVIEW_SETTLE_MS - 1_000);
+    expect(overview.fetch).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(SETTLE_MS);
+    expect(overview.fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("the overview deadline rides the open fast window instead of flushing it early", async () => {
+    const client = createClient();
+    const overview = await watch(client, ["graph", "kb-a", "overview", 200]);
+    const neighborhood = await watch(client, ["graph", "kb-a", "neighborhood", "e1"]);
+    const { source } = mount(() => useKbEvents("kb-a"));
+    source.emit("open");
+    source.emit("graph");
+    await vi.advanceTimersByTimeAsync(OVERVIEW_SETTLE_MS - 100);
+    source.emit("graph");
+    await vi.advanceTimersByTimeAsync(SETTLE_MS - 1);
+    expect(neighborhood.fetch).toHaveBeenCalledTimes(2);
     expect(overview.fetch).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(1);
+    expect(neighborhood.fetch).toHaveBeenCalledTimes(3);
     expect(overview.fetch).toHaveBeenCalledTimes(2);
   });
 

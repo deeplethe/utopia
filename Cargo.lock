@@ -5398,9 +5398,13 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "sqlx",
+ "tempfile",
+ "tokio",
  "tracing",
  "tracing-subscriber",
  "utopia-core",
+ "utopia-store",
 ]
 
 [[package]]

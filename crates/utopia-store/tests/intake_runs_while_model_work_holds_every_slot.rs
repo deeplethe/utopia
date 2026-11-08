@@ -1,7 +1,7 @@
-//! #1300：常规名额全被调模型的任务占着时，后来的同步照样有名额跑（`jobs::NO_CHAT_LANE`）。
+//! #1300、#1351：常规名额全被调模型的任务占着时，同步和人判定后的物化照样有名额跑。
 //!
 //! 起真实的 `run_worker`，它会认领库里任何排队任务，所以自成一个二进制（见
-//! `tests/store/main.rs`）。处理器只认带本测试标记的两条，别人的任务一概报错，不替人干活。
+//! `tests/store/main.rs`）。处理器只认带本测试标记的任务，别人的任务一概报错，不替人干活。
 
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
@@ -9,7 +9,7 @@ use std::time::Duration;
 use utopia_store::jobs;
 
 #[tokio::test]
-async fn a_sync_runs_while_model_work_holds_every_slot() -> anyhow::Result<()> {
+async fn intake_runs_while_model_work_holds_every_slot() -> anyhow::Result<()> {
     let Some(url) = utopia_store::test_db::url() else {
         return Ok(());
     };
@@ -48,12 +48,17 @@ async fn a_sync_runs_while_model_work_holds_every_slot() -> anyhow::Result<()> {
     let result = async {
         queue("extract_document").await?;
         tokio::time::timeout(Duration::from_secs(10), extracting.recv()).await?;
-        queue("sync_source").await?;
-        let synced = tokio::time::timeout(Duration::from_secs(10), ran.recv()).await;
-        anyhow::ensure!(
-            matches!(&synced, Ok(Some(kind)) if kind == "sync_source"),
-            "the sync waited behind the extraction: {synced:?}"
-        );
+        for kind in [
+            "sync_source",
+            utopia_store::phrase_bindings::MATERIALIZE_KIND,
+        ] {
+            queue(kind).await?;
+            let claimed = tokio::time::timeout(Duration::from_secs(10), ran.recv()).await;
+            anyhow::ensure!(
+                matches!(&claimed, Ok(Some(claimed_kind)) if claimed_kind == kind),
+                "{kind} waited behind the extraction: {claimed:?}"
+            );
+        }
         anyhow::Ok(())
     }
     .await;

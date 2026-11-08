@@ -199,12 +199,12 @@ pub async fn fact_qualifiers_for(
     Ok(out)
 }
 
-/// 往一条开放陈述上写一个按角色词记的属性。**先写者留着**：同一条陈述同一个角色词
-/// 再听到一次不覆盖（与 [`upsert_fact_qualifier`] 的 Conflict 一条规矩——两次观察
-/// 不一致该另立一行加一条冲突，这一刀还没走到那一步）。值与实体必须恰好给一个
+/// 往一条开放陈述上写一个按角色词记的属性，记在说它的那一块上（0070 决定 1）。
+/// 同一块再说一次不写新行；另一块说的另记一行，旧行不动。值与实体必须恰好给一个
 pub async fn add_statement_qualifier(
     pool: &PgPool,
     fact_id: Uuid,
+    chunk_id: Uuid,
     role: &str,
     value: Option<&serde_json::Value>,
     entity_id: Option<Uuid>,
@@ -223,19 +223,21 @@ pub async fn add_statement_qualifier(
         ));
     }
     sqlx::query(
-        "INSERT INTO statement_qualifiers (fact_id, role, value, entity_id)
-         VALUES ($1, $2, $3, $4) ON CONFLICT (fact_id, role) DO NOTHING",
+        "INSERT INTO statement_qualifiers (fact_id, role, value, entity_id, chunk_id)
+         VALUES ($1, $2, $3, $4, $5) ON CONFLICT (fact_id, role, chunk_id) DO NOTHING",
     )
     .bind(fact_id)
     .bind(role)
     .bind(value)
     .bind(entity_id)
+    .bind(chunk_id)
     .execute(pool)
     .await?;
     Ok(())
 }
 
-/// 一批开放陈述各自的角色词属性，按事实 id 取回；实体那一格连上显示名
+/// 一批开放陈述各自的角色词属性，按事实 id 取回；实体那一格连上显示名。
+/// 同一个值记在几块上只返回一次
 pub async fn statement_qualifiers_for(
     pool: &PgPool,
     fact_ids: &[Uuid],
@@ -253,7 +255,7 @@ pub async fn statement_qualifiers_for(
         entity_name: Option<String>,
     }
     let rows: Vec<Row> = sqlx::query_as(
-        "SELECT q.fact_id, q.role, q.value, q.entity_id, e.canonical_name AS entity_name
+        "SELECT DISTINCT q.fact_id, q.role, q.value, q.entity_id, e.canonical_name AS entity_name
          FROM statement_qualifiers q
          LEFT JOIN entities e ON e.id = q.entity_id
          WHERE q.fact_id = ANY($1)
@@ -2412,15 +2414,21 @@ pub async fn entity_history(
                              -- 人工改区间（302）。少了这一条，人做的修正在
                              -- 这条轴上归给「engine」——一个决策账本把人的
                              -- 决定记成机器的，比不记还坏
-                             'fact.time_corrected']
+                             'fact.time_corrected', 'conflict.retime_new']
                      -- 并入只可能由采纳造成，不会是 Review 里的拒绝
                      WHEN 'merged' THEN ARRAY['ontology.predicate_adopted']
                      ELSE ARRAY['fact.reject', 'conflict.reject_new',
                                 'ontology.adoption_reverted'] END)
                AND (a.target_id = COALESCE(ev.supersedes, ev.id)
-                    OR a.target_id IN (SELECT c.id FROM fact_conflicts c
-                                       WHERE c.old_fact_id = COALESCE(ev.supersedes, ev.id)
-                                          OR c.new_fact_id = ev.id)
+                    OR (a.action <> 'conflict.retime_new'
+                        AND a.target_id IN (SELECT c.id FROM fact_conflicts c
+                                            WHERE c.old_fact_id = COALESCE(ev.supersedes, ev.id)
+                                               OR c.new_fact_id = ev.id))
+                    -- 重定时改的是冲突里的新事实，修正行替的是它，上面那一跳对不上；
+                    -- 审计里记着它写下的那一行，直接认。旧事实若因此被对账重画，
+                    -- 那是引擎做的，不该算到这次决定头上
+                    OR (a.action = 'conflict.retime_new'
+                        AND a.detail->>'corrected_fact_id' = ev.id::text)
                     -- 采纳与撤销都记在关系类型上、一次动作改一批事实，
                     -- 靠 fact_adoptions 精确关联到具体哪几条（corrected 事件
                     -- 是新行、merged 是旧行，两头都认）

@@ -499,7 +499,8 @@ async fn confirm_open(
         } else {
             q.get("value")
         };
-        crate::graph::add_statement_qualifier(pool, fact_id, role, value, entity_id).await?;
+        crate::graph::add_statement_qualifier(pool, fact_id, v.chunk_id, role, value, entity_id)
+            .await?;
     }
     for t in json_items(v.time_words.as_ref()) {
         let (Some(text), Some(char_start)) = (

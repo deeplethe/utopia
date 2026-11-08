@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { S } from "../i18n";
-import { chatTestMessage, modelCardStatus } from "./Settings";
+import { cardsOf, chatTestMessage, modelCardStatus } from "./Settings";
 
 describe("model card status", () => {
   it("prefers a fresh test result over a stale save confirmation", () => {
@@ -100,5 +100,20 @@ describe("chat test message", () => {
 
   it("falls back to one sentence when the server sends no checks", () => {
     expect(chatTestMessage({ ok: false, error: "Not configured" })).toBe("Not configured");
+  });
+});
+
+describe("cards an edit touches", () => {
+  it("is only the card whose field changed", () => {
+    // #1424：改读扫描件那张卡，对话卡刚测出的结论还作数
+    expect(cardsOf(["ocr_base_url"])).toEqual(["ocr"]);
+    expect(cardsOf(["transcribe_api_key"])).toEqual(["transcribe"]);
+  });
+
+  it("is chat and embed for a preset", () => {
+    expect(cardsOf(["chat_base_url", "chat_model", "embed_base_url", "embed_model"])).toEqual([
+      "chat",
+      "embed",
+    ]);
   });
 });
