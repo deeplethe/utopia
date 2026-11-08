@@ -7,7 +7,7 @@ use tantivy::query::{BooleanQuery, Occur, Query, TermQuery};
 use tantivy::schema::{
     Field, IndexRecordOption, Schema, TextFieldIndexing, TextOptions, Value, STORED,
 };
-use tantivy::tokenizer::TextAnalyzer;
+use tantivy::tokenizer::{LowerCaser, TextAnalyzer};
 use tantivy::{Index, IndexReader, TantivyDocument, Term};
 
 const JIEBA: &str = "jieba";
@@ -52,9 +52,13 @@ impl DocsIndex {
         let schema = schema_builder.build();
 
         let index = Index::create_in_ram(schema);
-        index
-            .tokenizers()
-            .register(JIEBA, tantivy_jieba::JiebaTokenizer::new());
+        // 语料是英文为主的 markdown；内存索引每次启动重建，折小写不涉及重建索引
+        index.tokenizers().register(
+            JIEBA,
+            TextAnalyzer::builder(tantivy_jieba::JiebaTokenizer::new())
+                .filter(LowerCaser)
+                .build(),
+        );
 
         let mut writer = index.writer(16 * 1024 * 1024)?;
         for s in sections {
@@ -131,5 +135,36 @@ impl DocsIndex {
             });
         }
         Ok(hits)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DocsIndex, DocsSection};
+
+    fn section(anchor: &str, body: &str) -> DocsSection {
+        DocsSection {
+            slug: "mcp".into(),
+            title: "Agents over MCP".into(),
+            heading: anchor.into(),
+            anchor: anchor.into(),
+            body: body.into(),
+        }
+    }
+
+    /// chat 的 search_docs 由模型随手写查询，大小写不由文档定
+    #[test]
+    fn a_query_finds_the_section_whatever_its_letter_case() {
+        let index = DocsIndex::build(&[
+            section("connect", "Point your MCP client at the Utopia server."),
+            section("tokens", "Create an access token in Settings."),
+        ])
+        .unwrap();
+        for query in ["MCP client", "mcp client", "Mcp", "settings", "SETTINGS"] {
+            let hits = index.search(query, 5).unwrap();
+            assert!(!hits.is_empty(), "{query:?} found nothing");
+        }
+        assert_eq!(index.search("mcp", 5).unwrap()[0].anchor, "connect");
+        assert_eq!(index.search("access TOKEN", 5).unwrap()[0].anchor, "tokens");
     }
 }

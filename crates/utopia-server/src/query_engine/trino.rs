@@ -7,7 +7,7 @@
 
 use super::conn::TrinoConn;
 use super::{
-    rows_to_json_lines, sql_literal, truncate_rows, wrap_limit, QueryEngine, QueryResult,
+    coerce, rows_to_json_lines, sql_literal, truncate_rows, wrap_limit, QueryEngine, QueryResult,
     SchemaColumn, HTTP_POLL_BUDGET, STATEMENT_TIMEOUT_SECS,
 };
 use base64::Engine as _;
@@ -22,6 +22,8 @@ pub struct TrinoEngine {
 #[derive(Deserialize)]
 struct Column {
     name: String,
+    #[serde(rename = "type", default)]
+    ty: String,
 }
 
 #[derive(Deserialize)]
@@ -86,7 +88,7 @@ impl TrinoEngine {
             .json()
             .await?;
         let started = Instant::now();
-        let mut columns: Option<Vec<String>> = None;
+        let mut columns: Option<Vec<Column>> = None;
         let mut rows = Vec::new();
         loop {
             if let Some(e) = page.error {
@@ -94,10 +96,7 @@ impl TrinoEngine {
                 anyhow::bail!("{name}{}", e.message);
             }
             if columns.is_none() {
-                columns = page
-                    .columns
-                    .take()
-                    .map(|cs| cs.into_iter().map(|c| c.name).collect());
+                columns = page.columns.take();
             }
             if let Some(d) = page.data.take() {
                 rows.extend(d);
@@ -120,7 +119,16 @@ impl TrinoEngine {
                 .json()
                 .await?;
         }
-        Ok((columns.unwrap_or_default(), rows))
+        let columns = columns.unwrap_or_default();
+        // 协议把 decimal 写成字符串（其余的数都是 JSON 数），按列类型还原
+        for row in &mut rows {
+            for (v, c) in row.iter_mut().zip(&columns) {
+                if c.ty.starts_with("decimal") {
+                    *v = coerce("DECIMAL", v);
+                }
+            }
+        }
+        Ok((columns.into_iter().map(|c| c.name).collect(), rows))
     }
 }
 
@@ -309,6 +317,45 @@ mod tests {
             ]
         );
         assert!(!out.truncated);
+    }
+
+    /// Trino 的 REST 协议把 decimal 写成字符串（`SqlDecimal` 走 `writeString`），
+    /// 别的数是 JSON 数
+    #[tokio::test]
+    async fn a_decimal_reads_as_a_number() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/statement"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": "q3",
+                "columns": [
+                    { "name": "region", "type": "varchar(5)" },
+                    { "name": "total", "type": "decimal(12,2)" },
+                    { "name": "orders", "type": "bigint" }
+                ],
+                "data": [ ["east", "1234.50", 7], ["west", null, 0] ],
+                "stats": { "state": "FINISHED" }
+            })))
+            .mount(&server)
+            .await;
+        let conn = TrinoConn::parse(&format!(
+            "trino://alice@{}/hive?ssl=false",
+            server.uri().trim_start_matches("http://")
+        ))
+        .unwrap();
+        let out = TrinoEngine::new(conn)
+            .execute(
+                "SELECT region, SUM(amount) AS total, COUNT(*) AS orders FROM orders GROUP BY 1",
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            out.rows,
+            vec![
+                r#"{"region":"east","total":1234.5,"orders":7}"#,
+                r#"{"region":"west","total":null,"orders":0}"#
+            ]
+        );
     }
 
     #[tokio::test]

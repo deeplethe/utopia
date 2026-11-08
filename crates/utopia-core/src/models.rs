@@ -158,6 +158,14 @@ pub struct Source {
     pub last_sync_status: String,
     pub last_sync_error: Option<String>,
     pub last_sync_added: i32,
+    /// 工单来源读到了哪里（ADR 0072）。NULL = 没有游标：首轮同步，或者这一类
+    /// 来源不用游标。
+    ///
+    /// **说的是「读到哪」，不是「这一轮什么时候跑」**——后者是 `last_sync_at`。
+    /// 一轮读不完是常事（同一个更新时刻上可能挂着一千条工单），游标说的是
+    /// 「消费到了哪个更新时刻，且那一刻的整组都读完了」；下一轮从那儿接着读，
+    /// 而不是把这一轮没读完的跳过去（#1212）
+    pub sync_checkpoint: Option<DateTime<Utc>>,
     /// api 来源的推送密钥（明文；查看走 Editor 权限的专用端点，列表响应不带）
     #[serde(skip_serializing)]
     pub ingest_token: Option<String>,
@@ -208,6 +216,7 @@ mod source_extracts_tests {
             last_sync_status: "never".into(),
             last_sync_error: None,
             last_sync_added: 0,
+            sync_checkpoint: None,
             ingest_token: None,
             created_at: chrono::Utc::now(),
         }
@@ -389,6 +398,8 @@ pub struct SourceView {
     pub last_sync_status: String,
     pub last_sync_error: Option<String>,
     pub last_sync_added: i32,
+    /// 工单来源读到了哪里（ADR 0072）。见 [`Source::sync_checkpoint`]
+    pub sync_checkpoint: Option<DateTime<Utc>>,
     pub doc_count: i64,
     /// 已标记"不在来源中"的文档数（url 全集对账 / custom 墓碑产生）
     pub missing_count: i64,
@@ -479,15 +490,18 @@ pub struct ChunkView {
     pub filename: String,
 }
 
-/// 分块带上它来自哪个来源。`external_id` 只有推送来源（api / statements）才有：
-/// 推送方给的那个 id，去掉库里加的 `{kind}:` 前缀，好让它拿回去对自己的记录（#1271）
+/// 分块带上它来自哪个来源，连同来源的 kind 和文档的 `external_key`：推送来源的
+/// `external_id` 由这两样反推（`sources_routes::pushed_identity`，#1271）
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
 pub struct SourcedChunk {
     #[serde(flatten)]
     #[sqlx(flatten)]
     pub chunk: ChunkView,
     pub source_id: Option<Uuid>,
-    pub external_id: Option<String>,
+    #[serde(skip)]
+    pub source_kind: Option<String>,
+    #[serde(skip)]
+    pub external_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
@@ -1132,10 +1146,12 @@ pub struct ConflictView {
     pub old_subject: String,
     pub old_object: Option<String>,
     pub old_valid_from: Option<DateTime<Utc>>,
+    pub old_valid_from_precision: Option<String>,
     pub new_fact_id: Uuid,
     pub new_subject: String,
     pub new_object: Option<String>,
     pub new_valid_from: Option<DateTime<Utc>>,
+    pub new_valid_from_precision: Option<String>,
     pub new_confidence: f32,
 }
 
