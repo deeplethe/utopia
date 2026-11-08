@@ -81,10 +81,39 @@ $ utopia restore --from <PATH> [flags]
   --from <PATH>              # archive to restore from (required)
   --target-data-dir <PATH>   # override the data_dir path
   --pg-restore <PATH>        # path to pg_restore binary
-  --dry-run                  # print the plan, don't write anything
-  --force                    # allow restore into a non-empty database
+  --dry-run                  # validate and print the plan; don't change targets
+  --force                    # allow overwriting a non-empty database or data dir
   --yes                      # skip the "are you sure?" prompt
 ```
+
+Before changing either target, restore checks required archive components,
+checksums, version, target path types and overwrite permission. Declared data
+must exist in the archive. `--force` is required for a database containing user
+objects (even empty tables, schemas, functions or types), and for a non-empty
+data directory when the archive includes data. `--yes` only skips confirmation.
+`--dry-run` uses the same preflight, including a read-only database check; it
+extracts temporary staging files in the current working directory but never
+restores the database or writes the target data directory. After confirmation
+and data preparation, restore repeats component, target-path and overwrite
+checks immediately before running `pg_restore`.
+
+Database-only archives leave the data directory untouched. Otherwise, data is
+prepared separately and replaces the old directory after `pg_restore` succeeds;
+files and keys are never merged with the old directory. A database restore
+failure preserves the old files. With `--force`, `pg_restore --clean --if-exists`
+replaces objects in the archive without removing unrelated database objects.
+Every restore uses `--single-transaction --exit-on-error`: a SQL execution error
+rolls back the database restore instead of leaving partial SQL changes.
+
+Stop all writers and retain a backup of both targets before restoring. Preflight
+does not prevent concurrent changes or later permission and disk failures.
+Database and filesystem restoration are **not atomic**: the database may be
+committed before a later directory installation fails. Failed installation
+attempts to put the old directory back; a failed rollback reports its retained
+location. After an interruption, also check the target's parent for
+`.utopia-restore-data-*/previous`. Keep the service stopped, resolve the error,
+and retry the archive with `--force`, or restore both targets from the previous
+backup. Moving old files back alone does not undo database changes.
 
 Both halves are implemented. `backup` landed first, and `restore`
 followed in the same crate, for two reasons worth keeping on the record:
@@ -150,15 +179,18 @@ binary first, the image second.
 
 - No docker image change (see Open question #3).
 - No `UTOPIA_BACKUP_DIR` config (see Open question #5).
-- No automatic migration of older manifests — `restore` will only
-  read `schema_version == current`.
+- No automatic migration of older manifests — older versions are accepted
+  with a warning; newer versions are refused.
 - **The sealing key is left out of the archive by default.** The dump carries
   credentials sealed with `data/secret.key`, and an archive is the artifact that
   gets copied between hosts and handed to whoever runs the restore, so shipping
   both halves in one file is not an unencrypted archive — it is no sealing at
-  all. `--include-secret-key` puts it in on purpose, the manifest records
-  whether it is there, and a restore without it says so rather than letting the
-  server fail to open its own credentials later.
+  all. `--include-secret-key` opts in to copying an existing key file. The
+  manifest records that flag even when an environment-key deployment has no
+  key file; restore remains compatible with those archives. When replacing
+  data, an absent key is never taken from the old directory: restore warns to
+  set `UTOPIA_SECRET_KEY` to the original key, or re-enter sealed credentials
+  after starting the server.
 - No encryption-at-rest. Out of scope; the operator's filesystem
   encryption (LUKS, EBS encryption, etc.) is the right layer.
 - No streaming upload to S3. Out of scope; the operator can pipe
@@ -166,33 +198,25 @@ binary first, the image second.
 
 ## Test plan
 
-8 unit tests, all pure (no live DB, no Docker):
+Unit tests cover parsing, manifests, versions, checksums and key-copy policy.
+The CLI integration suite runs in `cargo test --workspace`: a recording
+`pg_restore` double checks preflight ordering, post-confirmation validation,
+overwrite guards, replacement, rollback, dry runs and database-only archives.
+Real `pg_dump`/`pg_restore` tests exercise database restoration and SQL rollback
+using disposable test databases.
+CI provides PostgreSQL 16 clients; the double also needs `rustc`, and
+archive operations need `tar`.
 
-1. `parses_backup_minimal` — `utopia backup --dry-run` produces a
-   `BackupArgs` with all defaults.
-2. `parses_backup_full` — every flag set, every field populated.
-3. `parses_restore_requires_from` — `--from` is mandatory.
-4. `parses_restore_full` — every flag set, every field populated.
-5. `rejects_unknown_subcommand` — `utopia frobnicate` fails clearly.
-6. `redact_url_host_keeps_userinfo_at_host` — `postgres://u:***@h/db`
-   stays redacted on round-trip.
-7. `redact_url_host_handles_no_at` — `postgres://h/db` redacts
-   nothing (no userinfo).
-8. `hex_encode_known_value` — `hex_encode(&[0xde, 0xad]) == "dead"`.
+Tests use `utopia_store::test_db::url()` and create uniquely named databases on
+that test cluster; they never modify the guard database's contents. Use only a
+dedicated test cluster with `CREATEDB` and catalog-fixture privileges, never a
+business database. Without a URL, tests skip unless `UTOPIA_TEST_REQUIRE_DB=1`
+requires them to run, as in CI.
 
-Live integration (smoke test, not part of CI):
-
+```bash
+UTOPIA_DATABASE_URL=postgres://test_role:test_password@localhost:1543/test_admin \
+UTOPIA_TEST_REQUIRE_DB=1 cargo test -p utopia-cli
 ```
-$ createdb utopia_test_restore
-$ UTOPIA_DATABASE_URL=postgres://utopia:utopia@localhost:1543/utopia_test \
-    utopia backup --output /tmp/utopia.tar.gz --include-data-dir
-$ dropdb utopia_test_restore && createdb utopia_test_restore
-$ UTOPIA_DATABASE_URL=postgres://utopia:utopia@localhost:1543/utopia_test \
-    utopia restore --from /tmp/utopia.tar.gz --yes
-```
-
-Smoke-tested manually on the maintainer's local docker-compose stack
-once the restore side lands.
 
 ## Migration concern: existing data is already there
 

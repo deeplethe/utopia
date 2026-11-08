@@ -471,6 +471,8 @@ fn scan_quantity(s: &str, strict: bool) -> Option<Quantity> {
     if s.is_empty() {
         return None;
     }
+    let negated = if strict { None } else { accounting_negative(s) };
+    let s = negated.as_deref().unwrap_or(s);
     let (body, percent) = match s.strip_suffix('%') {
         Some(b) => (b.trim_end(), true),
         None => (s, false),
@@ -557,6 +559,35 @@ fn scan_quantity(s: &str, strict: bool) -> Option<Quantity> {
         unit,
         scaled: ate_magnitude,
     })
+}
+
+/// 财报的写法：括号里的数是负数。`(1,234)` → `-1,234`，`$(1.2) billion` → `$-1.2 billion`，
+/// `(12.5%)` → `-12.5%`。括号前只许有一个货币，括号里只许是数，括号后只许是量级词、
+/// 货币或 `%`：「(1) 1,200 employees」「(2024) 500」里的括号是编号和年份，不是负号
+fn accounting_negative(s: &str) -> Option<String> {
+    let (head, rest) = s.split_once('(')?;
+    let (inner, after) = rest.split_once(')')?;
+    if !head.trim().is_empty() && currency_unit(head.trim()).is_none() {
+        return None;
+    }
+    let mut tail = after.trim();
+    tail = tail.strip_suffix('%').unwrap_or(tail).trim_end();
+    while !tail.is_empty() {
+        let (tok, next) = next_token(tail);
+        if magnitude(&tok.to_ascii_lowercase()).is_none() && currency_unit(tok).is_none() {
+            return None;
+        }
+        tail = next.trim_start();
+    }
+    let digits = inner.trim().strip_suffix('%').unwrap_or(inner.trim());
+    if !digits.starts_with(|c: char| c.is_ascii_digit())
+        || !digits
+            .chars()
+            .all(|c| c.is_ascii_digit() || matches!(c, ',' | '.'))
+    {
+        return None;
+    }
+    Some(format!("{head}-{}{after}", inner.trim()))
 }
 
 /// 读出来的一个量。`n` 已经乘上了量级词；`scaled` 记下原文写没写量级词——换算到属性
@@ -776,10 +807,15 @@ pub fn attribute_value(
     if written.is_some() && wanted.is_some() && written != wanted {
         return None;
     }
-    // 原文写了量级词，或写了和声明一样的单位（「50000000元」对「万元」），n 才是绝对量，
-    // 要除下来；光秃秃的数就是声明单位下的数。除法走一次十进制解析，同 `scan_quantity`
-    // 乘量级词的道理：先算成 f64 再除会留下 23000.000000000004
-    let n = if q.scaled || (written.is_some() && written == wanted) {
+    // 原文写了量级词，或写了和声明一样的单位（「50000000元」对「万元」、「12,000人」对
+    // 「万人」），或写了计数量词，n 才是绝对量，要除下来；光秃秃的数就是声明单位下的数。
+    // 除法走一次十进制解析，同 `scan_quantity` 乘量级词的道理：先算成 f64 再除会留下
+    // 23000.000000000004
+    let counted = q
+        .unit
+        .as_deref()
+        .is_some_and(|u| u == base || COUNTERS.iter().any(|c| c.trim() == u));
+    let n = if q.scaled || counted || (written.is_some() && written == wanted) {
         format!("{}e-{exponent}", q.n).parse().ok()?
     } else {
         q.n
@@ -1476,6 +1512,28 @@ mod tests {
         );
         assert_eq!(normalize_attr_value("text", &json!([1])), None);
     }
+
+    /// 财报表里括号里的数是负数：从前整格读不出来，这个值就丢了
+    #[test]
+    fn an_accounting_negative_is_read_as_negative() {
+        use serde_json::json;
+        let n = |s: &str| normalize_attr_value("number", &json!(s));
+        assert_eq!(n("(1,234)"), Some(json!(-1234.0)));
+        assert_eq!(n("$(1.2) billion"), Some(json!(-1200000000.0)));
+        assert_eq!(n("(12.5%)"), Some(json!(-12.5)));
+        assert_eq!(
+            attribute_value("number", Some("万元"), &json!("(350)万元")),
+            Some(json!(-350.0))
+        );
+        // 括号里不是数、括号前不是货币的，照旧读不出
+        assert_eq!(n("(see note 4)"), None);
+        assert_eq!(n("Q3 (12)"), None);
+        // 括号后面跟着别的数：括号是编号或年份，不是负号
+        assert_eq!(n("(1) 1,200 employees"), None);
+        assert_eq!(n("(2024) 500"), None);
+        // 宾语判定不跟着变：点了名的「(1984)」仍是一个东西
+        assert!(!literal_object("(1984)", true));
+    }
 }
 
 #[cfg(test)]
@@ -1551,6 +1609,22 @@ mod an_attribute_value_is_read_in_its_declared_unit {
             value("number", Some("million dollars"), "$5 billion"),
             Some(json!(5000.0))
         );
+    }
+
+    /// 数后面写了人数的词，那就是一个个数出来的人，落到「万人」上要除下来
+    #[test]
+    fn a_counted_figure_is_read_into_a_larger_unit() {
+        assert_eq!(value("number", Some("万人"), "12,000人"), Some(json!(1.2)));
+        assert_eq!(value("number", Some("万人"), "约3500名"), Some(json!(0.35)));
+        assert_eq!(
+            value("number", Some("thousand people"), "1,250 employees"),
+            Some(json!(1.25))
+        );
+        assert_eq!(
+            value("number", Some("万人"), "1400万人"),
+            Some(json!(1400.0))
+        );
+        assert_eq!(value("number", Some("万人"), "1.2"), Some(json!(1.2)));
     }
 
     /// 换不了的不换：货币对不上、读不出数的，宁缺勿脏

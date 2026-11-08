@@ -125,18 +125,40 @@ export function KbSettings() {
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // 每张卡只跟随自己的服务端字段；保存别的卡触发重取时，保留这张卡的草稿。
   useEffect(() => {
     if (kb.data) {
       setName(kb.data.name);
       setDesc(kb.data.description ?? "");
+    }
+  }, [kbId, kb.data?.name, kb.data?.description]);
+
+  useEffect(() => {
+    if (kb.data) {
       setVisibility(kb.data.visibility);
+    }
+  }, [kbId, kb.data?.visibility]);
+
+  useEffect(() => {
+    if (kb.data) {
       setMaterialize(kb.data.materialize_inferences);
       setAutoResolve(kb.data.auto_type_resolution);
       setGovernance(kb.data.governance);
       setInferMins(kb.data.inference_interval_minutes);
+    }
+  }, [
+    kbId,
+    kb.data?.materialize_inferences,
+    kb.data?.auto_type_resolution,
+    kb.data?.governance,
+    kb.data?.inference_interval_minutes,
+  ]);
+
+  useEffect(() => {
+    if (kb.data) {
       setOntoLang(kb.data.ontology_lang);
     }
-  }, [kb.data]);
+  }, [kbId, kb.data?.ontology_lang]);
 
   // 四张卡，四个保存：改名字那一下不该把下面的开关一起送上去
   const saveIdentity = useKbPatch(kbId!, setError);

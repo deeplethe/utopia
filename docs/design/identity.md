@@ -42,8 +42,9 @@ is the fallback when nothing is declared [0009, 0016 B3]. Untyped same-name enti
 [0009].
 
 **Merges are reversible on both clocks.** `entity_merges` records what moved with `created_at` and
-`reverted_at`; `revert_merge` moves facts, name facts and qualifiers back; a read `as_of` a moment
-before a merge shows two nodes [0019, 0041]. A merge is a person's action, the adjudicator's at 0.8,
+`reverted_at`; `revert_merge` moves facts, name facts and qualifiers back and takes back the evidence
+the merge copied from a duplicate onto its survivor; a read `as_of` a moment before a merge shows two
+nodes [0019, 0041, 0071]. A merge is a person's action, the adjudicator's at 0.8,
 or the governor's through its gate, and an automatic merge is held for a person when it would leave
 the graph (a functional contradiction at one moment, a derivation, a cited answer) [0027]. Retypes
 and renames are audited with before and after; a name collision on rename is a prompt to merge, not
