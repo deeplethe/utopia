@@ -527,6 +527,10 @@ pub fn router(state: AppState, cfg: &AppConfig) -> Router {
         .route("/kbs/{id}/review/{review_id}", post(review_routes::decide))
         // 对齐队列（#725）：人定签名的属性与方向、类别词的类
         .route(
+            "/kbs/{id}/review/alignment/statements/{statement_id}",
+            post(review_routes::decide_alignment_statement),
+        )
+        .route(
             "/kbs/{id}/review/alignment/phrases/{binding_id}",
             post(review_routes::decide_alignment_phrase),
         )

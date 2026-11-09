@@ -1326,7 +1326,7 @@ pub async fn correct_interval(
                             valid_from, valid_from_precision,
                             valid_to, valid_to_precision, confidence, supersedes,
                             attested_from, attested_to,
-                            from_statement_id, implied, corrected_ends, end_after_period)
+                            from_statement_id, implied, corrected_ends, end_after_period, layer, phrase)
          SELECT $1, kb_id, subject_id, predicate_id, object_id, object_value,
                 $3, $4, $5, $6, confidence, id,
                 attested_from,
@@ -1335,7 +1335,7 @@ pub async fn correct_interval(
                 CASE WHEN start_marked AND end_marked THEN 'both'
                      WHEN start_marked THEN 'start'
                      WHEN end_marked THEN 'end' END,
-                $7
+                $7, layer, phrase
          FROM (SELECT f.*,
                       c.start_changed OR COALESCE(f.corrected_ends IN ('start', 'both'), false)
                           AS start_marked,

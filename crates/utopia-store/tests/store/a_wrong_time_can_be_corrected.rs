@@ -411,3 +411,53 @@ async fn a_row_that_is_already_gone_cannot_be_corrected() -> anyhow::Result<()> 
         .await?;
     run
 }
+
+/// Correcting time must not turn open testimony into an unnamed typed edge.
+#[tokio::test]
+async fn correcting_open_statement_preserves_layer_and_phrase() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let f = seed(&pool).await?;
+    let run = async {
+        let (original, _) = utopia_store::graph::insert_open_statement(
+            &pool,
+            f.kb,
+            f.zhang,
+            "leads",
+            utopia_store::graph::FactObject::Entity(f.project),
+            Some(t("2023-01-01T00:00:00Z")),
+            1.0,
+        )
+        .await?;
+        let corrected = utopia_store::temporal::correct_interval(
+            &pool,
+            original,
+            Validity::starting(Some(t("2023-06-01T00:00:00Z")), Some("day")),
+        )
+        .await?
+        .expect("live statement can be corrected");
+        let (layer, phrase, predicate, supersedes): (
+            String,
+            Option<String>,
+            Option<Uuid>,
+            Option<Uuid>,
+        ) = sqlx::query_as("SELECT layer, phrase, predicate_id, supersedes FROM facts WHERE id=$1")
+            .bind(corrected)
+            .fetch_one(&pool)
+            .await?;
+        assert_eq!(layer, "open");
+        assert_eq!(phrase.as_deref(), Some("leads"));
+        assert_eq!(predicate, None);
+        assert_eq!(supersedes, Some(original));
+        assert!(row(&pool, original).await?.invalidated_at.is_some());
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    sqlx::query("DELETE FROM knowledge_bases WHERE id=$1")
+        .bind(f.kb)
+        .execute(&pool)
+        .await?;
+    run
+}

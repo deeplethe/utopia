@@ -1289,6 +1289,33 @@ pub async fn decide_alignment_phrase(
     let sig = utopia_store::phrase_bindings::signature_of(&state.pool, kb_id, binding_id)
         .await?
         .ok_or(utopia_core::AppError::NotFound)?;
+    decide_alignment_signature(state, user, kb_id, Some(binding_id), sig, req).await
+}
+
+/// An explicit editor decision need not wait for a model-generated queue row.
+/// The decision still applies to the statement's whole typed phrase signature.
+pub async fn decide_alignment_statement(
+    State(state): State<AppState>,
+    AuthUser(user): AuthUser,
+    Path((kb_id, statement_id)): Path<(Uuid, Uuid)>,
+    Json(req): Json<DecideAlignmentPhraseReq>,
+) -> ApiResult<(axum::http::StatusCode, Json<serde_json::Value>)> {
+    require_kb(&state, &user, kb_id, Role::Editor).await?;
+    let sig =
+        utopia_store::phrase_bindings::signature_of_statement(&state.pool, kb_id, statement_id)
+            .await?
+            .ok_or(utopia_core::AppError::NotFound)?;
+    decide_alignment_signature(state, user, kb_id, None, sig, req).await
+}
+
+async fn decide_alignment_signature(
+    state: AppState,
+    user: utopia_core::models::User,
+    kb_id: Uuid,
+    binding_id: Option<Uuid>,
+    sig: utopia_store::phrase_bindings::PhraseSignature,
+    req: DecideAlignmentPhraseReq,
+) -> ApiResult<(axum::http::StatusCode, Json<serde_json::Value>)> {
     let property = match req
         .property
         .as_deref()
@@ -1372,9 +1399,9 @@ pub async fn decide_alignment_phrase(
         user.id,
         "alignment.phrase_decided",
         "phrase_binding",
-        Some(binding_id),
+        binding_id,
         json!({ "phrase": sig.phrase, "property": req.property, "direction": direction,
-                "marks": marks, "job_id": job_id }),
+                "marks": marks, "job_id": job_id, "example_statement_ids": sig.example_statement_ids }),
     )
     .await;
     state.emit_review(kb_id);
