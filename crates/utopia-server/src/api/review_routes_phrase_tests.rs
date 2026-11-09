@@ -507,6 +507,8 @@ async fn explicit_statement_alignment_needs_no_model_queue_and_respects_scope() 
                 .bind(f.kb)
                 .fetch_one(&f.pool)
                 .await?;
+        sqlx::query("INSERT INTO facts(id,kb_id,subject_id,object_id,layer,phrase) SELECT $1,kb_id,subject_id,object_id,layer,phrase FROM facts WHERE id=$2")
+            .bind(Uuid::now_v7()).bind(statement).execute(&f.pool).await?;
         sqlx::query("DELETE FROM phrase_bindings WHERE kb_id=$1")
             .bind(f.kb)
             .execute(&f.pool)
@@ -551,6 +553,9 @@ async fn explicit_statement_alignment_needs_no_model_queue_and_respects_scope() 
         assert!(body["job_id"].is_i64());
         let bindings = phrase_bindings::bindings(&f.pool, f.kb).await?;
         assert_eq!(bindings.len(), 1);
+        let count: i32 = sqlx::query_scalar("SELECT statement_count FROM phrase_bindings WHERE kb_id=$1")
+            .bind(f.kb).fetch_one(&f.pool).await?;
+        assert_eq!(count, 2, "decision covers the whole signature");
         assert_eq!(bindings[0].decided_by, "person");
         assert_eq!(bindings[0].marks.as_deref(), Some("start"));
         utopia_store::temporal::retract(&f.pool, f.kb, statement).await?;
