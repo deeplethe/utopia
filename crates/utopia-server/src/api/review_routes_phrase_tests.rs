@@ -494,3 +494,73 @@ async fn a_held_errata_action_is_decided_by_a_person() -> anyhow::Result<()> {
     f.cleanup().await?;
     run
 }
+
+#[tokio::test]
+async fn explicit_statement_alignment_needs_no_model_queue_and_respects_scope() -> anyhow::Result<()>
+{
+    let Some(f) = Fx::new().await? else {
+        return Ok(());
+    };
+    let run = async {
+        let statement: Uuid =
+            sqlx::query_scalar("SELECT id FROM facts WHERE kb_id=$1 AND layer='open'")
+                .bind(f.kb)
+                .fetch_one(&f.pool)
+                .await?;
+        sqlx::query("DELETE FROM phrase_bindings WHERE kb_id=$1")
+            .bind(f.kb)
+            .execute(&f.pool)
+            .await?;
+        let path = format!(
+            "/api/v1/kbs/{}/review/alignment/statements/{statement}",
+            f.kb
+        );
+        let decision = json!({"property":"based_in","direction":"forward","marks":"start"});
+        assert_eq!(
+            f.call(&f.viewer, "POST", &path, Some(decision.clone()))
+                .await?
+                .0,
+            StatusCode::FORBIDDEN
+        );
+        let other = format!(
+            "/api/v1/kbs/{}/review/alignment/statements/{statement}",
+            f.other_kb
+        );
+        assert_eq!(
+            f.call(&f.editor, "POST", &other, Some(decision.clone()))
+                .await?
+                .0,
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            f.call(
+                &f.editor,
+                "POST",
+                &path,
+                Some(json!({"property":"missing","direction":"forward"}))
+            )
+            .await?
+            .0,
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        assert!(phrase_bindings::bindings(&f.pool, f.kb).await?.is_empty());
+        let (status, body) = f
+            .call(&f.editor, "POST", &path, Some(decision.clone()))
+            .await?;
+        assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+        assert!(body["job_id"].is_i64());
+        let bindings = phrase_bindings::bindings(&f.pool, f.kb).await?;
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings[0].decided_by, "person");
+        assert_eq!(bindings[0].marks.as_deref(), Some("start"));
+        utopia_store::temporal::retract(&f.pool, f.kb, statement).await?;
+        assert_eq!(
+            f.call(&f.editor, "POST", &path, Some(decision)).await?.0,
+            StatusCode::NOT_FOUND
+        );
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    f.cleanup().await?;
+    run
+}

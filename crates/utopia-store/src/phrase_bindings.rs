@@ -139,6 +139,35 @@ pub async fn signature_keys_of_document(
         .await?)
 }
 
+/// Read the signature of one live open statement before an alignment row exists.
+/// This lets an editor provide an explicit decision without first asking a model.
+pub async fn signature_of_statement(
+    pool: &PgPool,
+    kb_id: Uuid,
+    id: Uuid,
+) -> AppResult<Option<PhraseSignature>> {
+    let sql = format!(
+        "SELECT {phrase} AS phrase, s.type_id AS subject_type_id,
+                st.key AS subject_type_key, o.type_id AS object_type_id,
+                ot.key AS object_type_key, (f.object_id IS NULL) AS object_is_value,
+                1::bigint AS count, '{{}}'::text[] AS examples, '{{}}'::text[] AS quotes,
+                ARRAY[f.id] AS example_statement_ids
+           FROM facts f
+           JOIN entities s ON s.id = f.subject_id
+           LEFT JOIN entities o ON o.id = f.object_id
+           LEFT JOIN entity_types st ON st.id = s.type_id
+           LEFT JOIN entity_types ot ON ot.id = o.type_id
+          WHERE f.kb_id = $1 AND f.id = $2 AND f.layer = 'open'
+            AND f.invalidated_at IS NULL AND btrim(f.phrase) <> ''",
+        phrase = phrase_sql("f.phrase")
+    );
+    Ok(sqlx::query_as(&sql)
+        .bind(kb_id)
+        .bind(id)
+        .fetch_optional(pool)
+        .await?)
+}
+
 /// 按 id 取一条绑定的签名（人在队列里定它时用）：短语、两端的类、宾语是不是字面值，
 /// 例句照判定时记下的，陈述数同。
 pub async fn signature_of(
