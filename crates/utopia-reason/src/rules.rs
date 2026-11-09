@@ -1184,9 +1184,12 @@ mod tests {
         let spans = HashMap::from([(id(1), (None, None))]);
         let (hits, _) = evaluate(std::slice::from_ref(&rule), &facts, &spans, &[]);
         assert_eq!(hits.len(), 1);
-        // 集合里写成 `[3.0]` 的（`parse_operand` 存成 "3.0"），读数 3 也是其中之一
+        // `parse_operand` 把 `[3.0]` 存成 "3.0"：读数 3.0 仍在其中，整数 3 也在其中
         let mut rule = rule;
         rule.conditions[0].operand = Operand::Set(vec!["3.0".into()]);
+        let facts = vec![fact(1, 50, 10, json!(3.0))];
+        let (hits, _) = evaluate(std::slice::from_ref(&rule), &facts, &spans, &[]);
+        assert_eq!(hits.len(), 1);
         let facts = vec![fact(1, 50, 10, json!(3))];
         let (hits, _) = evaluate(std::slice::from_ref(&rule), &facts, &spans, &[]);
         assert_eq!(hits.len(), 1);
