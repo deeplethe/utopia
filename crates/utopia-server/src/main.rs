@@ -626,7 +626,7 @@ async fn dispatch(st: &state::AppState, job: &utopia_store::jobs::Job) -> anyhow
                 .and_then(|v| v.as_str())
                 .and_then(|s| s.parse().ok())
                 .ok_or_else(|| anyhow::anyhow!("payload 缺少 source_id"))?;
-            ingest_sources::sync_source(st, source_id).await
+            ingest_sources::sync_source(st, source_id).await.map(|_| ())
         }
         "hydrate_rss_entry" => {
             let source_id: Uuid = job

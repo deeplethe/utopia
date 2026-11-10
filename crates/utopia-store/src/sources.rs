@@ -548,7 +548,40 @@ pub async fn sync_checkpoint(pool: &PgPool, source_id: Uuid) -> AppResult<Option
         .ok_or(AppError::NotFound)
 }
 
+/// 记成 failed，**但不发告警**。
+///
+/// 一轮触顶不是连接坏了：它没读完，而下一轮会从游标那儿接着读（0072）。
+/// `finish_sync` 把「记状态」和「发告警」绑在一起，于是每触顶一次就发一个
+/// source.sync_failed 告警——同一个来源天天报同一件事（#1212）。
+pub async fn finish_sync_quiet(
+    pool: &PgPool,
+    id: Uuid,
+    error: &str,
+    added: i32,
+) -> AppResult<bool> {
+    let row: Option<(Uuid, String)> = sqlx::query_as(
+        "UPDATE sources SET last_sync_status = 'failed', last_sync_error = $2,
+                last_sync_added = $3, last_sync_at = now()
+         WHERE id = $1 RETURNING kb_id, name",
+    )
+    .bind(id)
+    .bind(error)
+    .bind(added)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.is_some())
+}
+
 /// 完整时间戳组的进度与成功记录一起提交，任一写入失败都保留旧游标。
+///
+/// **两类来源用同一列，取的值不同**：
+///
+/// - 工单来源（GitHub / Jira）：游标是**消费到的更新时刻**，且那一刻的整组都读完了
+///   （ADR 0072）。下一轮的下界就是它。
+/// - custom：端点一次把整个窗口给全了，游标是**这一轮开始的时刻**——推进到它而不是
+///   推进到现在，运行期间到达的改动才留在下一轮的窗口里（ADR 0072 的 Custom 一节）。
+///
+/// 两者对读端点都是同一句话：**下一轮的下界**。
 pub async fn finish_timestamp_sync(
     pool: &PgPool,
     run_id: Uuid,
@@ -567,7 +600,7 @@ pub async fn finish_timestamp_sync(
     let source = sqlx::query(
         "UPDATE sources SET sync_checkpoint = $3, last_sync_status = 'ok',
                 last_sync_error = NULL, last_sync_added = $4, last_sync_at = now()
-         WHERE id = $1 AND kind IN ('github_issues', 'jira_issues')
+         WHERE id = $1 AND kind IN ('github_issues', 'jira_issues', 'custom')
            AND sync_checkpoint IS NOT DISTINCT FROM $2::timestamptz",
     )
     .bind(source_id)
@@ -607,20 +640,6 @@ pub async fn finish_timestamp_sync(
     .await?;
     tx.commit().await?;
     Ok(())
-}
-
-/// 调度时钟包含失败尝试，不能作增量游标。回到上次成功运行的开始，
-/// 让那次拉取期间发生的更新也能在下一轮读到；没有成功记录就重新全量读取。
-pub async fn last_successful_sync_start(
-    pool: &PgPool,
-    source_id: Uuid,
-) -> AppResult<Option<DateTime<Utc>>> {
-    Ok(sqlx::query_scalar(
-        "SELECT max(started_at) FROM source_sync_runs WHERE source_id = $1 AND status = 'ok'",
-    )
-    .bind(source_id)
-    .fetch_one(pool)
-    .await?)
 }
 
 pub async fn start_run(pool: &PgPool, source_id: Uuid) -> AppResult<Uuid> {

@@ -54,6 +54,16 @@ async fn retry_reads_the_uncovered_window(
             .bind(started + chrono::Duration::hours(1))
             .execute(&pool)
             .await?;
+        // **源自己的游标落在那一刻**（ADR 0072）。
+        //
+        // 从前下界是从跑次推出来的——上一条 `ok` 的 `started_at`。那有两个问题：
+        // 它证不了那个窗口被读完（触顶那一轮也记过 `ok`），而且它没法清空，所以
+        // 老来源没法一次性从头再来一遍（0072 的 Recovery 一节）。
+        sqlx::query("UPDATE sources SET sync_checkpoint=$2 WHERE id=$1")
+            .bind(source)
+            .bind(started)
+            .execute(&pool)
+            .await?;
         utopia_store::sources::touch_sync_time(&pool, source, started + chrono::Duration::hours(1))
             .await?;
     }
@@ -100,7 +110,7 @@ async fn retry_reads_the_uncovered_window(
             let last = last.expect("没有带下界：增量拉取整个没了");
             assert!(
                 (last - started).num_seconds().abs() <= 1,
-                "下界应当是上一次成功那轮的开始 {started}，实得 {last}"
+                "下界应当是源自己的游标（上一轮成功那轮的开始）{started}，实得 {last}"
             );
             assert!(last < changed, "下界晚于那次改动，漏掉的窗口又被跳过了");
         } else {
@@ -215,7 +225,11 @@ async fn a_truncated_custom_batch_resumes_on_the_next_run() -> anyhow::Result<()
 
     let result = async {
         // 第一轮：201 > 200，触顶
-        sync_source(&state, source).await?;
+        let stats = sync_source(&state, source).await?;
+        assert_eq!(
+            stats.discovered, 201,
+            "整条响应都读了，不是只读到预算那一段"
+        );
         let first = utopia_store::sources::get(&pool, source).await?;
         assert_eq!(
             first.last_sync_status, "failed",
@@ -239,7 +253,11 @@ async fn a_truncated_custom_batch_resumes_on_the_next_run() -> anyhow::Result<()
         assert_eq!(imported, 200, "第一轮装得下 200 条，第 201 条得等下一轮");
 
         // 第二轮：同一批原样回来，前 200 条是 Unchanged 不占预算，第 201 条这次够得着
-        sync_source(&state, source).await?;
+        let stats = sync_source(&state, source).await?;
+        assert_eq!(
+            stats.discovered, 201,
+            "整条响应都读了，不是只读到预算那一段"
+        );
         let imported: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM documents WHERE source_id=$1 AND deleted_at IS NULL",
         )
@@ -251,6 +269,179 @@ async fn a_truncated_custom_batch_resumes_on_the_next_run() -> anyhow::Result<()
         assert_eq!(
             last.last_sync_status, "ok",
             "这一轮走完了，可以记 ok 让游标前进"
+        );
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+
+    sqlx::query("DELETE FROM knowledge_bases WHERE id=$1")
+        .bind(kb)
+        .execute(&pool)
+        .await?;
+    sqlx::query("DELETE FROM organizations WHERE id=$1")
+        .bind(org)
+        .execute(&pool)
+        .await?;
+    drop(state);
+    let _ = std::fs::remove_dir_all(dir);
+    result
+}
+
+/// **450 条分三轮读完**（0072 的验收项）。
+///
+/// 预算 200，而没变的条目不占预算：所以第二轮能把前 200 条当没变的前缀让过去，
+/// 第三轮把剩下的 50 条收掉。每一轮都读了整条响应——`discovered` 一直是 450，
+/// 不是预算那一段。
+#[tokio::test]
+async fn a_capped_custom_batch_is_read_whole_over_three_rounds() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = sqlx::PgPool::connect(&url).await?;
+    let (org, ws, kb, source) = (
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+    );
+    sqlx::query("INSERT INTO organizations(id,name) VALUES($1,'three-round-test')")
+        .bind(org)
+        .execute(&pool)
+        .await?;
+    sqlx::query("INSERT INTO workspaces(id,org_id,name) VALUES($1,$2,'three-round-test')")
+        .bind(ws)
+        .bind(org)
+        .execute(&pool)
+        .await?;
+    sqlx::query(
+        "INSERT INTO knowledge_bases(id,workspace_id,name) VALUES($1,$2,'three-round-test')",
+    )
+    .bind(kb)
+    .bind(ws)
+    .execute(&pool)
+    .await?;
+
+    // **来源先插，`start_run` 后跑**：source_sync_runs.source_id 上有外键，
+    // 反过来插会以 `source_sync_runs_source_id_fkey` 失败。
+    let server = MockServer::start().await;
+    sqlx::query(
+        "INSERT INTO sources(id,kb_id,kind,name,config) VALUES($1,$2,'custom','fixture',$3)",
+    )
+    .bind(source)
+    .bind(kb)
+    .bind(serde_json::json!({ "endpoint": server.uri() }))
+    .execute(&pool)
+    .await?;
+
+    // 450 条，全部是新的：每一轮都会重新拿到它们
+    let all: Vec<serde_json::Value> = (0..450u32)
+        .map(|i| {
+            serde_json::json!({
+                "id": format!("item-{i}"),
+                "title": format!("Item {i}"),
+                "content": format!("Body {i}"),
+            })
+        })
+        .collect();
+    let served = all.clone();
+    Mock::given(method("GET"))
+        .respond_with(move |_req: &Request| {
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({ "items": served }))
+        })
+        .mount(&server)
+        .await;
+
+    let dir = std::env::temp_dir().join(format!("utopia-three-round-{source}"));
+    let cfg = utopia_core::config::AppConfig {
+        data_dir: dir.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let search = Arc::new(utopia_search::SearchIndex::open(&dir.join("search"))?);
+    let state = crate::state::AppState::new(pool.clone(), &cfg, search, "test-only".into());
+
+    let result = async {
+        // 第一轮：装下 200 条，触顶，游标留在原处
+        let stats = sync_source(&state, source).await?;
+        assert_eq!(
+            stats.discovered, 450,
+            "整条响应都读了，不是只读到预算那一段"
+        );
+        let imported: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM documents WHERE source_id=$1 AND deleted_at IS NULL",
+        )
+        .bind(source)
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(imported, 200, "第一轮装得下 200 条，剩下的留给下一轮");
+        let first = utopia_store::sources::get(&pool, source).await?;
+        assert_eq!(
+            first.last_sync_status, "failed",
+            "触顶的那一轮不能记为 'ok'，否则游标会越过还没读到的条目"
+        );
+        assert!(
+            utopia_store::sources::sync_checkpoint(&pool, source)
+                .await?
+                .is_none(),
+            "触顶那一轮游标留在原处，下一轮从那儿接着读"
+        );
+        // 触顶不是连接坏了：这一轮记成 `failed`，但**不发** source.sync_failed 告警
+        // （同一件事天天报，#1212）。
+        let alerts: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM alerts WHERE subject_id=$1 AND kind='source.sync_failed'",
+        )
+        .bind(source)
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(alerts, 0, "触顶的那一轮不该发同步失败告警");
+
+        // 第二轮：前 200 条原样回来（Unchanged，不占预算），再装下 200 条，又触顶
+        let stats = sync_source(&state, source).await?;
+        assert_eq!(
+            stats.discovered, 450,
+            "整条响应都读了，不是只读到预算那一段"
+        );
+        let imported: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM documents WHERE source_id=$1 AND deleted_at IS NULL",
+        )
+        .bind(source)
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(imported, 400, "第二轮之后 400 条都在库里了");
+        let second = utopia_store::sources::get(&pool, source).await?;
+        assert_eq!(
+            second.last_sync_status, "failed",
+            "第二轮又触顶，游标仍然不前进"
+        );
+        assert!(
+            utopia_store::sources::sync_checkpoint(&pool, source)
+                .await?
+                .is_none(),
+            "触顶那一轮游标留在原处，下一轮从那儿接着读"
+        );
+
+        // 第三轮：前 400 条原样回来，把剩下的 50 条收掉，这一轮走完了
+        let stats = sync_source(&state, source).await?;
+        assert_eq!(
+            stats.discovered, 450,
+            "整条响应都读了，不是只读到预算那一段"
+        );
+        let imported: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM documents WHERE source_id=$1 AND deleted_at IS NULL",
+        )
+        .bind(source)
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(imported, 450, "第三轮之后 450 条都在库里了");
+        let third = utopia_store::sources::get(&pool, source).await?;
+        assert_eq!(
+            third.last_sync_status, "ok",
+            "这一轮走完了，可以记 ok 让游标前进"
+        );
+        assert!(
+            utopia_store::sources::sync_checkpoint(&pool, source)
+                .await?
+                .is_some(),
+            "走完的那一轮把游标推进了"
         );
         Ok::<_, anyhow::Error>(())
     }

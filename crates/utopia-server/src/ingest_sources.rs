@@ -77,21 +77,31 @@ impl SyncStats {
     }
 }
 
-pub async fn sync_source(state: &AppState, source_id: Uuid) -> anyhow::Result<()> {
+pub async fn sync_source(state: &AppState, source_id: Uuid) -> anyhow::Result<SyncStats> {
     let source = utopia_store::sources::get(&state.pool, source_id).await?;
     let kind = SourceKind::parse(&source.kind);
-    // #1212 / ADR 0072：下界取自**上一条完整读完的那一轮**的开始。`last_successful_sync_start`
-    // 只认 `status = 'ok'`，而触顶那一轮我们写成 `failed`，所以游标自然留在触顶之前
-    // 那一轮，下一轮用同一条 since 重发。
+    // #1212 / ADR 0072：下界取自**这个来源自己的游标**。
+    //
+    // - 工单来源（GitHub / Jira）：游标是消费到的更新时刻，且那一刻的整组都读完了。
+    // - custom：游标是**这一轮整条响应走完时**推进到的时刻（见下面 `round_started_at`）。
+    //
+    // **游标是源自己的一列，不是从跑次推出来的。** 早先的下界取自「上一条 `ok` 跑次的
+    // `started_at`」——那说的是「上一轮什么时候开始」，不是「上一轮读到哪」；一轮没读完
+    // 的时候，两者不是一回事，而下界一旦越过没读到的条目，之后每一轮都够不着它们。
+    //
+    // 游标存在源上，于是它能被**一次性清空**（ADR 0072 的 Recovery 一节）：老来源的
+    // 游标是 NULL，它们从头再来一遍，靠文档、版本与处理任务的去重，未变的内容不会
+    // 变成新版本。
     let since = match kind {
-        Some(SourceKind::Custom) => {
-            utopia_store::sources::last_successful_sync_start(&state.pool, source_id).await?
-        }
-        Some(SourceKind::GithubIssues | SourceKind::JiraIssues) => {
+        Some(SourceKind::Custom | SourceKind::GithubIssues | SourceKind::JiraIssues) => {
             utopia_store::sources::sync_checkpoint(&state.pool, source_id).await?
         }
         _ => None,
     };
+    // **这一轮开始的时刻。** custom 的游标推进到这里，而不是推进到「现在」：
+    // 运行期间到达的改动必须留在下一轮的窗口里（ADR 0072 的 Custom 一节
+    // 「preserving the existing protection for changes during the run」）。
+    let round_started_at = Utc::now();
     utopia_store::sources::mark_running(&state.pool, source_id).await?;
     let run_id = utopia_store::sources::start_run(&state.pool, source_id).await?;
     state.emit_source(source.kb_id);
@@ -157,10 +167,27 @@ pub async fn sync_source(state: &AppState, source_id: Uuid) -> anyhow::Result<()
                 discovered = stats.discovered,
                 "来源同步未读完，游标不前进"
             );
-            return Ok(());
+            return Ok(*stats);
         }
     }
     let outcome = match outcome {
+        // custom：这一轮把**整条响应**都走完了，游标推进到**这一轮开始的时刻**。
+        // 不是推进到现在——运行期间到达的改动还在下一轮的窗口里，它们还没被走过。
+        // 触顶那一轮（`incomplete`）走不到这里：游标留在原处，下一轮从那儿接着读。
+        Ok(stats) if matches!(kind, Some(SourceKind::Custom)) => {
+            utopia_store::sources::finish_timestamp_sync(
+                &state.pool,
+                run_id,
+                source_id,
+                since,
+                Some(round_started_at),
+                stats.created as i32,
+                stats.updated as i32,
+            )
+            .await
+            .map(|()| stats)
+            .map_err(anyhow::Error::from)
+        }
         Ok(stats)
             if matches!(
                 kind,
@@ -186,7 +213,7 @@ pub async fn sync_source(state: &AppState, source_id: Uuid) -> anyhow::Result<()
         Ok(stats) => {
             if !matches!(
                 kind,
-                Some(SourceKind::GithubIssues | SourceKind::JiraIssues)
+                Some(SourceKind::GithubIssues | SourceKind::JiraIssues | SourceKind::Custom)
             ) {
                 utopia_store::sources::finish_run(
                     &state.pool,
@@ -216,7 +243,7 @@ pub async fn sync_source(state: &AppState, source_id: Uuid) -> anyhow::Result<()
                 content_terminal = stats.content_terminal,
                 "来源同步完成"
             );
-            Ok(())
+            Ok(stats)
         }
         Err(e) => {
             utopia_store::sources::finish_run(

@@ -402,10 +402,12 @@ async fn a_sync_stops_once_the_connected_person_is_no_longer_an_editor() -> anyh
     let reason = |e: anyhow::Error| format!("{e:#}");
     let while_editor = crate::ingest_sources::sync_source(&fx.state, fx.source)
         .await
+        .map(|_| ())
         .map_err(reason);
     fx.demote_connector().await?;
     let after = crate::ingest_sources::sync_source(&fx.state, fx.source)
         .await
+        .map(|_| ())
         .map_err(reason);
     let says_reconnect = |r: &Result<(), String>| {
         r.as_ref()
