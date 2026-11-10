@@ -1,13 +1,12 @@
-//! An old version keeps no vector: a chunk superseded longer ago than the cutoff
-//! loses its vector, and its row too when no evidence, pending fact, time mention or
-//! statement qualifier refers to it. A chunk superseded more recently, a live one, and
-//! one evidence still points at, keep what they have. So does every chunk of a deleted
-//! document, which a restore makes live again.
+//! An old version keeps no vector: a chunk superseded longer ago than the window loses
+//! its vector and keeps its row, cited or not. A chunk superseded more recently and a
+//! live one keep both. So does every chunk of a deleted document, which a restore makes
+//! live again.
 
 use chrono::{Duration, Utc};
 use pgvector::Vector;
 use sqlx::PgPool;
-use utopia_store::retention::{prune_superseded, Pruned};
+use utopia_store::retention::prune_superseded;
 use uuid::Uuid;
 
 #[derive(Debug, PartialEq, sqlx::FromRow)]
@@ -26,13 +25,13 @@ async fn rows(pool: &PgPool, kb: Uuid) -> anyhow::Result<Vec<Row>> {
 }
 
 #[tokio::test]
-async fn a_chunk_superseded_ten_days_ago_is_gone_and_a_cited_or_qualified_one_keeps_only_its_text(
+async fn a_chunk_superseded_ten_days_ago_keeps_its_row_and_loses_its_vector_in_a_seven_day_window(
 ) -> anyhow::Result<()> {
     let Some(url) = utopia_store::test_db::url() else {
         return Ok(());
     };
     let pool = PgPool::connect(&url).await?;
-    let [org, ws, kb, class, ada, bea, fact, doc, live, recent, old, cited, qualified] =
+    let [org, ws, kb, class, ada, bea, fact, doc, live, recent, old, cited] =
         std::array::from_fn(|_| Uuid::now_v7());
     let now = Utc::now();
     let run = async {
@@ -51,10 +50,9 @@ async fn a_chunk_superseded_ten_days_ago_is_gone_and_a_cited_or_qualified_one_ke
         .await?;
         for (id, seq, superseded_at) in [
             (live, 0, None),
-            (recent, 1, Some(now - Duration::days(2))),
+            (recent, 1, Some(now - Duration::hours(2))),
             (old, 2, Some(now - Duration::days(10))),
             (cited, 3, Some(now - Duration::days(10))),
-            (qualified, 4, Some(now - Duration::days(10))),
         ] {
             sqlx::query(
                 "INSERT INTO chunks (id, kb_id, document_id, seq, text, embedding, superseded_at)
@@ -76,20 +74,8 @@ async fn a_chunk_superseded_ten_days_ago_is_gone_and_a_cited_or_qualified_one_ke
             .bind(doc)
             .execute(&pool)
             .await?;
-        sqlx::query("INSERT INTO statement_qualifiers (fact_id, role, value, chunk_id) VALUES ($1, 'since', '\"2020\"', $2)")
-            .bind(fact)
-            .bind(qualified)
-            .execute(&pool)
-            .await?;
 
-        let pruned = prune_superseded(&pool, kb, Duration::days(7)).await?;
-        assert_eq!(
-            pruned,
-            Pruned {
-                vectors_cleared: 3,
-                chunks_deleted: 1
-            }
-        );
+        assert_eq!(prune_superseded(&pool, kb, 7).await?, 2);
         assert_eq!(
             rows(&pool, kb).await?,
             vec![
@@ -102,11 +88,11 @@ async fn a_chunk_superseded_ten_days_ago_is_gone_and_a_cited_or_qualified_one_ke
                     has_vector: true
                 },
                 Row {
-                    id: cited,
+                    id: old,
                     has_vector: false
                 },
                 Row {
-                    id: qualified,
+                    id: cited,
                     has_vector: false
                 },
             ]
@@ -119,9 +105,14 @@ async fn a_chunk_superseded_ten_days_ago_is_gone_and_a_cited_or_qualified_one_ke
         assert_eq!(evidence.0, 1, "the evidence survives with its chunk");
 
         assert_eq!(
-            prune_superseded(&pool, kb, Duration::days(7)).await?,
-            Pruned::default(),
+            prune_superseded(&pool, kb, 7).await?,
+            0,
             "a second pass finds nothing"
+        );
+        assert_eq!(
+            prune_superseded(&pool, kb, 0).await?,
+            0,
+            "a window of 0 days is 1 day, so the chunk superseded 2 hours ago keeps its vector"
         );
         Ok::<_, anyhow::Error>(())
     }
@@ -173,8 +164,8 @@ async fn a_document_restored_after_ten_days_in_the_trash_still_has_its_vector() 
             .await?;
 
         assert_eq!(
-            prune_superseded(&pool, kb, Duration::days(7)).await?,
-            Pruned::default(),
+            prune_superseded(&pool, kb, 7).await?,
+            0,
             "a deleted document's chunks are left whole"
         );
         utopia_store::documents::restore(&pool, kb, doc).await?;
