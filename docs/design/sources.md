@@ -44,8 +44,13 @@ fail immediately. Later ordinary job retries and source schedules do not preserv
 the provider's `Retry-After` deadline. Jira Server and Data Center require the
 search `total` to detect premature pagination endings; Jira Cloud, which removed
 that search and gives no total, pages `search/jql` by token and requires a token
-on every page before `isLast` [#1453]. Custom batch progression is separate work in #1397
-[0072, revision 2026-10-23]. The source API carries the checkpoint on the
+on every page before `isLast` [#1453]. Custom reads the whole response and
+charges only the changed items against its 200-item budget, so a retry lets the
+unchanged prefix through; a capped round is recorded as failed **without** a
+sync-failed alert, because the next round resumes from the same place. Custom's
+bound is the source's own checkpoint, advanced to the start of the last round
+that read the whole response, and a capped round leaves it where it was
+[#1212, #1397, 0072]. The source API carries the checkpoint on the
 list and on the create/update responses, so an operator can see where a round
 stopped rather than only that it succeeded; a kind that does not read by
 timestamp has NULL there, which says "no checkpoint" rather than a time of zero

@@ -115,7 +115,7 @@ By domain; the domains are the files of [../design/](../design/README.md). **Sta
 | 0052 | [Document content is a read contract over the retained ledger](0052-document-content-is-a-read-contract.md) | Proposed |  |
 | 0054 | [A source may push statements in the open contract](0054-a-source-may-push-statements-in-the-open-contract.md) | Implemented |  |
 | 0065 | [The OCR reader chooses its provider](0065-readers-choose-their-provider.md) | Implemented |  |
-| 0072 | [A source checkpoint ends at a timestamp boundary](0072-a-source-checkpoint-ends-at-a-timestamp-boundary.md) | In progress |  |
+| 0072 | [A source checkpoint ends at a timestamp boundary](0072-a-source-checkpoint-ends-at-a-timestamp-boundary.md) | Implemented |  |
 | 0074 | [A Google Drive source is connected by a person](0074-a-google-drive-source-is-connected-by-a-person.md) | Implemented |  |
 | 0075 | [A ticket source says in the API where its reading stopped](0075-a-ticket-source-says-where-its-reading-stopped.md) | Implemented |  |
 
