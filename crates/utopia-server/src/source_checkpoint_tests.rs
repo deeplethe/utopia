@@ -459,3 +459,150 @@ async fn a_capped_custom_batch_is_read_whole_over_three_rounds() -> anyhow::Resu
     let _ = std::fs::remove_dir_all(dir);
     result
 }
+
+/// **端点自己记的账**：每条工单的 id、正文、它是什么时候改的。协议里没有这个
+/// 字段——这是端点自己的账，用来决定回哪几条。
+type Feed = Arc<std::sync::Mutex<Vec<(String, String, chrono::DateTime<chrono::Utc>)>>>;
+
+/// **运行期间到达的改动，下一轮还够得着**（ADR 0072 的 Custom 一节：
+/// "preserving the existing protection for changes during the run"）。
+///
+/// 游标推进到**这一轮开始的时刻**，不是推进到现在：端点在第一轮被问的时候改了
+/// 一条工单（更新时刻在那一轮开始之后），第二轮的下界必须还在那条改动之前，
+/// 否则它就永远读不到了。
+///
+/// 这条断言有牙：把游标改成「推进到现在」，端点就会因为下界太晚而什么都不给，
+/// 这条工单也就永远进不来。
+#[tokio::test]
+async fn an_item_changed_during_a_round_is_still_read_by_the_next_one() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = sqlx::PgPool::connect(&url).await?;
+    let (org, ws, kb, source) = (
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+    );
+    sqlx::query("INSERT INTO organizations(id,name) VALUES($1,'concurrent-test')")
+        .bind(org)
+        .execute(&pool)
+        .await?;
+    sqlx::query("INSERT INTO workspaces(id,org_id,name) VALUES($1,$2,'concurrent-test')")
+        .bind(ws)
+        .bind(org)
+        .execute(&pool)
+        .await?;
+    sqlx::query(
+        "INSERT INTO knowledge_bases(id,workspace_id,name) VALUES($1,$2,'concurrent-test')",
+    )
+    .bind(kb)
+    .bind(ws)
+    .execute(&pool)
+    .await?;
+    let server = MockServer::start().await;
+    sqlx::query(
+        "INSERT INTO sources(id,kb_id,kind,name,config) VALUES($1,$2,'custom','fixture',$3)",
+    )
+    .bind(source)
+    .bind(kb)
+    .bind(serde_json::json!({ "endpoint": server.uri() }))
+    .execute(&pool)
+    .await?;
+
+    // **端点自己记着每条工单是什么时候改的**（协议里没有这个字段，是端点自己的账）。
+    // 第一次被问的时候，它顺手把一条改了、又添了一条——改动时刻落在这一轮开始之后。
+    let feed: Feed = Arc::new(std::sync::Mutex::new(vec![(
+        "item-0".to_string(),
+        "Body 0".to_string(),
+        chrono::Utc::now() - chrono::Duration::hours(1),
+    )]));
+    let served = feed.clone();
+    let asked = Arc::new(std::sync::Mutex::new(Vec::<
+        Option<chrono::DateTime<chrono::Utc>>,
+    >::new()));
+    let seen = asked.clone();
+    Mock::given(method("GET"))
+        .respond_with(move |req: &Request| {
+            let since = req
+                .url
+                .query_pairs()
+                .find(|(k, _)| k == "since")
+                .map(|(_, v)| {
+                    chrono::DateTime::parse_from_rfc3339(&v)
+                        .unwrap()
+                        .with_timezone(&chrono::Utc)
+                });
+            seen.lock().unwrap().push(since);
+            let mut feed = served.lock().unwrap();
+            // 端点只给「下界之后改过的」那些（custom 协议：下界由端点自己解释）
+            let items: Vec<serde_json::Value> = feed
+                .iter()
+                .filter(|(_, _, changed_at)| since.is_none_or(|s| *changed_at > s))
+                .map(|(id, content, changed_at)| {
+                    serde_json::json!({
+                        "id": id,
+                        "title": format!("Item {id}"),
+                        "content": content,
+                        "doc_time": changed_at.to_rfc3339(),
+                    })
+                })
+                .collect();
+            // 答完这一轮顺手改一条、添一条——改动时刻落在这一轮开始之后，
+            // 所以**下一轮**才看得到（这一轮答的是改动之前的样子）
+            if feed.len() == 1 {
+                let now = chrono::Utc::now();
+                feed[0].1 = "Body 0, changed".to_string();
+                feed[0].2 = now;
+                feed.push(("item-1".to_string(), "Body 1".to_string(), now));
+            }
+            ResponseTemplate::new(200).set_body_json(serde_json::json!({ "items": items }))
+        })
+        .mount(&server)
+        .await;
+
+    let dir = std::env::temp_dir().join(format!("utopia-concurrent-{source}"));
+    let cfg = utopia_core::config::AppConfig {
+        data_dir: dir.to_string_lossy().into_owned(),
+        ..Default::default()
+    };
+    let search = Arc::new(utopia_search::SearchIndex::open(&dir.join("search"))?);
+    let state = crate::state::AppState::new(pool.clone(), &cfg, search, "test-only".into());
+
+    let result = async {
+        // 第一轮：只有 item-0，读完就走完了
+        let first = sync_source(&state, source).await?;
+        assert_eq!(first.created, 1, "第一轮只有 item-0");
+        let checkpoint = utopia_store::sources::sync_checkpoint(&pool, source).await?;
+        assert!(checkpoint.is_some(), "这一轮走完了，游标该落下来");
+
+        // 第二轮：端点现在有两条改过的，下界必须还在它们的改动之前
+        let second = sync_source(&state, source).await?;
+        let imported: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM documents WHERE source_id=$1 AND deleted_at IS NULL",
+        )
+        .bind(source)
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(
+            imported, 2,
+            "运行期间改的那一条、添的那一条，下一轮都得进来（游标要停在那一轮**开始**的时刻，不是结束的时刻）"
+        );
+        assert_eq!(second.updated, 1, "item-0 是改过的，item-1 是新的");
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+
+    sqlx::query("DELETE FROM knowledge_bases WHERE id=$1")
+        .bind(kb)
+        .execute(&pool)
+        .await?;
+    sqlx::query("DELETE FROM organizations WHERE id=$1")
+        .bind(org)
+        .execute(&pool)
+        .await?;
+    drop(state);
+    let _ = std::fs::remove_dir_all(dir);
+    result
+}
