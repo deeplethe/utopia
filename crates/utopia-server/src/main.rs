@@ -637,7 +637,7 @@ async fn dispatch(st: &state::AppState, job: &utopia_store::jobs::Job) -> anyhow
                 days,
                 vectors_cleared = pruned.vectors_cleared,
                 chunks_deleted = pruned.chunks_deleted,
-                "superseded chunks pruned"
+                "被取代的分块清理完成"
             );
             Ok(())
         }
