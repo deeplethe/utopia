@@ -1843,6 +1843,7 @@ pub async fn entity_detail(
                  AND NOT EXISTS (SELECT 1 FROM fact_evidence fe
                                  JOIN chunks c ON c.id = fe.chunk_id
                                  WHERE fe.fact_id = f.id AND {chunk_live})
+                 AND NOT {awaits}
                 ) AS stale,
                 (f.supersedes IS NOT NULL) AS corrected,
                 f.end_derived, f.end_after_period, {corrected_ends} AS corrected_ends,
@@ -1899,6 +1900,10 @@ pub async fn entity_detail(
         holds_to = crate::world_axis::facts_holds_to("f"),
         subject = crate::record_axis::owner_at("f", "subject_id", as_of.map(|_| 3), false),
         object = crate::record_axis::owner_at("f", "object_id", as_of.map(|_| 3), true),
+        awaits = match as_of {
+            Some(_) => "false",
+            None => crate::review::awaits_a_new_version(),
+        },
         chunk_live = crate::record_axis::chunk_live_at("c", as_of.map(|_| 3)),
         violation_open = crate::record_axis::violation_open_at("v", as_of.map(|_| 3)),
         conflict_open = crate::record_axis::conflict_open_at("c", as_of.map(|_| 3)),
@@ -2100,14 +2105,14 @@ pub async fn low_confidence_facts(
 ///
 /// **「现行」这一条不能少。** 闭合是作废+改写，修正行带着原证据（`temporal::close_superseded`），
 /// 只看证据存活性的话，刚闭合的行立刻回到这一档——那个出路等于不存在。
-/// WHERE 与 `review::UNCONFIRMED_FACT` 同一套（0022：「结束不知哪天」不是开放）。
+/// WHERE 与 `review::unconfirmed_fact` 同一套（0022：「结束不知哪天」不是开放）。
 pub async fn stale_facts(
     pool: &PgPool,
     kb_id: Uuid,
     limit: i64,
     offset: i64,
 ) -> AppResult<Vec<FactReviewItem>> {
-    let rows: Vec<FactReviewItem> = sqlx::query_as(
+    let rows: Vec<FactReviewItem> = sqlx::query_as(&format!(
         "SELECT f.id, s.canonical_name AS subject_name, COALESCE(r.label, fact_surface_predicate(f.id)) AS predicate_label,
                 COALESCE(o.canonical_name, f.object_value->>'summary') AS object_name,
                 f.valid_from, f.valid_to, f.confidence,
@@ -2124,9 +2129,11 @@ pub async fn stale_facts(
            AND NOT EXISTS (SELECT 1 FROM fact_evidence fe
                            JOIN chunks c ON c.id = fe.chunk_id
                            WHERE fe.fact_id = f.id AND c.superseded_at IS NULL)
+           AND NOT {awaits}
          ORDER BY f.recorded_at DESC, f.id DESC
          LIMIT $2 OFFSET $3",
-    )
+        awaits = crate::review::awaits_a_new_version(),
+    ))
     .bind(kb_id)
     .bind(limit)
     .bind(offset)
