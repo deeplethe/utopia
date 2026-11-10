@@ -19,14 +19,25 @@ use uuid::Uuid;
 /// 迟早分叉成「徽标说 12 条，点进去 9 条」。
 pub const LOW_CONFIDENCE_BELOW: f32 = 0.75;
 
+/// 文档 `d` 的新版本还会被读：还在摄入，或排着队、正在抽取
+macro_rules! will_still_be_read {
+    () => {
+        "(d.graph_status IN ('queued', 'extracting')
+                         OR d.status IN ('pending', 'parsing', 'indexing', 'embedding'))"
+    };
+}
+
 macro_rules! awaits_a_new_version {
     () => {
-        "EXISTS (SELECT 1 FROM fact_evidence fe
+        concat!(
+            "EXISTS (SELECT 1 FROM fact_evidence fe
                    JOIN chunks c ON c.document_id = fe.document_id
                    JOIN documents d ON d.id = fe.document_id
                   WHERE fe.fact_id = f.id AND c.superseded_at IS NULL AND c.extracted_at IS NULL
-                    AND (d.graph_status IN ('queued', 'extracting')
-                         OR d.status IN ('pending', 'parsing', 'indexing', 'embedding')))"
+                    AND ",
+            will_still_be_read!(),
+            ")"
+        )
     };
 }
 
@@ -53,6 +64,25 @@ pub const UNCONFIRMED_FACT: &str = concat!(
 /// 它可能没再提的东西还谈不上「没了」。只等还会被读的版本：还在摄入，或排着队、正在抽取。
 /// 抽取关着、跳过或失败的版本没人会读，等它就是永远等。
 pub const AWAITS_A_NEW_VERSION: &str = awaits_a_new_version!();
+
+/// [`AWAITS_A_NEW_VERSION`] 按记录轴（0019）读：T 时刻现行、而那时还没被读的分块。
+/// 后来读过的（`extracted_at` 晚于 T），那时确实在等；至今没读的照现在的状态看，
+/// 文档的状态没有历史。`as_of` 是时刻参数的位置，`None` 即当下
+pub fn awaits_a_new_version_at(as_of: Option<usize>) -> String {
+    let Some(param) = as_of else {
+        return AWAITS_A_NEW_VERSION.into();
+    };
+    format!(
+        "EXISTS (SELECT 1 FROM fact_evidence fe
+                   JOIN chunks c ON c.document_id = fe.document_id
+                   JOIN documents d ON d.id = fe.document_id
+                  WHERE fe.fact_id = f.id AND {live}
+                    AND (c.extracted_at > coalesce(${param}, now())
+                         OR (c.extracted_at IS NULL AND {coming})))",
+        live = crate::record_axis::chunk_live_at("c", as_of),
+        coming = will_still_be_read!(),
+    )
+}
 
 pub async fn counts(pool: &PgPool, kb_id: Uuid) -> AppResult<ReviewCounts> {
     let sql = format!(
