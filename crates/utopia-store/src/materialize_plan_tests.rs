@@ -29,3 +29,29 @@ async fn a_recompute_leaves_none_of_its_whole_base_statements_cached_on_its_conn
     assert_eq!(cached, Vec::<String>::new());
     Ok(())
 }
+
+#[tokio::test]
+async fn the_source_cleanup_plans_the_sources_that_hold_once_as_a_cte_the_delete_scans(
+) -> anyhow::Result<()> {
+    let Some(url) = crate::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&url)
+        .await?;
+
+    let plan_lines: Vec<String> =
+        sqlx::query_scalar(&format!("EXPLAIN {}", super::source_cleanup_sql()))
+            .persistent(false)
+            .bind(Uuid::now_v7())
+            .fetch_all(&pool)
+            .await?;
+    let plan = plan_lines.join("\n");
+
+    assert!(
+        plan.contains("CTE holding") && plan.contains("CTE Scan on holding"),
+        "the delete must anti-join a CTE built once, not rescan the binding match per source, got:\n{plan}"
+    );
+    Ok(())
+}
