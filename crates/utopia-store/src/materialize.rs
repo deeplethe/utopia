@@ -190,31 +190,11 @@ async fn materialize_in_tx(
     .rows_affected();
 
     // 1. 删不再成立的来源：陈述死了、行死了、签名没绑着、属性或方向变了、陈述带了 mood
-    sqlx::query(&format!(
-        "DELETE FROM typed_fact_sources src
-          USING facts t
-          WHERE src.fact_id = t.id AND t.kb_id = $1
-            AND NOT EXISTS (
-                SELECT 1
-                  FROM facts s
-                  JOIN entities se ON se.id = s.subject_id
-             LEFT JOIN entities oe ON oe.id = s.object_id
-                  JOIN phrase_bindings b ON {MATCH}
-                 WHERE s.id = src.statement_id
-                   AND s.kb_id = $1
-                   AND s.invalidated_at IS NULL
-                   AND t.invalidated_at IS NULL
-                   AND b.status = 'bound'
-                   AND b.relation_type_id = t.predicate_id
-                   AND ((b.direction = 'forward' AND t.subject_id = s.subject_id)
-                     OR (b.direction = 'reverse' AND t.subject_id = s.object_id))
-                   AND {NO_MOOD})",
-        NO_MOOD = no_mood_spoken(),
-    ))
-    .persistent(false)
-    .bind(kb_id)
-    .execute(&mut **tx)
-    .await?;
+    sqlx::query(&source_cleanup_sql())
+        .persistent(false)
+        .bind(kb_id)
+        .execute(&mut **tx)
+        .await?;
 
     // 1b. 隐含行的来源：规则不再批准、触发它的陈述死了或换了签名、实体没了或换了类别词，
     //     来源就删；与 1 同一条规矩，只是来源表是另一张（implied_fact_sources）
@@ -859,6 +839,35 @@ pub async fn count(pool: &PgPool, kb_id: Uuid) -> AppResult<i64> {
     .bind(kb_id)
     .fetch_one(pool)
     .await?)
+}
+
+/// 步骤 1 的语句：仍然成立的来源只算一遍（CTE），再用反连接删掉其余的。
+/// 写成相关的 NOT EXISTS 时，规划器把绑定匹配估成一行，对每个来源重扫一遍：
+/// 69 万个来源的库上跑了十二小时，这样写两分钟。条件和删掉的行都没变。
+fn source_cleanup_sql() -> String {
+    format!(
+        "WITH holding AS MATERIALIZED (
+             SELECT src.fact_id, src.statement_id
+               FROM typed_fact_sources src
+               JOIN facts t ON t.id = src.fact_id AND t.kb_id = $1 AND t.invalidated_at IS NULL
+               JOIN facts s ON s.id = src.statement_id AND s.kb_id = $1
+                           AND s.invalidated_at IS NULL
+               JOIN entities se ON se.id = s.subject_id
+          LEFT JOIN entities oe ON oe.id = s.object_id
+               JOIN phrase_bindings b ON {MATCH}
+              WHERE b.status = 'bound'
+                AND b.relation_type_id = t.predicate_id
+                AND ((b.direction = 'forward' AND t.subject_id = s.subject_id)
+                  OR (b.direction = 'reverse' AND t.subject_id = s.object_id))
+                AND {NO_MOOD})
+         DELETE FROM typed_fact_sources src
+          USING facts t
+          WHERE src.fact_id = t.id AND t.kb_id = $1
+            AND NOT EXISTS (SELECT 1 FROM holding h
+                             WHERE h.fact_id = src.fact_id
+                               AND h.statement_id = src.statement_id)",
+        NO_MOOD = no_mood_spoken(),
+    )
 }
 
 #[cfg(test)]

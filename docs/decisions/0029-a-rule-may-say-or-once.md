@@ -44,7 +44,7 @@ The rule reads as one sentence in the table — `A and B or C` — because it is
 ## Open
 
 - **Chaining is a separate question** (#477): a rule still cannot read what another rule concluded, and this record does not change that. The two are independent — this one is the shape of one rule, that one is how rules feed each other.
-- **Set membership is still literal.** `in` and `not_in` compare strings exactly, so the same category in another language does not match. 0021 left this open and it stays open.
+- **Set membership is still literal.** `in` and `not_in` compare strings exactly, so the same category in another language does not match. 0021 left this open and it stays open. The one exception is numbers: when both the reading and a set item parse as numbers they compare as numbers, so a reading stored as `3.0` is one of `{3}`, and a reading of `3` is one of a set written `[3.0]`.
 
 ## Status history
 
