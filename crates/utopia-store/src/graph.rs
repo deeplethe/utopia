@@ -1869,7 +1869,10 @@ pub async fn entity_detail(
         holds_to = crate::world_axis::facts_holds_to("f"),
         subject = crate::record_axis::owner_at("f", "subject_id", as_of.map(|_| 3), false),
         object = crate::record_axis::owner_at("f", "object_id", as_of.map(|_| 3), true),
-        awaits = crate::review::awaits_a_new_version_at(as_of.map(|_| 3)),
+        awaits = match as_of {
+            Some(_) => "false",
+            None => crate::review::awaits_a_new_version(),
+        },
         chunk_live = crate::record_axis::chunk_live_at("c", as_of.map(|_| 3)),
         violation_open = crate::record_axis::violation_open_at("v", as_of.map(|_| 3)),
         conflict_open = crate::record_axis::conflict_open_at("c", as_of.map(|_| 3)),
@@ -2071,7 +2074,7 @@ pub async fn low_confidence_facts(
 ///
 /// **「现行」这一条不能少。** 闭合是作废+改写，修正行带着原证据（`temporal::close_superseded`），
 /// 只看证据存活性的话，刚闭合的行立刻回到这一档——那个出路等于不存在。
-/// WHERE 与 `review::UNCONFIRMED_FACT` 同一套（0022：「结束不知哪天」不是开放）。
+/// WHERE 与 `review::unconfirmed_fact` 同一套（0022：「结束不知哪天」不是开放）。
 pub async fn stale_facts(
     pool: &PgPool,
     kb_id: Uuid,
@@ -2098,7 +2101,7 @@ pub async fn stale_facts(
            AND NOT {awaits}
          ORDER BY f.recorded_at DESC, f.id DESC
          LIMIT $2 OFFSET $3",
-        awaits = crate::review::AWAITS_A_NEW_VERSION,
+        awaits = crate::review::awaits_a_new_version(),
     ))
     .bind(kb_id)
     .bind(limit)

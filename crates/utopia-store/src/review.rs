@@ -19,26 +19,23 @@ use uuid::Uuid;
 /// 迟早分叉成「徽标说 12 条，点进去 9 条」。
 pub const LOW_CONFIDENCE_BELOW: f32 = 0.75;
 
-/// 文档 `d` 的新版本还会被读：还在摄入，或排着队、正在抽取
-macro_rules! will_still_be_read {
-    () => {
-        "(d.graph_status IN ('queued', 'extracting')
-                         OR d.status IN ('pending', 'parsing', 'indexing', 'embedding'))"
-    };
-}
-
-macro_rules! awaits_a_new_version {
-    () => {
-        concat!(
-            "EXISTS (SELECT 1 FROM fact_evidence fe
-                   JOIN chunks c ON c.document_id = fe.document_id
-                   JOIN documents d ON d.id = fe.document_id
-                  WHERE fe.fact_id = f.id AND c.superseded_at IS NULL AND c.extracted_at IS NULL
-                    AND ",
-            will_still_be_read!(),
-            ")"
-        )
-    };
+/// 事实引用的某个文档有一块现行分块还没人读：新版本写下了、还没抽取。它开口之前，
+/// 它可能没再提的东西还谈不上「没了」。只等还会被读的版本：还在摄入，或排着队、正在抽取。
+/// 抽取关着、跳过或失败的版本没人会读，等它就是永远等。别名固定用 `f`。
+///
+/// 文档从证据的分块找（`fe.chunk_id`），不从 `fe.document_id`：后者可以为空。
+///
+/// **只说当下。** `extracted_at` 没有历史：强制重抽把它清空再写成现在，一个分块
+/// 「T 时刻读过没有」事后无从得知。所以回放（0019）不问这一句，只看证据分块那时
+/// 是否已被取代，那是重抽动不了的。
+pub fn awaits_a_new_version() -> &'static str {
+    "EXISTS (SELECT 1 FROM fact_evidence fe
+               JOIN chunks cited ON cited.id = fe.chunk_id
+               JOIN documents d ON d.id = cited.document_id
+               JOIN chunks c ON c.document_id = d.id
+              WHERE fe.fact_id = f.id AND c.superseded_at IS NULL AND c.extracted_at IS NULL
+                AND (d.graph_status IN ('queued', 'extracting')
+                     OR d.status IN ('pending', 'parsing', 'indexing', 'embedding')))"
 }
 
 /// 「待确认」的判据，写成 SQL 片段，`counts` 与总览（`review_summary`）共用：
@@ -48,39 +45,17 @@ macro_rules! awaits_a_new_version {
 /// （`temporal::close_superseded`），少了它，刚闭合的行照样满足判据——队列永远清不掉，
 /// 再点一次只会撞上「区间已闭合」。判据与 0022 说同一句话：「结束不知哪天」不是开放。
 ///
-/// 最后一句：新版本写下了、还没被读，就不算待确认（见 [`AWAITS_A_NEW_VERSION`]）。
-pub const UNCONFIRMED_FACT: &str = concat!(
-    "f.valid_to IS NULL AND f.valid_to_precision IS NULL
+/// 最后一句：新版本写下了、还没被读，就不算待确认（见 [`awaits_a_new_version`]）。
+pub fn unconfirmed_fact() -> String {
+    format!(
+        "f.valid_to IS NULL AND f.valid_to_precision IS NULL
                AND EXISTS (SELECT 1 FROM fact_evidence fe WHERE fe.fact_id = f.id)
                AND NOT EXISTS (SELECT 1 FROM fact_evidence fe
                                  JOIN chunks c ON c.id = fe.chunk_id
                                 WHERE fe.fact_id = f.id
                                   AND c.superseded_at IS NULL)
-               AND NOT ",
-    awaits_a_new_version!(),
-);
-
-/// 事实引用的某个文档有一块现行分块还没人读：新版本写下了、还没抽取。它开口之前，
-/// 它可能没再提的东西还谈不上「没了」。只等还会被读的版本：还在摄入，或排着队、正在抽取。
-/// 抽取关着、跳过或失败的版本没人会读，等它就是永远等。
-pub const AWAITS_A_NEW_VERSION: &str = awaits_a_new_version!();
-
-/// [`AWAITS_A_NEW_VERSION`] 按记录轴（0019）读：T 时刻现行、而那时还没被读的分块。
-/// 后来读过的（`extracted_at` 晚于 T），那时确实在等；至今没读的照现在的状态看，
-/// 文档的状态没有历史。`as_of` 是时刻参数的位置，`None` 即当下
-pub fn awaits_a_new_version_at(as_of: Option<usize>) -> String {
-    let Some(param) = as_of else {
-        return AWAITS_A_NEW_VERSION.into();
-    };
-    format!(
-        "EXISTS (SELECT 1 FROM fact_evidence fe
-                   JOIN chunks c ON c.document_id = fe.document_id
-                   JOIN documents d ON d.id = fe.document_id
-                  WHERE fe.fact_id = f.id AND {live}
-                    AND (c.extracted_at > coalesce(${param}, now())
-                         OR (c.extracted_at IS NULL AND {coming})))",
-        live = crate::record_axis::chunk_live_at("c", as_of),
-        coming = will_still_be_read!(),
+               AND NOT {awaits}",
+        awaits = awaits_a_new_version(),
     )
 }
 
@@ -123,7 +98,7 @@ pub async fn counts(pool: &PgPool, kb_id: Uuid) -> AppResult<ReviewCounts> {
            (SELECT count(*) FROM (SELECT 1 FROM phrase_bindings b WHERE b.kb_id = $1 AND {waiting_phrase}
                                   UNION ALL SELECT 1 FROM type_bindings WHERE kb_id = $1 AND status = 'undecided') a) AS alignment,
            (SELECT count(*) FROM errata_actions WHERE kb_id = $1 AND status = 'held') AS errata",
-        unconfirmed = UNCONFIRMED_FACT,
+        unconfirmed = unconfirmed_fact(),
         waiting_phrase = crate::alignment_queue::WAITING_PHRASE,
         same = crate::resolution::TypeFilter::Same.clause(),
         conflict = crate::resolution::TypeFilter::Conflict.clause(),

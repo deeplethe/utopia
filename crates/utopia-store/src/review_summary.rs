@@ -19,7 +19,7 @@ use utopia_core::models::{
 use utopia_core::AppResult;
 use uuid::Uuid;
 
-use crate::review::{LOW_CONFIDENCE_BELOW, UNCONFIRMED_FACT};
+use crate::review::{unconfirmed_fact, LOW_CONFIDENCE_BELOW};
 
 /// 「办过的」按天看多少天
 pub const DAILY_DAYS: i64 = 14;
@@ -107,7 +107,7 @@ async fn waiting(pool: &PgPool, kb_id: Uuid) -> AppResult<ReviewWaiting> {
                                           UNION ALL SELECT decided_at FROM type_bindings WHERE kb_id = $1 AND status = 'undecided') a) AS alignment_oldest,
            (SELECT count(*) FROM errata_actions WHERE kb_id = $1 AND status = 'held') AS errata,
            (SELECT min(created_at) FROM errata_actions WHERE kb_id = $1 AND status = 'held') AS errata_oldest",
-        unconfirmed = UNCONFIRMED_FACT,
+        unconfirmed = unconfirmed_fact(),
         waiting_phrase = crate::alignment_queue::WAITING_PHRASE,
     );
     let r: WaitingRow = sqlx::query_as(&sql)
@@ -333,7 +333,7 @@ async fn health(pool: &PgPool, kb_id: Uuid) -> AppResult<ReviewHealth> {
                 WHERE kb_id = $1 AND status = 'open'
            ) c ON c.fact_id = f.id
           WHERE f.kb_id = $1 AND f.invalidated_at IS NULL",
-        unconfirmed = UNCONFIRMED_FACT,
+        unconfirmed = unconfirmed_fact(),
     );
     let r: HealthRow = sqlx::query_as(&sql)
         .bind(kb_id)

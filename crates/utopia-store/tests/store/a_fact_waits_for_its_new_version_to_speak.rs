@@ -1,10 +1,11 @@
 //! 新版本写下了、还没被读：它引用的事实不算过期，也不进审核队列。
 //! 新版本被读过而没再提这条事实，才算它不再被陈述。
 //! 没人会去读的新版本（抽取关着、跳过或失败）不让事实等：等下去就是永远。
+//! 回放不问这一句：分块哪天被读没有历史，重抽会把它挪走。
 
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
-use utopia_store::{graph, review};
+use utopia_store::{documents, graph, review};
 use uuid::Uuid;
 
 /// 新版本写下的那一刻：旧分块在这时被取代
@@ -14,6 +15,7 @@ struct Seeded {
     kb: Uuid,
     org: Uuid,
     ada: Uuid,
+    doc: Uuid,
     fresh: Uuid,
     said: Uuid,
 }
@@ -56,6 +58,7 @@ async fn seed(pool: &PgPool, status: &str, graph_status: &str) -> anyhow::Result
         kb,
         org,
         ada,
+        doc,
         fresh,
         said,
     })
@@ -200,7 +203,36 @@ async fn a_fact_waits_while_its_new_version_is_still_being_ingested() -> anyhow:
 }
 
 #[tokio::test]
-async fn a_replay_to_the_day_before_the_new_version_was_read_shows_the_fact_still_waiting(
+async fn a_fact_whose_evidence_names_no_document_still_waits_for_the_new_version(
+) -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let seeded = seed(&pool, "ready", "queued").await?;
+    let run = async {
+        sqlx::query("UPDATE fact_evidence SET document_id = NULL WHERE fact_id = $1")
+            .bind(seeded.said)
+            .execute(&pool)
+            .await?;
+        assert_eq!(
+            (
+                is_stale(&pool, &seeded).await?,
+                is_listed_stale(&pool, &seeded).await?,
+                is_counted_unconfirmed(&pool, &seeded).await?,
+            ),
+            (false, false, false),
+            "the document is found through the cited chunk"
+        );
+        anyhow::Ok(())
+    }
+    .await;
+    drop_seeded(&pool, &seeded).await?;
+    run
+}
+
+#[tokio::test]
+async fn a_replay_to_june_15_shows_the_fact_stale_after_a_later_forced_re_extract(
 ) -> anyhow::Result<()> {
     let Some(url) = utopia_store::test_db::url() else {
         return Ok(());
@@ -208,7 +240,7 @@ async fn a_replay_to_the_day_before_the_new_version_was_read_shows_the_fact_stil
     let pool = PgPool::connect(&url).await?;
     let seeded = seed(&pool, "ready", "done").await?;
     let run = async {
-        sqlx::query("UPDATE chunks SET extracted_at = '2025-06-03T00:00:00Z' WHERE id = $1")
+        sqlx::query("UPDATE chunks SET extracted_at = '2025-06-02T00:00:00Z' WHERE id = $1")
             .bind(seeded.fresh)
             .execute(&pool)
             .await?;
@@ -216,14 +248,28 @@ async fn a_replay_to_the_day_before_the_new_version_was_read_shows_the_fact_stil
             let (pool, seeded) = (&pool, &seeded);
             async move { is_stale_as_of(pool, seeded, Some(day.parse()?)).await }
         };
+        let replayed = (
+            stale_on("2025-05-31T00:00:00Z").await?,
+            stale_on("2025-06-15T00:00:00Z").await?,
+        );
+        assert_eq!(
+            replayed,
+            (false, true),
+            "before the re-push, and after the new version was read without the fact"
+        );
+
+        documents::queue_extraction_one(&pool, seeded.doc).await?;
         assert_eq!(
             (
                 stale_on("2025-05-31T00:00:00Z").await?,
-                stale_on("2025-06-02T00:00:00Z").await?,
-                stale_on("2025-06-04T00:00:00Z").await?,
+                stale_on("2025-06-15T00:00:00Z").await?,
             ),
-            (false, false, true),
-            "before the re-push, between the re-push and its reading, after the reading"
+            replayed,
+            "a re-extract moves extracted_at, and the replay reads the same as before it"
+        );
+        assert!(
+            !is_stale(&pool, &seeded).await?,
+            "today the version is being read again, so the fact waits for it"
         );
         anyhow::Ok(())
     }
