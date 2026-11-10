@@ -2,7 +2,10 @@
 //! 测试环境没配 OAuth 客户端：过了所有关卡的回调停在「没配置」，不会去敲 Google
 use super::*;
 use crate::auth::SessionOrToken;
+use axum::body::{to_bytes, Body};
+use axum::http::{Request, StatusCode};
 use std::sync::Arc;
+use tower::ServiceExt;
 use utopia_core::models::User;
 
 struct Fixture {
@@ -115,6 +118,124 @@ impl Fixture {
             .await?
             .config)
     }
+
+    async fn sync_http(&self) -> anyhow::Result<(StatusCode, Value)> {
+        let token = crate::auth::issue_token(&self.state, self.connector.id)?;
+        let response = super::super::router(self.state.clone(), &Default::default())
+            .oneshot(
+                Request::post(format!(
+                    "/api/v1/kbs/{}/sources/{}/sync",
+                    self.kb, self.source
+                ))
+                .header("Authorization", format!("Bearer {token}"))
+                .body(Body::empty())?,
+            )
+            .await?;
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), 1 << 20).await?;
+        Ok((status, serde_json::from_slice(&bytes)?))
+    }
+
+    async fn sync_state(&self) -> anyhow::Result<(String, i64)> {
+        Ok(sqlx::query_as(
+            "SELECT last_sync_status,
+                    (SELECT count(*) FROM jobs WHERE kind = 'sync_source'
+                       AND payload->>'source_id' = sources.id::text)
+               FROM sources WHERE id = $1",
+        )
+        .bind(self.source)
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
+    async fn choose_folder(&self, id: &str) -> ApiResult<Json<Value>> {
+        select(
+            State(self.state.clone()),
+            AuthUser(self.connector.clone()),
+            Path((self.kb, self.source)),
+            Json(SelectBody {
+                folders: vec![FolderEntry {
+                    id: id.into(),
+                    name: id.into(),
+                }],
+            }),
+        )
+        .await
+    }
+
+    async fn reject_sync_jobs(&self, reject: bool) -> anyhow::Result<()> {
+        // 名称和拒绝条件都限定到本测试的来源，清理不会删除其他测试的注入器。
+        let guard = format!("test_reject_source_sync_{}", self.source.simple());
+        let sql = if reject {
+            format!(
+                "CREATE FUNCTION {guard}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+                   IF NEW.kind = 'sync_source' AND NEW.payload->>'source_id' = '{}'
+                   THEN RAISE EXCEPTION 'test source sync insert failure'; END IF;
+                   RETURN NEW; END $$;
+                 CREATE TRIGGER {guard} BEFORE INSERT ON jobs
+                   FOR EACH ROW EXECUTE FUNCTION {guard}();",
+                self.source
+            )
+        } else {
+            format!("DROP TRIGGER IF EXISTS {guard} ON jobs; DROP FUNCTION IF EXISTS {guard}();")
+        };
+        sqlx::raw_sql(&sql).execute(&self.pool).await?;
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn source_sync_enqueue_manual_failure_rolls_back_and_can_retry() -> anyhow::Result<()> {
+    let Some(fx) = Fixture::new().await? else {
+        return Ok(());
+    };
+    fx.reject_sync_jobs(true).await?;
+    // 检查失败也先清理触发器，避免把故障注入留在共享测试库里。
+    let result = async {
+        let (status, body) = fx.sync_http().await?;
+        anyhow::ensure!(status == StatusCode::INTERNAL_SERVER_ERROR, "{body}");
+        let state = fx.sync_state().await?;
+        anyhow::ensure!(state == ("never".into(), 0), "{state:?}");
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+    fx.reject_sync_jobs(false).await?;
+    result?;
+
+    let (status, body) = fx.sync_http().await?;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["queued"], true);
+    assert_eq!(fx.sync_state().await?, ("queued".into(), 1));
+    Ok(())
+}
+
+#[tokio::test]
+async fn source_sync_enqueue_drive_failure_keeps_config_but_rolls_back_queue() -> anyhow::Result<()>
+{
+    let Some(fx) = Fixture::new().await? else {
+        return Ok(());
+    };
+    fx.reject_sync_jobs(true).await?;
+    let result = async {
+        anyhow::ensure!(matches!(
+            fx.choose_folder("saved-folder").await,
+            Err(ApiErr(AppError::Db(_)))
+        ));
+        anyhow::ensure!(fx.config().await?["folders"][0]["id"] == "saved-folder");
+        let state = fx.sync_state().await?;
+        anyhow::ensure!(state == ("never".into(), 0), "{state:?}");
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+    fx.reject_sync_jobs(false).await?;
+    result?;
+
+    let _ = fx
+        .choose_folder("saved-folder")
+        .await
+        .map_err(|ApiErr(error)| error)?;
+    assert_eq!(fx.sync_state().await?, ("queued".into(), 1));
+    Ok(())
 }
 
 fn denied_code<T>(result: ApiResult<T>) -> Option<&'static str> {
