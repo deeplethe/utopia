@@ -1645,42 +1645,73 @@ pub async fn search_entities(
     // 记录轴（0019）：给了就按**当时**回放——列出当时可见的实体（合并之前的被并者
     // 还在，之后才建的不在），度数按当时谁持有事实来数，与回放中的画布一致
     as_of: Option<chrono::DateTime<chrono::Utc>>,
+    // 只要名字完全相同的（规范名或现行别名），不做子串扫描
+    exact: bool,
 ) -> AppResult<(Vec<GraphNode>, i64)> {
     let pattern = format!("%{}%", text.trim());
     let named = crate::names::has_name_like("e", 2);
     // 同名的键与召回同一种写法（`resolution` 里 `has_name_in` 的用法）：规整之后小写
-    let exact = vec![crate::resolution::normalize_name(text).to_lowercase()];
+    let folded_name = vec![crate::resolution::normalize_name(text).to_lowercase()];
     // 不回放时 SQL 里没有时刻参数，与从前逐字相同；回放时才多绑一个
     let visible = |param: usize| crate::record_axis::entity_visible_at("e", as_of.map(|_| param));
     let rewind = as_of.map(|_| 6);
+    let same_name = crate::names::has_name_in("e", 1, 5);
+    // 精确时把规范名与别名写成一个 id 集合，各走各的索引（`entities_kb_name_idx`、
+    // `facts_value_text_idx`）。写成 `OR` 的话一边是子查询，规划器只能把库里的实体扫一遍。
+    // 规范名那个索引只收没被合并的实体：不回放时这与 `visible` 是一回事，带上它；回放时
+    // 被并者当时还在，不能带，那一支退回按库扫。`$2` 绑着不用，参数位不挪
+    let exactly_named = |names: usize| {
+        format!(
+            "e.id IN (SELECT x.id FROM entities x
+                       WHERE x.kb_id = $1 AND lower(x.canonical_name) = ANY(${names}){unmerged}
+                      UNION ALL {aliases})",
+            unmerged = if as_of.is_none() {
+                " AND x.merged_into IS NULL"
+            } else {
+                ""
+            },
+            aliases = crate::names::named_ids(1, names),
+        )
+    };
+    let matches = if exact {
+        exactly_named(5)
+    } else {
+        format!("(e.canonical_name ILIKE $2 OR {named})")
+    };
     let sql = format!(
         "{} WHERE e.kb_id = $1 AND {visible}
-         AND (e.canonical_name ILIKE $2 OR {named})
+         AND {matches}
          ORDER BY (lower(e.canonical_name) = ANY($5) OR {same_name}) DESC,
                   degree DESC, e.canonical_name, e.id LIMIT $3 OFFSET $4",
         node_sql(rewind, rewind),
         visible = visible(6),
-        same_name = crate::names::has_name_in("e", 1, 5),
     );
     let mut nodes_query = sqlx::query_as::<_, GraphNode>(&sql)
         .bind(kb_id)
         .bind(&pattern)
         .bind(limit)
         .bind(offset)
-        .bind(&exact);
+        .bind(&folded_name);
     if let Some(t) = as_of {
         nodes_query = nodes_query.bind(t);
     }
     let nodes: Vec<GraphNode> = nodes_query.fetch_all(pool).await?;
+    // 数量那条的名字列表在 `$3`，时刻挪到 `$4`
+    let count_matches = if exact {
+        exactly_named(3)
+    } else {
+        format!("(e.canonical_name ILIKE $2 OR {named})")
+    };
     let count_sql = format!(
         "SELECT count(*) FROM entities e
           WHERE e.kb_id = $1 AND {visible}
-            AND (e.canonical_name ILIKE $2 OR {named})",
-        visible = visible(3),
+            AND {count_matches}",
+        visible = visible(4),
     );
     let mut count_query = sqlx::query_as::<_, (i64,)>(&count_sql)
         .bind(kb_id)
-        .bind(&pattern);
+        .bind(&pattern)
+        .bind(&folded_name);
     if let Some(t) = as_of {
         count_query = count_query.bind(t);
     }

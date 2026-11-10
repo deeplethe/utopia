@@ -95,7 +95,7 @@ Content-Type: application/json
 
 | Field | Required | Meaning |
 |---|---|---|
-| `filename` | yes | Display name; also the fallback identity when `external_id` is absent. |
+| `filename` | yes* | Display name; also the fallback identity when `external_id` is absent. *Optional on a tombstone that has `external_id`.* |
 | `content` | yes* | Full text. *Optional when `deleted` is `true`.* |
 | `doc_time` | no | RFC 3339; the document's position on the time axis. |
 | `external_id` | no | Stable identity. Same identity + new content → update in place. Without it, `filename` is the identity. |
