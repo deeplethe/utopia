@@ -1656,9 +1656,25 @@ pub async fn search_entities(
     let visible = |param: usize| crate::record_axis::entity_visible_at("e", as_of.map(|_| param));
     let rewind = as_of.map(|_| 6);
     let same_name = crate::names::has_name_in("e", 1, 5);
-    // 精确时走 `(kb_id, lower(canonical_name))` 索引，排序用的就是同一个判法；`$2` 绑着不用，参数位不挪
+    // 精确时把规范名与别名写成一个 id 集合，各走各的索引（`entities_kb_name_idx`、
+    // `facts_value_text_idx`）。写成 `OR` 的话一边是子查询，规划器只能把库里的实体扫一遍。
+    // 规范名那个索引只收没被合并的实体：不回放时这与 `visible` 是一回事，带上它；回放时
+    // 被并者当时还在，不能带，那一支退回按库扫。`$2` 绑着不用，参数位不挪
+    let exactly_named = |names: usize| {
+        format!(
+            "e.id IN (SELECT x.id FROM entities x
+                       WHERE x.kb_id = $1 AND lower(x.canonical_name) = ANY(${names}){unmerged}
+                      UNION ALL {aliases})",
+            unmerged = if as_of.is_none() {
+                " AND x.merged_into IS NULL"
+            } else {
+                ""
+            },
+            aliases = crate::names::named_ids(1, names),
+        )
+    };
     let matches = if exact {
-        format!("(lower(e.canonical_name) = ANY($5) OR {same_name})")
+        exactly_named(5)
     } else {
         format!("(e.canonical_name ILIKE $2 OR {named})")
     };
@@ -1682,10 +1698,7 @@ pub async fn search_entities(
     let nodes: Vec<GraphNode> = nodes_query.fetch_all(pool).await?;
     // 数量那条的名字列表在 `$3`，时刻挪到 `$4`
     let count_matches = if exact {
-        format!(
-            "(lower(e.canonical_name) = ANY($3) OR {})",
-            crate::names::has_name_in("e", 1, 3)
-        )
+        exactly_named(3)
     } else {
         format!("(e.canonical_name ILIKE $2 OR {named})")
     };

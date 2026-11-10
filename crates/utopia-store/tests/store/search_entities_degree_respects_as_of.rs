@@ -320,6 +320,23 @@ async fn a_search_in_replay_lists_the_entities_of_that_moment() -> anyhow::Resul
         assert_eq!(seen, want, "三月：A 还没并进 B，各一度；C 还没建");
         assert_eq!(total, 2);
 
+        let (march_exact, march_exact_total) = utopia_store::graph::search_entities(
+            &pool,
+            kb,
+            "Zhang Wei A",
+            10,
+            0,
+            Some(t("2026-03-01T00:00:00Z")),
+            true,
+        )
+        .await?;
+        assert_eq!(
+            march_exact.iter().map(|n| n.id).collect::<Vec<_>>(),
+            vec![a],
+            "三月按名字精确找：后来并掉的 A 当时还在"
+        );
+        assert_eq!(march_exact_total, 1);
+
         let (now, total) = utopia_store::graph::search_entities(&pool, kb, "Zhang", 10, 0, None, false).await?;
         let ids: Vec<Uuid> = now.iter().map(|n| n.id).collect();
         assert!(ids.contains(&b) && ids.contains(&later) && !ids.contains(&a));
