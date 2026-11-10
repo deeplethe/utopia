@@ -1670,6 +1670,10 @@ async fn replace_chunks_for_snapshot(
     // 而省掉的是两者里更小的那一半：块的**正文**本来就留着（版本回放要它），
     // 一条 1024 维向量不过几 KB。代价却是历史整段搜不出来——记录轴倒得回去，
     // 检索却只认现在，as-of 检索一开口就是空的。
+    //
+    // 缺省如此。每次同步都整批重推的大库里，3072 维的向量才是大的那一半，部署可以设
+    // `UTOPIA_SUPERSEDED_VECTOR_DAYS`，让 `retention::prune_superseded` 每天清掉被取代
+    // 超过那么多天的向量；行与正文照旧留着（0019 的修订）。
     sqlx::query(
         "UPDATE chunks SET superseded_at = now()
          WHERE document_id = $1 AND superseded_at IS NULL AND NOT (id = ANY($2))",
