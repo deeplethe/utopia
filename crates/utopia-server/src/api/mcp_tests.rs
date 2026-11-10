@@ -1028,7 +1028,8 @@ async fn entity_facts_reads_back_a_statements_role_words() -> anyhow::Result<()>
         .unwrap();
     assert_eq!(
         fact["statement_qualifiers"],
-        json!([{"role":"lines","value":{"value":"10-42"},"entity_id":null,"entity_name":null}])
+        json!([{"role":"lines","value":{"value":"10-42"},"entity_id":null,"entity_name":null,
+            "chunk_ids":[f.chunk]}])
     );
     f.clean().await
 }

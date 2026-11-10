@@ -208,10 +208,11 @@ async fn role_words_move_onto_every_evidence_chunk_and_leave_a_purged_fact() -> 
         expected,
         "每块证据一行，没有证据的已失效事实一行不留"
     );
-    let read = utopia_store::graph::statement_qualifiers_for(&pool, &[stated]).await?;
+    let read = utopia_store::graph::statement_qualifiers_for(&pool, &[stated], None).await?;
     assert_eq!(
         serde_json::to_value(&read[&stated])?,
-        serde_json::json!([{ "role": "lines", "value": "40-52", "entity_id": null, "entity_name": null }])
+        serde_json::json!([{ "role": "lines", "value": "40-52", "entity_id": null,
+            "entity_name": null, "chunk_ids": [ledger.live_chunk] }])
     );
     pool.close().await;
     drop_scratch(&name).await;
