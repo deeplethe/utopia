@@ -1,5 +1,5 @@
-//! Rejecting an open statement queues the typed recompute, which retires a typed row whose
-//! statements are all gone and keeps one that another live statement still supports (#1366).
+//! 否决一条开放陈述会排一次类型化重算（#1366）：陈述全没了的类型化行退掉，
+//! 还有别的活陈述撑着的行留着。排不进去时否决照样成功：作废已经提交，下一次对齐会重算。
 
 use sqlx::PgPool;
 use utopia_store::{graph, materialize, phrase_bindings};
@@ -84,6 +84,80 @@ async fn rejecting_a_statement_queues_the_recompute_and_retires_only_unsupported
         .bind(kb.to_string())
         .execute(&pool)
         .await?;
+    sqlx::query("DELETE FROM knowledge_bases WHERE id = $1")
+        .bind(kb)
+        .execute(&pool)
+        .await?;
+    sqlx::query("DELETE FROM organizations WHERE id = $1")
+        .bind(org)
+        .execute(&pool)
+        .await?;
+    run
+}
+
+/// 重算排不进队列时否决仍然成功：陈述作废了，队列里没有重算任务，调用方拿到的是 Ok 而不是 500。
+/// 用 `jobs` 上的 BEFORE INSERT 触发器只拒本测试这个库的物化任务来制造入队失败。
+#[tokio::test]
+async fn rejecting_still_succeeds_when_the_recompute_cannot_be_queued() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let [org, ws, kb, class, who, place, fact] = std::array::from_fn(|_| Uuid::now_v7());
+    let guard = format!("reject_without_queue_{}", kb.simple());
+    let run = async {
+        sqlx::raw_sql(&format!(
+            "INSERT INTO organizations(id,name) VALUES ('{org}','reject-no-queue');
+             INSERT INTO workspaces(id,org_id,name) VALUES ('{ws}','{org}','reject-no-queue');
+             INSERT INTO knowledge_bases(id,workspace_id,name) VALUES ('{kb}','{ws}','reject-no-queue');
+             INSERT INTO entity_types(id,kb_id,key,label) VALUES ('{class}','{kb}','thing','Thing');
+             INSERT INTO entities(id,kb_id,type_id,canonical_name) VALUES
+                  ('{who}','{kb}','{class}','Harbor Bakery'),
+                  ('{place}','{kb}','{class}','Port Ellen');
+             INSERT INTO facts (id,kb_id,subject_id,object_id,layer,phrase,confidence) VALUES
+                  ('{fact}','{kb}','{who}','{place}','open','is based in',0.9);
+             CREATE FUNCTION {guard}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+               IF NEW.kind = '{kind}' AND NEW.payload->>'kb_id' = '{kb}'
+               THEN RAISE EXCEPTION 'test rejects the recompute queue'; END IF;
+               RETURN NEW; END $$;
+             CREATE TRIGGER {guard} BEFORE INSERT ON jobs
+               FOR EACH ROW EXECUTE FUNCTION {guard}();",
+            kind = phrase_bindings::MATERIALIZE_KIND,
+        ))
+        .execute(&pool)
+        .await?;
+
+        graph::reject_fact(&pool, kb, fact).await?;
+
+        let (invalidated,): (bool,) =
+            sqlx::query_as("SELECT invalidated_at IS NOT NULL FROM facts WHERE id = $1")
+                .bind(fact)
+                .fetch_one(&pool)
+                .await?;
+        assert!(invalidated, "the statement is retracted although the queue refused");
+        let queued: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM jobs WHERE kind = $1 AND payload->>'kb_id' = $2",
+        )
+        .bind(phrase_bindings::MATERIALIZE_KIND)
+        .bind(kb.to_string())
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(queued, 0, "nothing was queued");
+        assert!(
+            matches!(
+                graph::reject_fact(&pool, kb, fact).await,
+                Err(utopia_core::AppError::NotFound)
+            ),
+            "a second reject of the retracted statement is 404, as before"
+        );
+        anyhow::Ok(())
+    }
+    .await;
+    sqlx::raw_sql(&format!(
+        "DROP TRIGGER IF EXISTS {guard} ON jobs; DROP FUNCTION IF EXISTS {guard}();"
+    ))
+    .execute(&pool)
+    .await?;
     sqlx::query("DELETE FROM knowledge_bases WHERE id = $1")
         .bind(kb)
         .execute(&pool)
