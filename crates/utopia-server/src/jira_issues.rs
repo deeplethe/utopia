@@ -42,7 +42,8 @@
 //! 按 `nextPageToken` 翻页、`isLast` 收尾，没有 `startAt` 也没有 `total`。
 //! Server/DC 仍只有旧端点，所以只对 Cloud 站点换。
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, LocalResult, TimeZone, Utc};
+use chrono_tz::Tz;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::time::Duration;
@@ -53,6 +54,8 @@ use crate::ticket::stamp;
 const MAX_PAGES: u32 = 10;
 const PAGE_SIZE: u32 = 50;
 const MAX_RATE_LIMIT_RETRIES: u32 = 3;
+/// 最西的时区 UTC-12（POSIX 记法符号相反）：读不到账户时区时按它写，下界对哪个时区都不会偏晚。
+const WESTMOST_ZONE: Tz = chrono_tz::Etc::GMTPlus12;
 
 /// 想要的字段。**必须显式列**：不列 `comment` 就不返回评论，
 /// 而默认返回全部字段会把响应撑到几百 KB 一条。
@@ -261,16 +264,56 @@ pub fn render(issue: &Issue) -> String {
 
 /// 增量用的 JQL。**时间格式是 Jira 自己的**（`yyyy-MM-dd HH:mm`），不是 RFC3339，
 /// 而且要带引号——两点写错的症状都是 400，不是"查不到"。
-pub fn jql(project: &str, since: Option<DateTime<Utc>>) -> String {
+///
+/// 这个时间不带时区，Jira 按**发起搜索的账户**的时区读它，不是 UTC：UTC-5 的
+/// 账户把 UTC 的 12:34 读成当地 12:34，即 UTC 17:34，中间五小时的更新再也读不到。
+/// 所以按 `zone` 写。相对时间（`-90m`）绕得开时区，但每翻一页都按 Jira 的此刻
+/// 重算，下界在动，[`fetch_window`] 的复读校验就过不了（#1415）。
+pub fn jql(project: &str, since: Option<DateTime<Utc>>, zone: Tz) -> String {
     let mut q = format!("project = {project}");
     if let Some(t) = since {
+        let local = t.with_timezone(&zone).naive_local();
+        // 夏令时回拨那一小时里同一个钟点是两个时刻，Jira 若取后一个就跳过了中间的更新；
+        // 往前退一个回拨量，写出的钟点就只对应不晚于 t 的时刻
+        let local = match zone.from_local_datetime(&local) {
+            LocalResult::Ambiguous(earliest, latest) => local - (latest - earliest),
+            _ => local,
+        };
         q.push_str(&format!(
             " AND updated >= \"{}\"",
-            t.format("%Y-%m-%d %H:%M")
+            local.format("%Y-%m-%d %H:%M")
         ));
     }
     q.push_str(" ORDER BY updated ASC, key ASC");
     q
+}
+
+/// 账户在 Jira 资料里设的时区。读不到（请求失败、资料里没有、时区名不认识）时退到
+/// 最西的时区：每轮多读至多 26 小时的工单，由检查点跳过，换的是不漏读。
+/// UTC 站点上原先的 UTC 下界本来就准，这时多读的全是开销。
+async fn account_time_zone(http: &reqwest::Client, base_url: &str, auth: &str) -> Tz {
+    #[derive(Deserialize)]
+    struct Myself {
+        #[serde(rename = "timeZone")]
+        time_zone: Option<String>,
+    }
+    let zone = async {
+        let url = reqwest::Url::parse(&format!(
+            "{}/rest/api/2/myself",
+            base_url.trim_end_matches('/')
+        ))?;
+        let myself: Myself = fetch_page(http, url, Some(auth)).await?;
+        let name = myself
+            .time_zone
+            .ok_or_else(|| anyhow::anyhow!("no timeZone in the profile"))?;
+        name.parse::<Tz>()
+            .map_err(|e| anyhow::anyhow!("unknown time zone {name:?}: {e}"))
+    }
+    .await;
+    zone.unwrap_or_else(|error| {
+        tracing::warn!(%error, "Jira account time zone unknown; writing the bound for UTC-12");
+        WESTMOST_ZONE
+    })
 }
 
 pub struct IssueWindow {
@@ -289,7 +332,13 @@ pub async fn fetch_window(
     item_limit: usize,
     auth: Option<&str>,
 ) -> anyhow::Result<IssueWindow> {
-    let query = jql(project, since);
+    // 匿名搜索按站点的默认时区读，可没有匿名能读的接口报它（`myself` 对匿名只回 401），
+    // 同样按最西的时区写。首次同步不带 updated 条件，不用问。
+    let zone = match auth {
+        Some(auth) if since.is_some() => account_time_zone(http, base_url, auth).await,
+        _ => WESTMOST_ZONE,
+    };
+    let query = jql(project, since, zone);
     let (window, positions) =
         fetch_window_pass(http, base_url, cloud, &query, since, item_limit, auth, None).await?;
     if let Some(checkpoint) = window
@@ -679,12 +728,13 @@ mod tests {
             assert_eq!(next.issues[0].key, format!("X-{}", group_size + 1));
             assert_eq!(next.checkpoint, Some(later_time.parse().unwrap()));
             let requests = server.received_requests().await.unwrap();
+            // 匿名读不到时区，下界按 UTC-12 写：12:34 往前 12 小时
             assert!(requests.iter().any(|request| {
                 requested_offset(request) == 10 * page_size
                     && request.url.query_pairs().any(|(key, value)| {
                         key == "jql"
                     && value
-                        == "project = X AND updated >= \"2026-01-02 12:34\" ORDER BY updated ASC, key ASC"
+                        == "project = X AND updated >= \"2026-01-02 00:34\" ORDER BY updated ASC, key ASC"
                     })
             }));
         }
@@ -894,13 +944,75 @@ mod tests {
             .unwrap()
             .with_timezone(&Utc);
         assert_eq!(
-            jql("KAFKA", Some(t)),
+            jql("KAFKA", Some(t), Tz::UTC),
             "project = KAFKA AND updated >= \"2026-08-30 12:34\" ORDER BY updated ASC, key ASC"
         );
         assert_eq!(
-            jql("KAFKA", None),
+            jql("KAFKA", None, Tz::UTC),
             "project = KAFKA ORDER BY updated ASC, key ASC"
         );
+    }
+
+    /// 01:30 EDT 回拨后又是一次 01:30 EST，写 01:30 可能被读成晚一小时的那个。
+    #[test]
+    fn a_wall_time_repeated_by_daylight_saving_is_written_an_overlap_earlier() {
+        let t = "2026-11-01T05:30:00Z".parse().unwrap();
+        assert_eq!(
+            jql("X", Some(t), chrono_tz::America::New_York),
+            "project = X AND updated >= \"2026-11-01 00:30\" ORDER BY updated ASC, key ASC"
+        );
+    }
+
+    /// Jira 按账户时区读 JQL 里的时间：照 UTC 写，UTC-5 的账户会跳过五小时的更新。
+    #[tokio::test]
+    async fn an_incremental_window_writes_its_bound_in_the_accounts_time_zone() {
+        use wiremock::matchers::path;
+        let http = reqwest::Client::builder().no_proxy().build().unwrap();
+        let since = Some("2026-08-30T12:34:56Z".parse().unwrap());
+        // 资料里没有时区时退到 UTC-12
+        for (profile, bound) in [
+            (json!({"timeZone": "America/Bogota"}), "2026-08-30 07:34"),
+            (json!({}), "2026-08-30 00:34"),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(path("/rest/api/2/myself"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(profile))
+                .mount(&server)
+                .await;
+            Mock::given(path("/rest/api/2/search"))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_json(json!({"issues": [], "total": 0})),
+                )
+                .mount(&server)
+                .await;
+            fetch_window(
+                &http,
+                &server.uri(),
+                false,
+                "X",
+                since,
+                200,
+                Some("Bearer fixture"),
+            )
+            .await
+            .unwrap();
+            let requests = server.received_requests().await.unwrap();
+            assert_eq!(requests[0].url.path(), "/rest/api/2/myself");
+            assert_eq!(
+                requests[0].headers.get("authorization").unwrap(),
+                "Bearer fixture"
+            );
+            let jql = requests[1]
+                .url
+                .query_pairs()
+                .find(|(key, _)| key == "jql")
+                .unwrap()
+                .1;
+            assert_eq!(
+                jql,
+                format!("project = X AND updated >= \"{bound}\" ORDER BY updated ASC, key ASC")
+            );
+        }
     }
 
     /// **拿真实响应钉住字段形状。**

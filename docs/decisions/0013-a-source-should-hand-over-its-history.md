@@ -40,6 +40,17 @@ Wikipedia; there revisions have to be sampled, an issue tracker hands the events
    both mistakes surface as 400, not as an empty result. `fields` must be listed explicitly:
    omit `comment` and no comments come back; list nothing and one response runs to hundreds
    of KB. `expand=changelog` returns the field-level history in one call.
+   The JQL time has no zone, and Jira reads it in the time zone of the account running the
+   search, not UTC: written from a UTC checkpoint, a UTC-5 account skipped five hours of
+   updates (#1484). The bound is written in the account's `timeZone` from
+   `/rest/api/2/myself`. When the zone can't be read, it is written for UTC-12, the
+   westmost zone: an anonymous search is read in the site's default zone, which no anonymous
+   endpoint reports (`myself` answers 401), and a profile may give no zone we know. Each run
+   then re-reads up to 26 hours of full issues (changelog and comments) outside the page
+   budget, and again in the verification pass, which also widens the "changed during
+   pagination" window; on a UTC site such as `issues.apache.org` the old UTC bound was exact,
+   so there it is pure overhead. That is the price of not skipping any. A relative `-Nm`
+   bound avoids the zone but moves on every page, which breaks the re-read check (#1415).
 
 4. **Fixtures come from real responses.** Hand-written JSON only proves that the shape I
    imagined parses. Both fixtures come from publicly readable instances (`deeplethe/utopia`,
