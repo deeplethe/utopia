@@ -39,6 +39,8 @@ thiserror = "2"
 anyhow = "1"
 uuid = { version = "1", features = ["v4", "v7", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
+# Jira 的 JQL 时间按账户时区读（jira_issues::jql），`myself` 只给 IANA 时区名，换算要时区库
+chrono-tz = "0.10"
 argon2 = { version = "0.5", features = ["std"] }
 # 凭据静态加密（core::secrets）：AES-256-GCM，钥匙不进库
 aes-gcm = "0.10"

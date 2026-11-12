@@ -32,6 +32,7 @@ anyhow.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
 chrono.workspace = true
+chrono-tz.workspace = true
 argon2.workspace = true
 jsonwebtoken.workspace = true
 dotenvy.workspace = true

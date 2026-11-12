@@ -254,10 +254,11 @@ async fn large_group_progress(provider: Provider, group_size: usize) -> anyhow::
                 && (time(&value) == time(FIRST)
                     || time(&value) == time(FIRST) + chrono::Duration::seconds(1))
         }),
+        // 夹具没有凭据，读不到账户时区，下界按 UTC-12 写：12:34 往前 12 小时
         Provider::Jira => request
             .url
             .query_pairs()
-            .any(|(key, value)| key == "jql" && value.contains("2026-01-02 12:34")),
+            .any(|(key, value)| key == "jql" && value.contains("2026-01-02 00:34")),
     });
     assert!(
         incremental,
