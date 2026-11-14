@@ -107,6 +107,8 @@ Or build from source:
 docker compose -f docker-compose.yml -f docker-compose.build.yml --profile app up -d --build
 ```
 
+For a large database that must keep accepting writes during an upgrade, see [how to prebuild the document purge indexes](docs/design/document-purge-index-upgrade.md).
+
 ### Local development
 
 ```bash

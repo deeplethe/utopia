@@ -108,6 +108,8 @@ docker compose --profile app up -d
 docker compose -f docker-compose.yml -f docker-compose.build.yml --profile app up -d --build
 ```
 
+大库升级期间如果不能暂停写入，请参阅[如何预建永久删除文档所用的索引](docs/design/document-purge-index-upgrade.md)。
+
 ### 本地开发
 
 ```bash
