@@ -2528,6 +2528,8 @@ export const en = {
     auditUntil: "Up to this date",
     auditClear: "Clear filters",
     auditTotal: (n: number) => `${n} events`,
+    activityLoadError: "Could not load the activity log.",
+    activityRetry: "Retry",
     activityEmpty: "Nothing recorded yet.",
     deletedUser: "a removed user",
     // actor_id 为空的两种引擎动作：审阅队列里的自动裁决，和其余后台工作
