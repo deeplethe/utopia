@@ -1404,6 +1404,8 @@ export const en = {
     save: "Save",
     saving: "Saving…",
     saved: "Saved",
+    savedRefreshFailed: "Saved, but the latest settings could not be loaded.",
+    reloadSettings: "Reload settings",
     test: "Test connection",
     testing: "Testing…",
     chatLabel: "Chat",

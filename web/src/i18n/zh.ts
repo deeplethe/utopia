@@ -1245,6 +1245,8 @@ export const zh: Strings = {
     save: "保存",
     saving: "保存中…",
     saved: "已保存",
+    savedRefreshFailed: "已保存，但未能加载最新设置。",
+    reloadSettings: "重新加载设置",
     test: "测试连接",
     testing: "测试中…",
     chatLabel: "对话",
