@@ -57,6 +57,20 @@ const FACT_PAGE = 10;
 const MERGE_PAGE = 10;
 const CONFLICT_PAGE = 8;
 
+export function DuplicateReviewPager({
+  totals,
+  types,
+  page,
+  onPage,
+}: {
+  totals: Record<ReviewTypeFilter, number>;
+  types: ReviewTypeFilter;
+  page: number;
+  onPage: (page: number) => void;
+}) {
+  return <Pager total={totals[types]} pageSize={DUP_PAGE} page={page} onPage={onPage} />;
+}
+
 const ym = (iso: string | null) => (iso ? iso.slice(0, 7) : null);
 
 /** `code` 或 `code|detail`。查不到就原样显示——存量行里还是旧的英文散文 */
@@ -1634,6 +1648,11 @@ export function Review() {
     decisions: history.data?.total ?? 0,
     agent: c?.agent ?? 0,
   };
+  const duplicateTotals: Record<ReviewTypeFilter, number> = {
+    any: counts.duplicates,
+    same: c?.duplicates_same_type ?? 0,
+    conflict: c?.duplicates_type_conflict ?? 0,
+  };
   // 当前这一档的一页。**服务端已经切好了**，这里只按档收窄类型——
   // 收窄错了会在渲染时露馅，而不是悄悄显示空列表
   const rows = review.data?.queue === queueSel ? (review.data.items ?? []) : [];
@@ -1881,16 +1900,16 @@ export function Review() {
                         setPage(0);
                       }}
                       options={[
-                        { value: "any", label: S.review.typesAny, count: counts.duplicates },
+                        { value: "any", label: S.review.typesAny, count: duplicateTotals.any },
                         {
                           value: "same",
                           label: S.review.typesSame,
-                          count: c?.duplicates_same_type ?? 0,
+                          count: duplicateTotals.same,
                         },
                         {
                           value: "conflict",
                           label: S.review.typesConflict,
-                          count: c?.duplicates_type_conflict ?? 0,
+                          count: duplicateTotals.conflict,
                         },
                       ]}
                     />
@@ -2294,7 +2313,9 @@ export function Review() {
                 ))}
 
               {/* 单一分页：queue/merges 走客户端切片，decisions 服务端分页；总览没有页 */}
-              {active !== "decisions" && active !== "overview" && (
+              {active === "duplicates" ? (
+                <DuplicateReviewPager totals={duplicateTotals} types={types} page={page} onPage={setPage} />
+              ) : active !== "decisions" && active !== "overview" && (
                 <Pager
                   total={active === "agent" ? (c?.agent_rows ?? 0) : counts[active]}
                   pageSize={PAGE_SIZE[active]}
