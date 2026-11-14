@@ -2392,7 +2392,7 @@ pub async fn entity_history(
                         THEN 'merged' ELSE 'rejected' END AS kind
             FROM ef
             WHERE ef.invalidated_at IS NOT NULL
-              AND NOT EXISTS (SELECT 1 FROM facts s WHERE s.supersedes = ef.id)
+              AND NOT EXISTS (SELECT 1 FROM facts s WHERE s.kb_id = $1 AND s.supersedes = ef.id)
         ),
         -- 改类不是事实：没有谓词、没有对方、没有方向。它来自 entity_retypes，
         -- 一行最多产出两个事件——改动本身，以及撤销。
@@ -2590,7 +2590,7 @@ pub async fn graph_changes(
                         THEN 'merged' ELSE 'rejected' END AS kind
             FROM facts f
             WHERE f.kb_id = $1 AND f.invalidated_at >= $2 AND f.invalidated_at < $3
-              AND NOT EXISTS (SELECT 1 FROM facts s WHERE s.supersedes = f.id)
+              AND NOT EXISTS (SELECT 1 FROM facts s WHERE s.kb_id = $1 AND s.supersedes = f.id)
               AND ($4::uuid IS NULL OR f.subject_id = $4 OR f.object_id = $4)
         )";
     Ok(sqlx::query_as(&format!(
