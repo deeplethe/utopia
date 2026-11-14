@@ -203,11 +203,13 @@ pub enum IngestAction {
 
 /// 身份从哪来。`Path`：来源按位置认文档，同内容出现在新位置就是移动/改名，历史跟着走；
 /// `Declared`：调用方亲口给了 ID，身份就是它，绝不把另一个活着的 ID 的文档改成它；
-/// 只有已被墓碑标记的那篇可以接手（改名）。
+/// 只有已被墓碑标记的那篇可以接手（改名）。`StableId`：来源的 ID 不随移动或改名改变，
+/// 所以新 ID 不能凭文件名或内容接手另一篇，即使旧文件暂时不在同步范围里。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Identity {
     Path,
     Declared,
+    StableId,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -318,7 +320,7 @@ pub async fn ingest_item_with_outcome(
     // 主判定：逻辑身份；兜底：迁移前的历史文档（无 key）按文件名认领并补键
     let mut existing =
         utopia_store::documents::find_by_external_key(&state.pool, source_id, external_key).await?;
-    if existing.is_none() {
+    if existing.is_none() && identity != Identity::StableId {
         if let Some(legacy) =
             utopia_store::documents::find_legacy_by_filename(&state.pool, source_id, filename)
                 .await?
@@ -404,9 +406,14 @@ pub async fn ingest_item_with_outcome(
 
     // 同内容出现在新路径：识别为移动/改名，不重跑管道。声明的 ID 只接手已被墓碑标记的那篇
     // （先墓碑旧 ID、再推新 ID = 改名），活着的绝不改走
-    let moved = utopia_store::documents::find_by_source_sha(&state.pool, source_id, &sha256)
-        .await?
-        .filter(|doc| identity == Identity::Path || doc.missing_since.is_some());
+    let moved = match identity {
+        Identity::StableId => None,
+        Identity::Path | Identity::Declared => {
+            utopia_store::documents::find_by_source_sha(&state.pool, source_id, &sha256)
+                .await?
+                .filter(|doc| identity == Identity::Path || doc.missing_since.is_some())
+        }
+    };
     if let Some(doc) = moved {
         utopia_store::documents::update_location(&state.pool, doc.id, filename, external_key)
             .await?;
@@ -1620,8 +1627,18 @@ async fn sync_google_drive(state: &AppState, source: &Source) -> anyhow::Result<
     }
 
     let drive = google_drive::Drive::connect(&cfg, refresh).await?;
-    let listing = drive.walk(&folders).await?;
+    sync_google_drive_with_client(state, source, &drive, &folders).await
+}
 
+pub(crate) async fn sync_google_drive_with_client(
+    state: &AppState,
+    source: &Source,
+    drive: &crate::google_drive::Drive,
+    folders: &[String],
+) -> anyhow::Result<SyncStats> {
+    use crate::google_drive;
+
+    let listing = drive.walk(folders).await?;
     let known = google_drive::markers(&state.pool, source.id).await?;
     let mut stats = SyncStats::default();
     let mut seen_keys = Vec::with_capacity(listing.files.len());
@@ -1656,11 +1673,12 @@ async fn sync_google_drive(state: &AppState, source: &Source) -> anyhow::Result<
                 continue;
             }
         };
-        let action = ingest_item(
+        let outcome = ingest_item_with_outcome(
             state,
             source.kb_id,
             source.id,
             &key,
+            Identity::StableId,
             &content.filename,
             content.mime,
             &content.bytes,
@@ -1668,7 +1686,7 @@ async fn sync_google_drive(state: &AppState, source: &Source) -> anyhow::Result<
         )
         .await?;
         google_drive::remember(&state.pool, source.id, &f.id, &marker).await?;
-        stats.absorb(action);
+        stats.absorb(outcome.action);
     }
 
     if listing.truncated || !listing.unreachable.is_empty() {
