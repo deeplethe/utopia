@@ -157,13 +157,20 @@ async fn fact(pool: &PgPool, f: &Fx, s: Uuid, o: Uuid, evidence: &[Uuid]) -> any
     Ok(id)
 }
 
-async fn live(pool: &PgPool, id: Uuid) -> anyhow::Result<bool> {
+async fn invalidated_at(
+    pool: &PgPool,
+    id: Uuid,
+) -> anyhow::Result<Option<chrono::DateTime<chrono::Utc>>> {
     Ok(
-        sqlx::query_scalar("SELECT invalidated_at IS NULL FROM facts WHERE id = $1")
+        sqlx::query_scalar("SELECT invalidated_at FROM facts WHERE id = $1")
             .bind(id)
             .fetch_one(pool)
             .await?,
     )
+}
+
+async fn live(pool: &PgPool, id: Uuid) -> anyhow::Result<bool> {
+    Ok(invalidated_at(pool, id).await?.is_none())
 }
 
 async fn chunk_live(pool: &PgPool, id: Uuid) -> anyhow::Result<(bool, String)> {
@@ -372,4 +379,51 @@ async fn restoring_either_source_recovers_a_shared_fact() -> anyhow::Result<()> 
 async fn restoring_a_source_recovers_a_fact_after_the_last_source_was_purged() -> anyhow::Result<()>
 {
     shared_source_restore(true).await
+}
+
+#[tokio::test]
+async fn restoring_the_last_deleted_source_preserves_a_later_rejection() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let f = seed(&pool).await?;
+    let result = async {
+        let a = document(&pool, &f, "a.md", "restore-a").await?;
+        let b = document(&pool, &f, "b.md", "restore-b").await?;
+        let a1 = chunk(&pool, &f, a, 1).await?;
+        let b1 = chunk(&pool, &f, b, 1).await?;
+        let x = entity(&pool, &f, "X").await?;
+        let y = entity(&pool, &f, "Y").await?;
+        let z = entity(&pool, &f, "Z").await?;
+        let shared = fact(&pool, &f, x, y, &[a1, b1]).await?;
+        let only_b = fact(&pool, &f, x, z, &[b1]).await?;
+
+        documents::delete(&pool, f.kb, a, None).await?;
+        let deletion = documents::delete(&pool, f.kb, b, None).await?;
+        assert_eq!(deletion.invalidated_facts, 2);
+        documents::restore(&pool, f.kb, a).await?;
+        utopia_store::graph::reject_fact(&pool, f.kb, shared).await?;
+        let rejected_at = invalidated_at(&pool, shared).await?.expect("fact rejected");
+
+        let restored = documents::restore(&pool, f.kb, b).await?;
+        assert!(restored.deleted_at.is_none());
+        assert!(chunk_live(&pool, b1).await?.0);
+        assert!(live(&pool, only_b).await?, "B's fact should be restored");
+        anyhow::ensure!(
+            invalidated_at(&pool, shared).await? == Some(rejected_at),
+            "restoring B must preserve the later human rejection"
+        );
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    sqlx::query("DELETE FROM knowledge_bases WHERE id = $1")
+        .bind(f.kb)
+        .execute(&pool)
+        .await?;
+    sqlx::query("DELETE FROM organizations WHERE id = $1")
+        .bind(f.org)
+        .execute(&pool)
+        .await?;
+    result
 }
