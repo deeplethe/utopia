@@ -2098,10 +2098,11 @@ export const api = {
       { method: "POST" },
     ),
 
-  search: (kbId: string, q: string) =>
-    request<{ results: SearchResult[] }>(`/api/v1/kbs/${kbId}/search`, {
+  search: (kbId: string, q: string, offset: number, topK: number, signal?: AbortSignal) =>
+    request<{ results: SearchResult[]; has_more: boolean }>(`/api/v1/kbs/${kbId}/search`, {
       method: "POST",
-      body: JSON.stringify({ q }),
+      body: JSON.stringify({ q, offset, top_k: topK }),
+      signal,
     }),
 
   settings: (workspaceId: string) =>
