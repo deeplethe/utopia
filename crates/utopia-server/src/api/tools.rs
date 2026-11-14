@@ -312,7 +312,24 @@ pub async fn search_chunks(
     let q = args["query"].as_str().unwrap_or_default().to_string();
     // 记录轴（0019 / #347）：只搜那一刻库里有的东西。全文那一路仍是"现在"，
     // 命中不会错但会缺——retrieval.rs 的头上写了
-    let as_of = args["as_of"].as_str().and_then(parse_when);
+    let as_of = match args.get("as_of") {
+        None => None,
+        Some(value) => {
+            let Some(at) = value.as_str().and_then(|raw| {
+                super::graph_routes::parse_instant("as_of", Some(raw))
+                    .ok()
+                    .flatten()
+            }) else {
+                return ToolResult::new(
+                    "Invalid `as_of`: expected YYYY-MM-DD or RFC3339. Omit it to search the current knowledge base."
+                        .into(),
+                    Step::new("search", q, "invalid as_of").invalid("as_of").json(),
+                )
+                .error();
+            };
+            Some(at)
+        }
+    };
     let chunks = match retrieval::hybrid(
         ctx.state,
         ctx.kb_id,
