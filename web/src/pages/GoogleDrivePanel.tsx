@@ -14,6 +14,7 @@ import { fetchMe } from "../authSession";
 import { S } from "../i18n";
 import { toast } from "../toast";
 import { Button, Checkbox, Chip, DangerConfirm, IconButton, LinkButton } from "../ui";
+import { driveFolderAccountKey, reconcileDriveFolderDraft } from "./googleDriveFolderDraft";
 
 type Entry = { id: string; name: string };
 
@@ -31,9 +32,18 @@ export function GoogleDrivePanel({ kbId, source }: { kbId: string; source: Sourc
   const connectedAt = cfg.connected_at ?? null;
   const me = useQuery({ queryKey: ["me"], queryFn: fetchMe });
   const mine = Boolean(connectedAt) && cfg.connected_by === me.data?.id;
-  const [selected, setSelected] = useState<Entry[]>(cfg.folders ?? []);
+  const saved = cfg.folders ?? [];
+  const accountKey = driveFolderAccountKey(kbId, source.id, cfg);
+  const [draft, setDraft] = useState<{ accountKey: string; folders: Entry[] } | null>(null);
+  const currentDraft = reconcileDriveFolderDraft(accountKey, draft, saved);
+  if (currentDraft !== draft) setDraft(currentDraft);
+  const selected = currentDraft?.folders ?? saved;
   // 浏览路径：空 = 第一层（我的云端硬盘、与我共享、共享云端硬盘）
-  const [path, setPath] = useState<Entry[]>([]);
+  const connectionKey = JSON.stringify([accountKey, connectedAt]);
+  const [browse, setBrowse] = useState({ connectionKey, path: [] as Entry[] });
+  const path = browse.connectionKey === connectionKey ? browse.path : [];
+  if (browse.connectionKey !== connectionKey) setBrowse({ connectionKey, path: [] });
+  const setPath = (path: Entry[]) => setBrowse({ connectionKey, path });
   const [waiting, setWaiting] = useState(false);
   // 断开会丢掉连接者的令牌与文件夹：先问一句，说清断开的是谁的 Drive
   const [confirmingDisconnect, setConfirmingDisconnect] = useState(false);
@@ -46,7 +56,7 @@ export function GoogleDrivePanel({ kbId, source }: { kbId: string; source: Sourc
   });
   const parent = path.at(-1)?.id;
   const folders = useQuery({
-    queryKey: ["google-drive-folders", source.id, connectedAt, parent ?? ""],
+    queryKey: ["google-drive-folders", connectionKey, parent ?? ""],
     queryFn: () => api.googleDriveFolders(kbId, source.id, parent),
     enabled: mine,
     retry: false,
@@ -57,7 +67,9 @@ export function GoogleDrivePanel({ kbId, source }: { kbId: string; source: Sourc
     if (!waiting) return;
     const timer = window.setInterval(() => {
       if (popup.current?.closed) {
-        setWaiting(false);
+        window.clearInterval(timer);
+        void queryClient.invalidateQueries({ queryKey: ["sources", kbId] })
+          .then(() => setWaiting(false));
         return;
       }
       queryClient.invalidateQueries({ queryKey: ["sources", kbId] });
@@ -68,7 +80,6 @@ export function GoogleDrivePanel({ kbId, source }: { kbId: string; source: Sourc
     if (waiting && connectedAt && connectedAt !== startedFrom.current) {
       popup.current?.close();
       setWaiting(false);
-      setPath([]);
     }
   }, [waiting, connectedAt]);
 
@@ -93,33 +104,34 @@ export function GoogleDrivePanel({ kbId, source }: { kbId: string; source: Sourc
 
   const disconnect = useMutation({
     mutationFn: () => api.googleDriveDisconnect(kbId, source.id),
-    onSuccess: () => {
+    onSuccess: async () => {
       setConfirmingDisconnect(false);
+      setDraft(null);
+      setPath([]);
       toast.success(G.disconnected);
-      queryClient.invalidateQueries({ queryKey: ["sources", kbId] });
+      await queryClient.invalidateQueries({ queryKey: ["sources", kbId] });
     },
     onError: (e) => toast.error((e as Error).message),
   });
 
   const save = useMutation({
-    mutationFn: () => api.googleDriveSelect(kbId, source.id, selected),
-    onSuccess: () => {
+    mutationFn: (folders: Entry[]) => api.googleDriveSelect(kbId, source.id, folders),
+    onSuccess: async () => {
       toast.success(G.saved);
-      queryClient.invalidateQueries({ queryKey: ["sources", kbId] });
+      await queryClient.invalidateQueries({ queryKey: ["sources", kbId] });
     },
     onError: (e) => toast.error((e as Error).message),
   });
 
   const isSelected = (id: string) => selected.some((f) => f.id === id);
   const toggle = (e: Entry) =>
-    setSelected((cur) =>
-      cur.some((f) => f.id === e.id)
-        ? cur.filter((f) => f.id !== e.id)
-        : [...cur, { id: e.id, name: label(e) }],
-    );
-  const unchanged =
-    JSON.stringify(selected.map((f) => f.id)) ===
-    JSON.stringify((cfg.folders ?? []).map((f) => f.id));
+    setDraft({
+      accountKey,
+      folders: isSelected(e.id)
+        ? selected.filter((f) => f.id !== e.id)
+        : [...selected, { id: e.id, name: label(e) }],
+    });
+  const connectionBusy = connect.isPending || waiting || disconnect.isPending;
 
   if (status.data && !status.data.enabled) {
     return <p className="mb-3 text-fine leading-relaxed text-ink-2">{G.notConfigured}</p>;
@@ -143,7 +155,7 @@ export function GoogleDrivePanel({ kbId, source }: { kbId: string; source: Sourc
             <Button
               variant="secondary"
               size="sm"
-              disabled={disconnect.isPending}
+              disabled={connectionBusy || save.isPending}
               onClick={() => setConfirmingDisconnect(true)}
             >
               {G.disconnect}
@@ -154,7 +166,7 @@ export function GoogleDrivePanel({ kbId, source }: { kbId: string; source: Sourc
             <Button
               variant={connectedAt ? "secondary" : "primary"}
               size="sm"
-              disabled={connect.isPending || waiting}
+              disabled={connectionBusy || save.isPending}
               onClick={() => connect.mutate()}
             >
               {connectedAt ? G.reconnect : G.connect}
@@ -266,8 +278,8 @@ export function GoogleDrivePanel({ kbId, source }: { kbId: string; source: Sourc
           <Button
             variant="primary"
             size="sm"
-            disabled={unchanged || save.isPending}
-            onClick={() => save.mutate()}
+            disabled={currentDraft === null || connectionBusy || save.isPending}
+            onClick={() => save.mutate(selected)}
           >
             {G.saveFolders}
           </Button>
