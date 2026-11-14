@@ -1337,10 +1337,14 @@ async fn restore_tx(
     id: Uuid,
 ) -> AppResult<Document> {
     lock_document_source_tx(tx, id).await?;
-    sqlx::query("SELECT id FROM documents WHERE id = $1 FOR UPDATE")
-        .bind(id)
-        .execute(&mut **tx)
-        .await?;
+    // 文档和这次删除作废的事实共用同一个事务时间，清墓碑前先记住它。
+    let deleted_at = sqlx::query_scalar::<_, Option<DateTime<Utc>>>(
+        "SELECT deleted_at FROM documents WHERE id = $1 FOR UPDATE",
+    )
+    .bind(id)
+    .fetch_optional(&mut **tx)
+    .await?
+    .flatten();
     let row: Option<(Uuid, Vec<Uuid>, Vec<Uuid>)> = sqlx::query_as(
         "SELECT id, invalidated_facts, superseded_chunks FROM document_deletions
           WHERE document_id = $1 AND kb_id = $2 AND reverted_at IS NULL
@@ -1404,12 +1408,13 @@ async fn restore_tx(
     sqlx::query(
         "UPDATE facts SET invalidated_at = NULL
           WHERE invalidated_at IS NOT NULL
-            AND (id = ANY($1) OR (id, invalidated_at) IN
+            AND ((id = ANY($1) AND invalidated_at = $4) OR (id, invalidated_at) IN
                  (SELECT * FROM unnest($2::uuid[], $3::timestamptz[])))",
     )
     .bind(&fact_ids)
     .bind(&shared_ids)
     .bind(&shared_stamps)
+    .bind(deleted_at)
     .execute(&mut **tx)
     .await?;
     let touched: Vec<Uuid> = cited.iter().chain(&restored).copied().collect();
