@@ -2210,6 +2210,8 @@ export const zh: Strings = {
     auditUntil: "截止日期",
     auditClear: "清除筛选",
     auditTotal: (n: number) => `共 ${n} 条`,
+    activityLoadError: "无法加载活动日志。",
+    activityRetry: "重试",
     activityEmpty: "还没有记录。",
     deletedUser: "一位已移除的用户",
     adjudicator: "AI 裁决器",
