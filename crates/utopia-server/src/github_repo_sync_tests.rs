@@ -124,6 +124,46 @@ async fn a_repository_sync_takes_each_changed_file_once() -> anyhow::Result<()> 
             "没变又取了 {refetched} 次"
         );
 
+        let original = doc(PACKS).await?.unwrap();
+        let content = state.blob.get(&original.sha256).await?;
+        let versions = utopia_store::documents::versions(&pool, original.id)
+            .await?
+            .len();
+        utopia_store::documents::delete(&pool, kb, original.id, None).await?;
+        assert!(doc(PACKS).await?.unwrap().deleted_at.is_some());
+
+        let seen = server.received_requests().await.unwrap().len();
+        let restored = sync().await?;
+        let document = doc(PACKS).await?.unwrap();
+        anyhow::ensure!(
+            document.deleted_at.is_none(),
+            "unchanged GitHub file stayed in the trash"
+        );
+        assert_eq!((restored.created, restored.updated), (0, 1));
+        assert_eq!(document.id, original.id);
+        assert_eq!(state.blob.get(&document.sha256).await?, content);
+        assert_eq!(
+            utopia_store::documents::versions(&pool, document.id)
+                .await?
+                .len(),
+            versions
+        );
+        let blob_path = format!("/git/blobs/{}", crate::github_repo::git_blob_sha(&content));
+        for request in &server.received_requests().await.unwrap()[seen..] {
+            let path = request.url.path();
+            assert!(
+                path.ends_with("/git/trees/HEAD")
+                    || path.ends_with(&blob_path)
+                    || (path.ends_with("/commits")
+                        && request
+                            .url
+                            .query_pairs()
+                            .any(|(k, v)| k == "path" && v == PACKS)),
+                "the restore sync refetched an unchanged live file: {}",
+                request.url,
+            );
+        }
+
         *stage.lock().unwrap() = 1;
         sync().await?;
         let missing = || async { anyhow::Ok(doc(PACKS).await?.unwrap().missing_since) };
