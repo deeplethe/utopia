@@ -43,7 +43,7 @@ const NOTION_VERSION: &str = "2026-03-11";
 const MAX_PAGES_PER_SYNC: usize = 500;
 
 /// 每页所有层级合计最多取多少个 block，包含无文字容器。
-/// 再深的页面截断，比让一次同步卡在一页上好。
+/// 已知读不完整的页不发布，以免拿截断正文替换上一版。
 const MAX_BLOCKS_PER_PAGE: usize = 500;
 
 /// 两次请求之间至少隔这么久。Notion 说的是「平均每秒三次」，取 350 毫秒留一点余量：
@@ -163,6 +163,11 @@ fn retry_after(header: Option<&str>) -> Duration {
         .min(RETRY_AFTER_CAP)
 }
 
+#[cfg(test)]
+tokio::task_local! {
+    static TEST_API_ROOT: String;
+}
+
 /// 取 integration 能看见的所有页面。
 ///
 /// **只搜页面，不搜 data source。** 后者是表格的容器，它自己没有正文；
@@ -173,8 +178,13 @@ pub async fn fetch(
     token: &str,
     query: Option<&str>,
 ) -> anyhow::Result<(Vec<NotionPage>, bool, Vec<String>)> {
-    let mut http = Paced::new(client(token)?);
-    fetch_pages(&mut http, query).await
+    #[cfg(test)]
+    if let Ok(api_root) = TEST_API_ROOT.try_with(Clone::clone) {
+        let mut http = Paced::new(reqwest::Client::builder().no_proxy().build()?);
+        http.api_root = api_root;
+        return fetch_pages(&mut http, query).await;
+    }
+    fetch_pages(&mut Paced::new(client(token)?), query).await
 }
 
 async fn fetch_pages(
@@ -290,8 +300,14 @@ async fn append_children(
     block_count: &mut usize,
 ) -> anyhow::Result<()> {
     let mut cursor: Option<String> = None;
+    let limit_error = || anyhow::anyhow!("notion page has more than {MAX_BLOCKS_PER_PAGE} blocks");
 
-    while *block_count < MAX_BLOCKS_PER_PAGE {
+    // 递归进入子层也要查预算，不能为第 500 块的子树多发一次请求。
+    if *block_count >= MAX_BLOCKS_PER_PAGE {
+        return Err(limit_error());
+    }
+
+    loop {
         let mut url = format!(
             "{}/blocks/{parent_id}/children?page_size=100",
             http.api_root
@@ -303,7 +319,7 @@ async fn append_children(
 
         for b in v["results"].as_array().unwrap_or(&vec![]) {
             if *block_count >= MAX_BLOCKS_PER_PAGE {
-                return Ok(());
+                return Err(limit_error());
             }
             *block_count += 1;
             if let Some(line) = render_block(b) {
@@ -314,10 +330,7 @@ async fn append_children(
             // 独立页面由 search 单独摄入，数据库也不是父页正文的一部分。
             let independent_content =
                 matches!(b["type"].as_str(), Some("child_page" | "child_database"));
-            if *block_count < MAX_BLOCKS_PER_PAGE
-                && b["has_children"].as_bool() == Some(true)
-                && !independent_content
-            {
+            if b["has_children"].as_bool() == Some(true) && !independent_content {
                 let id = b["id"]
                     .as_str()
                     .context("notion blocks: child block is missing id")?;
@@ -332,6 +345,9 @@ async fn append_children(
         }
         if v["has_more"].as_bool() != Some(true) {
             break;
+        }
+        if *block_count >= MAX_BLOCKS_PER_PAGE {
+            return Err(limit_error());
         }
         cursor = v["next_cursor"].as_str().map(str::to_string);
         if cursor.is_none() {

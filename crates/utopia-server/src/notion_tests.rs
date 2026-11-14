@@ -235,7 +235,7 @@ async fn pagination_cursors_belong_to_each_parent() {
 }
 
 #[tokio::test]
-async fn block_budget_is_shared_and_stops_before_any_further_request() {
+async fn a_traversable_child_at_the_block_limit_is_reported_without_fetching_it() {
     let server = MockServer::start().await;
     children(
         &server,
@@ -267,15 +267,13 @@ async fn block_budget_is_shared_and_stops_before_any_further_request() {
         )
         .await;
     }
-    let text = page_text(&mut paced(&server), "page").await.unwrap();
-    assert_eq!(text.lines().count(), MAX_BLOCKS_PER_PAGE - 1);
-    assert!(text.ends_with("item-498\n"));
-    assert!(!text.contains("Must not appear"));
+    let error = page_text(&mut paced(&server), "page").await.unwrap_err();
+    assert!(error.to_string().contains("more than 500 blocks"));
     assert_eq!(request_paths(&server).await.len(), 6);
 }
 
 #[tokio::test]
-async fn exact_top_level_budget_does_not_fetch_another_page() {
+async fn a_complete_page_at_the_block_limit_is_read_in_full() {
     let server = MockServer::start().await;
     for page in 0..5 {
         let cursor = format!("root-{page}");
@@ -288,7 +286,7 @@ async fn exact_top_level_budget_does_not_fetch_another_page() {
             "page",
             if page == 0 { None } else { Some(&cursor) },
             blocks,
-            Some(&next),
+            (page < 4).then_some(next.as_str()),
         )
         .await;
     }
@@ -301,6 +299,44 @@ async fn exact_top_level_budget_does_not_fetch_another_page() {
         MAX_BLOCKS_PER_PAGE
     );
     assert_eq!(request_paths(&server).await.len(), 5);
+}
+
+#[tokio::test]
+async fn reaching_the_block_limit_in_a_child_does_not_hide_a_parent_sibling() {
+    let server = MockServer::start().await;
+    children(
+        &server,
+        "page",
+        None,
+        vec![
+            block("toggle", "toggle", "Toggle", true),
+            block("sibling", "paragraph", "Sibling after toggle", false),
+        ],
+        None,
+    )
+    .await;
+    children(
+        &server,
+        "toggle",
+        None,
+        vec![block("last", "paragraph", "Last allowed block", false)],
+        None,
+    )
+    .await;
+    let mut block_count = MAX_BLOCKS_PER_PAGE - 2;
+    let error = append_children(
+        &mut paced(&server),
+        "page",
+        &mut String::new(),
+        &mut block_count,
+    )
+    .await
+    .unwrap_err();
+    assert!(error.to_string().contains("more than 500 blocks"));
+    assert_eq!(
+        request_paths(&server).await,
+        ["/blocks/page/children", "/blocks/toggle/children"]
+    );
 }
 
 #[tokio::test]
@@ -505,4 +541,133 @@ async fn a_table_without_column_headers_keeps_the_first_row_as_data() {
         page_text(&mut paced(&server), "page").await.unwrap(),
         "Before table\n\n|  |  |\n| --- | --- |\n| Revenue | 42 million |\n|  |  |\n\nAfter table\n"
     );
+}
+
+async fn mock_sync_pages(server: &MockServer, oversized: bool) {
+    server.reset().await;
+    Mock::given(method("POST"))
+        .and(path("/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "results": [{"id":"bounded"}, {"id":"short"}],
+            "has_more": false,
+        })))
+        .expect(1)
+        .mount(server)
+        .await;
+    for page in 0..5 {
+        let blocks = (0..100)
+            .map(|index| {
+                let index = page * 100 + index;
+                let text = if !oversized && index == MAX_BLOCKS_PER_PAGE - 1 {
+                    "Final decision"
+                } else {
+                    "Introduction"
+                };
+                block(&format!("block-{index}"), "paragraph", text, false)
+            })
+            .collect();
+        let cursor = format!("page-{page}");
+        let next = format!("page-{}", page + 1);
+        children(
+            server,
+            "bounded",
+            (page > 0).then_some(cursor.as_str()),
+            blocks,
+            (page < 4 || oversized).then_some(next.as_str()),
+        )
+        .await;
+    }
+    let sibling = if oversized {
+        "Updated sibling policy"
+    } else {
+        "Original sibling policy"
+    };
+    children(
+        server,
+        "short",
+        None,
+        vec![block("body", "paragraph", sibling, false)],
+        None,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn notion_sync_keeps_the_complete_revision_after_a_cutoff() -> anyhow::Result<()> {
+    use crate::ingest_sources::sync_source;
+    use utopia_store::{documents, sources};
+    use uuid::Uuid;
+
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = sqlx::PgPool::connect(&url).await?;
+    let (org, ws, kb, source) = (
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+    );
+    let result = async {
+        sqlx::raw_sql(&format!(
+            r#"INSERT INTO organizations(id,name) VALUES('{org}','notion-sync-test');
+               INSERT INTO workspaces(id,org_id,name) VALUES('{ws}','{org}','notion-sync-test');
+               INSERT INTO knowledge_bases(id,workspace_id,name) VALUES('{kb}','{ws}','notion-sync-test');
+               INSERT INTO sources(id,kb_id,kind,name,config)
+                  VALUES('{source}','{kb}','notion','fixture','{{"token":"fixture"}}');"#
+        )).execute(&pool).await?;
+        let dir = tempfile::tempdir()?;
+        let cfg = utopia_core::config::AppConfig {
+            data_dir: dir.path().to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+        let search = Arc::new(utopia_search::SearchIndex::open(&dir.path().join("search"))?);
+        let state = crate::state::AppState::new(pool.clone(), &cfg, search, "test-only".into());
+        let server = MockServer::start().await;
+        let sync = || TEST_API_ROOT.scope(server.uri(), sync_source(&state, source));
+        let get = async |key: &str| {
+            documents::find_by_external_key(&pool, source, key).await?.context("expected synced document")
+        };
+
+        mock_sync_pages(&server, false).await;
+        sync().await?;
+        let original = get("notion://bounded").await?;
+        let sibling = get("notion://short").await?;
+        let original_text = state.blob.get(&original.sha256).await?;
+        anyhow::ensure!(String::from_utf8_lossy(&original_text).contains("Final decision"));
+        anyhow::ensure!(documents::versions(&pool, original.id).await?.len() == 1);
+        anyhow::ensure!(sources::list_runs(&pool, source, 1).await?[0].status == "ok");
+
+        mock_sync_pages(&server, true).await;
+        let outcome = sync().await;
+        let after = get("notion://bounded").await?;
+        let after_text = state.blob.get(&after.sha256).await?;
+        let runs = sources::list_runs(&pool, source, 2).await?;
+        anyhow::ensure!(
+            after.id == original.id && after.sha256 == original.sha256 && after_text == original_text,
+            "known-incomplete Notion page replaced its current revision: original sha={}, current sha={}, conclusion still present={}, run status={:?}",
+            original.sha256, after.sha256, String::from_utf8_lossy(&after_text).contains("Final decision"),
+            runs.first().map(|run| run.status.as_str())
+        );
+        anyhow::ensure!(documents::versions(&pool, original.id).await?.len() == 1);
+        let new_sibling = get("notion://short").await?;
+        anyhow::ensure!(new_sibling.id == sibling.id && new_sibling.sha256 != sibling.sha256);
+        anyhow::ensure!(documents::versions(&pool, sibling.id).await?.len() == 2);
+        anyhow::ensure!(String::from_utf8_lossy(&state.blob.get(&new_sibling.sha256).await?).contains("Updated sibling policy"));
+        anyhow::ensure!(runs[0].status == "failed");
+        let diagnostic = outcome.expect_err("the incomplete page must be reported").to_string();
+        anyhow::ensure!(diagnostic.contains("notion page bounded") && diagnostic.contains("500"));
+        anyhow::ensure!(runs[0].error.as_deref() == Some(diagnostic.as_str()));
+        anyhow::ensure!(server.received_requests().await.unwrap().len() == 7);
+        anyhow::Ok(())
+    }.await;
+    sqlx::query("DELETE FROM knowledge_bases WHERE id = $1")
+        .bind(kb)
+        .execute(&pool)
+        .await?;
+    sqlx::query("DELETE FROM organizations WHERE id = $1")
+        .bind(org)
+        .execute(&pool)
+        .await?;
+    result
 }
