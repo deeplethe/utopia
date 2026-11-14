@@ -1,0 +1,295 @@
+{
+ "note": "取自 gitlab.com/QuintinBotes/utopia-gitlab-fixture 的真实 GitLab 响应（#1327），用 read_api 令牌录下，字段已裁到我们读的那些。issues 与 merge_requests 是 ?state=all&order_by=updated_at&sort=asc 的列表；details 按工单放它的 notes 与三种 resource events。",
+ "issues": [
+  {
+   "iid": 1,
+   "title": "A test",
+   "state": "opened",
+   "description": "A test issue to test utopia gitlab issue syncing",
+   "created_at": "2026-10-22T13:50:23.317Z",
+   "updated_at": "2026-11-14T21:36:07.612Z",
+   "closed_at": null,
+   "labels": [
+    "bug"
+   ],
+   "author": {
+    "username": "quintinraptorbotes"
+   },
+   "assignees": []
+  },
+  {
+   "iid": 2,
+   "title": "Document the size cap",
+   "state": "closed",
+   "description": "The README does not say that files over the cap are skipped.",
+   "created_at": "2026-11-14T21:36:08.298Z",
+   "updated_at": "2026-11-14T21:36:10.304Z",
+   "closed_at": "2026-11-14T21:36:09.988Z",
+   "labels": [
+    "docs"
+   ],
+   "author": {
+    "username": "quintinraptorbotes"
+   },
+   "assignees": []
+  }
+ ],
+ "merge_requests": [
+  {
+   "iid": 1,
+   "title": "Add the merged fixture file",
+   "state": "merged",
+   "description": "Fixture merge request for the gitlab_issues recording.",
+   "created_at": "2026-11-14T21:36:12.079Z",
+   "updated_at": "2026-11-14T21:36:15.659Z",
+   "closed_at": null,
+   "labels": [],
+   "author": {
+    "username": "quintinraptorbotes"
+   },
+   "assignees": [],
+   "merged_at": "2026-11-14T21:36:15.817Z"
+  },
+  {
+   "iid": 2,
+   "title": "Add the closed fixture file",
+   "state": "closed",
+   "description": "Fixture merge request for the gitlab_issues recording.",
+   "created_at": "2026-11-14T21:36:17.783Z",
+   "updated_at": "2026-11-14T21:36:20.069Z",
+   "closed_at": "2026-11-14T21:36:19.238Z",
+   "labels": [
+    "needs-review"
+   ],
+   "author": {
+    "username": "quintinraptorbotes"
+   },
+   "assignees": [],
+   "merged_at": null
+  }
+ ],
+ "details": {
+  "issues/1": {
+   "notes": [
+    {
+     "system": false,
+     "author": {
+      "username": "quintinraptorbotes"
+     },
+     "created_at": "2026-10-22T13:51:11.831Z",
+     "body": "A comment for the histoiry"
+    },
+    {
+     "system": false,
+     "author": {
+      "username": "quintinraptorbotes"
+     },
+     "created_at": "2026-11-14T21:36:04.506Z",
+     "body": "The export drops the last row when the file ends without a newline."
+    },
+    {
+     "system": false,
+     "author": {
+      "username": "quintinraptorbotes"
+     },
+     "created_at": "2026-11-14T21:36:07.135Z",
+     "body": "Still happens on the nightly build, reopening."
+    }
+   ],
+   "resource_state_events": [
+    {
+     "user": {
+      "username": "quintinraptorbotes"
+     },
+     "created_at": "2026-10-22T13:51:28.234Z",
+     "state": "closed"
+    },
+    {
+     "user": {
+      "username": "quintinraptorbotes"
+     },
+     "created_at": "2026-10-22T13:51:31.961Z",
+     "state": "reopened"
+    },
+    {
+     "user": {
+      "username": "quintinraptorbotes"
+     },
+     "created_at": "2026-11-14T21:36:06.571Z",
+     "state": "closed"
+    },
+    {
+     "user": {
+      "username": "quintinraptorbotes"
+     },
+     "created_at": "2026-11-14T21:36:07.690Z",
+     "state": "reopened"
+    }
+   ],
+   "resource_label_events": [
+    {
+     "user": {
+      "username": "quintinraptorbotes"
+     },
+     "created_at": "2026-11-14T21:36:03.926Z",
+     "label": {
+      "name": "bug"
+     },
+     "action": "add"
+    },
+    {
+     "user": {
+      "username": "quintinraptorbotes"
+     },
+     "created_at": "2026-11-14T21:36:03.926Z",
+     "label": {
+      "name": "docs"
+     },
+     "action": "add"
+    },
+    {
+     "user": {
+      "username": "quintinraptorbotes"
+     },
+     "created_at": "2026-11-14T21:36:05.188Z",
+     "label": {
+      "name": "docs"
+     },
+     "action": "remove"
+    }
+   ],
+   "resource_milestone_events": [
+    {
+     "user": {
+      "username": "quintinraptorbotes"
+     },
+     "created_at": "2026-11-14T21:36:05.957Z",
+     "milestone": {
+      "title": "v1"
+     },
+     "action": "add"
+    }
+   ]
+  },
+  "issues/2": {
+   "notes": [
+    {
+     "system": false,
+     "author": {
+      "username": "quintinraptorbotes"
+     },
+     "created_at": "2026-11-14T21:36:09.127Z",
+     "body": "Covered by the README change."
+    }
+   ],
+   "resource_state_events": [
+    {
+     "user": {
+      "username": "quintinraptorbotes"
+     },
+     "created_at": "2026-11-14T21:36:10.157Z",
+     "state": "closed"
+    }
+   ],
+   "resource_label_events": [
+    {
+     "user": {
+      "username": "quintinraptorbotes"
+     },
+     "created_at": "2026-11-14T21:36:08.383Z",
+     "label": {
+      "name": "docs"
+     },
+     "action": "add"
+    }
+   ],
+   "resource_milestone_events": []
+  },
+  "merge_requests/1": {
+   "notes": [
+    {
+     "system": false,
+     "author": {
+      "username": "quintinraptorbotes"
+     },
+     "created_at": "2026-11-14T21:36:12.867Z",
+     "body": "Looks right. Merging."
+    },
+    {
+     "system": true,
+     "author": {
+      "username": "quintinraptorbotes"
+     },
+     "created_at": "2026-11-14T21:36:16.028Z",
+     "body": "mentioned in commit a2b49c39161d27cb0e2900c82f10a3feb5027dd5"
+    }
+   ],
+   "resource_state_events": [
+    {
+     "user": {
+      "username": "quintinraptorbotes"
+     },
+     "created_at": "2026-11-14T21:36:15.896Z",
+     "state": "merged"
+    }
+   ],
+   "resource_label_events": [
+    {
+     "user": {
+      "username": "quintinraptorbotes"
+     },
+     "created_at": "2026-11-14T21:36:12.170Z",
+     "label": {
+      "name": "needs-review"
+     },
+     "action": "add"
+    },
+    {
+     "user": {
+      "username": "quintinraptorbotes"
+     },
+     "created_at": "2026-11-14T21:36:13.726Z",
+     "label": {
+      "name": "needs-review"
+     },
+     "action": "remove"
+    }
+   ],
+   "resource_milestone_events": []
+  },
+  "merge_requests/2": {
+   "notes": [
+    {
+     "system": false,
+     "author": {
+      "username": "quintinraptorbotes"
+     },
+     "created_at": "2026-11-14T21:36:18.555Z",
+     "body": "Not needed after all, closing."
+    }
+   ],
+   "resource_state_events": [
+    {
+     "user": {
+      "username": "quintinraptorbotes"
+     },
+     "created_at": "2026-11-14T21:36:19.272Z",
+     "state": "closed"
+    }
+   ],
+   "resource_label_events": [
+    {
+     "user": {
+      "username": "quintinraptorbotes"
+     },
+     "created_at": "2026-11-14T21:36:17.849Z",
+     "label": {
+      "name": "needs-review"
+     },
+     "action": "add"
+    }
+   ],
+   "resource_milestone_events": []
+  }
+ }
+}

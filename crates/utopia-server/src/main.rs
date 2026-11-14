@@ -11,6 +11,7 @@ mod extraction;
 mod extraction_open;
 mod github_issues;
 mod github_repo;
+mod gitlab_issues;
 mod gitlab_repo;
 mod google_drive;
 mod governance;

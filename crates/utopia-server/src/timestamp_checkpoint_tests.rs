@@ -1,5 +1,5 @@
 //! ADR 0072: persisted progress describes complete source timestamp groups.
-use super::{sync_github_issues_with_client, sync_source};
+use super::{sync_github_issues_with_client, sync_gitlab_issues_with_client, sync_source};
 use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
@@ -17,6 +17,7 @@ fn time(value: &str) -> DateTime<Utc> {
 #[derive(Clone, Copy)]
 enum Provider {
     Github,
+    Gitlab,
     Jira,
 }
 
@@ -24,6 +25,7 @@ impl Provider {
     fn kind(self) -> &'static str {
         match self {
             Self::Github => "github_issues",
+            Self::Gitlab => "gitlab_issues",
             Self::Jira => "jira_issues",
         }
     }
@@ -33,6 +35,9 @@ impl Provider {
             Self::Github => json!({"number":number, "title":format!("Issue {number}"),
                 "state":"open", "body":format!("Body {number}"),
                 "created_at":"2026-01-01T00:00:00Z", "updated_at":updated}),
+            Self::Gitlab => json!({"iid":number, "title":format!("Issue {number}"),
+                "state":"opened", "description":format!("Body {number}"),
+                "created_at":"2026-01-01T00:00:00Z", "updated_at":updated, "closed_at":null}),
             Self::Jira => json!({"key":format!("TEST-{number}"), "fields":{
                 "summary":format!("Issue {number}"), "description":format!("Body {number}"),
                 "created":"2026-01-01T00:00:00Z", "updated":updated}}),
@@ -89,6 +94,7 @@ impl Fixture {
         let server = MockServer::start().await;
         let config = match provider {
             Provider::Github => json!({"repo":"test/repo"}),
+            Provider::Gitlab => json!({"project":"test/repo", "auth_header":"Bearer fixture"}),
             Provider::Jira => json!({"base_url":server.uri(), "project":"TEST"}),
         };
         sqlx::query(
@@ -137,8 +143,12 @@ impl Fixture {
                 }
                 return ResponseTemplate::new(200).set_body_json(json!([]));
             }
+            // GitLab's per-ticket details: no notes and no resource events
+            if path.ends_with("/notes") || path.ends_with("_events") {
+                return ResponseTemplate::new(200).set_body_json(json!([]));
+            }
             let (offset, limit) = match provider {
-                Provider::Github => ((query_number("page", 1) - 1) * 100, 100),
+                Provider::Github | Provider::Gitlab => ((query_number("page", 1) - 1) * 100, 100),
                 Provider::Jira => (query_number("startAt", 0), query_number("maxResults", 50)),
             };
             if feed.fail_page == Some(offset / limit + 1) {
@@ -147,7 +157,7 @@ impl Fixture {
             // Return the consumed prefix deliberately: provider bounds are inclusive/rounded.
             let rows: Vec<_> = feed.rows.iter().skip(offset).take(limit).cloned().collect();
             let body = match provider {
-                Provider::Github => json!(rows),
+                Provider::Github | Provider::Gitlab => json!(rows),
                 Provider::Jira => json!({"issues":rows,"total":feed.rows.len(),"startAt":offset,"maxResults":limit}),
             };
             ResponseTemplate::new(200).set_body_json(body)
@@ -181,14 +191,12 @@ impl Fixture {
         let source = sources::get(&self.state.pool, self.source_id).await?;
         let run = sources::start_run(&self.state.pool, self.source_id).await?;
         let http = reqwest::Client::builder().no_proxy().build()?;
-        let stats = sync_github_issues_with_client(
-            &self.state,
-            &source,
-            previous,
-            &http,
-            &self.server.uri(),
-        )
-        .await?;
+        let uri = self.server.uri();
+        let stats = if matches!(self.provider, Provider::Gitlab) {
+            sync_gitlab_issues_with_client(&self.state, &source, previous, &http, &uri).await?
+        } else {
+            sync_github_issues_with_client(&self.state, &source, previous, &http, &uri).await?
+        };
         sources::finish_timestamp_sync(
             &self.state.pool,
             run,
@@ -254,6 +262,10 @@ async fn large_group_progress(provider: Provider, group_size: usize) -> anyhow::
                 && (time(&value) == time(FIRST)
                     || time(&value) == time(FIRST) + chrono::Duration::seconds(1))
         }),
+        Provider::Gitlab => request
+            .url
+            .query_pairs()
+            .any(|(key, value)| key == "updated_after" && time(&value) == time(FIRST)),
         Provider::Jira => request
             .url
             .query_pairs()
@@ -272,13 +284,18 @@ async fn github_imports_1001_equal_time_items_then_skips_the_old_prefix() -> any
 }
 
 #[tokio::test]
+async fn gitlab_imports_1001_equal_time_items_then_skips_the_old_prefix() -> anyhow::Result<()> {
+    large_group_progress(Provider::Gitlab, 1001).await
+}
+
+#[tokio::test]
 async fn jira_imports_501_equal_time_items_then_skips_the_rounded_prefix() -> anyhow::Result<()> {
     large_group_progress(Provider::Jira, 501).await
 }
 
 #[tokio::test]
 async fn processing_budget_finishes_item_240_and_leaves_the_next_group() -> anyhow::Result<()> {
-    for provider in [Provider::Github, Provider::Jira] {
+    for provider in [Provider::Github, Provider::Gitlab, Provider::Jira] {
         large_group_progress(provider, 240).await?;
     }
     Ok(())
@@ -286,7 +303,7 @@ async fn processing_budget_finishes_item_240_and_leaves_the_next_group() -> anyh
 
 #[tokio::test]
 async fn failed_listing_does_not_advance_and_retry_deduplicates() -> anyhow::Result<()> {
-    for provider in [Provider::Github, Provider::Jira] {
+    for provider in [Provider::Github, Provider::Gitlab, Provider::Jira] {
         let Some(fixture) = Fixture::new(provider).await? else {
             return Ok(());
         };
@@ -355,7 +372,7 @@ async fn github_failed_discussion_tail_preserves_the_document_and_recovers() -> 
 #[tokio::test]
 async fn recovery_ignores_old_success_and_retains_history_after_audit_pruning() -> anyhow::Result<()>
 {
-    for provider in [Provider::Github, Provider::Jira] {
+    for provider in [Provider::Github, Provider::Gitlab, Provider::Jira] {
         let Some(fixture) = Fixture::new(provider).await? else {
             return Ok(());
         };
@@ -458,7 +475,7 @@ async fn checkpoint_and_run_success_commit_atomically() -> anyhow::Result<()> {
 #[tokio::test]
 async fn a_document_write_failure_keeps_the_checkpoint_and_retry_deduplicates() -> anyhow::Result<()>
 {
-    for provider in [Provider::Github, Provider::Jira] {
+    for provider in [Provider::Github, Provider::Gitlab, Provider::Jira] {
         let Some(fixture) = Fixture::new(provider).await? else {
             return Ok(());
         };
@@ -467,6 +484,7 @@ async fn a_document_write_failure_keeps_the_checkpoint_and_retry_deduplicates() 
         let constraint = format!("checkpoint_write_failure_{}", fixture.source_id.simple());
         let second_key = match provider {
             Provider::Github => "github:test/repo#2".to_owned(),
+            Provider::Gitlab => "gitlab:test/repo#2".to_owned(),
             Provider::Jira => "jira:127.0.0.1/TEST-2".to_owned(),
         };
         sqlx::query(&format!("ALTER TABLE documents ADD CONSTRAINT {constraint} CHECK \

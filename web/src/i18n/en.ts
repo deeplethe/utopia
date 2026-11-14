@@ -657,6 +657,7 @@ export const en = {
       github_issues: "GitHub issues",
       github_repo: "GitHub repository files",
       gitlab_repo: "GitLab project files",
+      gitlab_issues: "GitLab issues",
       jira_issues: "Jira issues",
       s3: "S3 / MinIO",
       azure_blob: "Azure Blob",
@@ -683,6 +684,12 @@ export const en = {
       gitlab_repo:
         "Reads markdown files off a gitlab.com project's default branch, the same way as " +
         "GitHub repository files. A private project needs a token with read_api. " +
+        "Self-managed GitLab has not been verified.",
+      gitlab_issues:
+        "Syncs a gitlab.com project's issues, and its merge requests when switched on. " +
+        "**Each one, together with its state, label and milestone history**, becomes one " +
+        "document, all dated. **A token with read_api is required**: GitLab does not return " +
+        "notes or events without one, even for a public project. " +
         "Self-managed GitLab has not been verified.",
       s3:
         "Reads documents out of an S3 bucket, or anything speaking the same protocol " +
@@ -821,6 +828,8 @@ export const en = {
     tokenField: "GitHub token (optional, never shown again)",
     gitlabTokenField: "GitLab token with read_api (optional, never shown again)",
     includePullRequests: "Treat pull requests as tickets too",
+    gitlabIssuesTokenField: "GitLab token with read_api (needed for notes and events, never shown again)",
+    includeMergeRequests: "Treat merge requests as tickets too",
     includeGlobsField: "Include globs (comma-separated, optional; replaces the default)",
     excludeGlobsField: "Exclude globs (comma-separated, optional; replaces the default)",
     interval: "Sync schedule",

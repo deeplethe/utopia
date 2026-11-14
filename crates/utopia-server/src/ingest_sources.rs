@@ -1,5 +1,5 @@
 //! 来源同步任务：url（网页抓取）/ rss（订阅，pubDate → doc_time）/
-//! github_issues / jira_issues（工单，更新时刻 → doc_time，正文里带状态变更史）/
+//! github_issues / gitlab_issues / jira_issues（工单，更新时刻 → doc_time，正文里带状态变更史）/
 //! s3（对象存储，LastModified → doc_time）。
 //! 全部走 sha256 去重（重复内容静默跳过），新文档进标准摄入管道（process_document）。
 //! folder 是纯容器（上传入内），api 是推送型——两者无拉取语义。
@@ -70,6 +70,15 @@ impl SyncStats {
     }
 }
 
+/// 工单来源：进度是 `sources.sync_checkpoint` 里的时刻，与本轮的成功一起提交（0072）。
+/// 三处要问这一句，写成一处，加第四个工单来源时不会漏掉其中一处
+fn reads_by_timestamp(kind: SourceKind) -> bool {
+    matches!(
+        kind,
+        SourceKind::GithubIssues | SourceKind::GitlabIssues | SourceKind::JiraIssues
+    )
+}
+
 pub async fn sync_source(state: &AppState, source_id: Uuid) -> anyhow::Result<()> {
     let source = utopia_store::sources::get(&state.pool, source_id).await?;
     let kind = SourceKind::parse(&source.kind);
@@ -77,7 +86,7 @@ pub async fn sync_source(state: &AppState, source_id: Uuid) -> anyhow::Result<()
         Some(SourceKind::Custom) => {
             utopia_store::sources::last_successful_sync_start(&state.pool, source_id).await?
         }
-        Some(SourceKind::GithubIssues | SourceKind::JiraIssues) => {
+        Some(kind) if reads_by_timestamp(kind) => {
             utopia_store::sources::sync_checkpoint(&state.pool, source_id).await?
         }
         _ => None,
@@ -94,6 +103,7 @@ pub async fn sync_source(state: &AppState, source_id: Uuid) -> anyhow::Result<()
         Some(SourceKind::GithubIssues) => sync_github_issues(state, &source, since).await,
         Some(SourceKind::GithubRepo) => sync_github_repo(state, &source).await,
         Some(SourceKind::GitlabRepo) => sync_gitlab_repo(state, &source).await,
+        Some(SourceKind::GitlabIssues) => sync_gitlab_issues(state, &source, since).await,
         Some(SourceKind::JiraIssues) => sync_jira_issues(state, &source, since).await,
         Some(SourceKind::S3 | SourceKind::AzureBlob | SourceKind::Gcs) => {
             sync_object_storage(state, &source).await
@@ -113,12 +123,7 @@ pub async fn sync_source(state: &AppState, source_id: Uuid) -> anyhow::Result<()
     };
 
     let outcome = match outcome {
-        Ok(stats)
-            if matches!(
-                kind,
-                Some(SourceKind::GithubIssues | SourceKind::JiraIssues)
-            ) =>
-        {
+        Ok(stats) if kind.is_some_and(reads_by_timestamp) => {
             utopia_store::sources::finish_timestamp_sync(
                 &state.pool,
                 run_id,
@@ -136,10 +141,7 @@ pub async fn sync_source(state: &AppState, source_id: Uuid) -> anyhow::Result<()
     };
     match outcome {
         Ok(stats) => {
-            if !matches!(
-                kind,
-                Some(SourceKind::GithubIssues | SourceKind::JiraIssues)
-            ) {
+            if !kind.is_some_and(reads_by_timestamp) {
                 utopia_store::sources::finish_run(
                     &state.pool,
                     run_id,
@@ -1044,7 +1046,7 @@ async fn sync_gitlab_repo(state: &AppState, source: &Source) -> anyhow::Result<S
 }
 
 /// 带令牌发一个请求并判状态。GitLab 限流回 429，说清楚是限流，正确的动作是等或配令牌
-async fn gitlab_checked(
+pub(crate) async fn gitlab_checked(
     http: &reqwest::Client,
     method: reqwest::Method,
     url: reqwest::Url,
@@ -1065,6 +1067,115 @@ async fn gitlab_checked(
     Ok(resp)
 }
 
+/// `config.project`：gitlab_repo 与 gitlab_issues 认的是同一种项目路径
+fn gitlab_project(source: &Source) -> anyhow::Result<&str> {
+    let project = source.config["project"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "{} source is missing config.project (group/name)",
+                source.kind
+            )
+        })?;
+    // 子组可以有好几层，但每一段都得有字
+    if project.split('/').count() < 2 || project.split('/').any(str::is_empty) {
+        anyhow::bail!(
+            "config.project should look like group/name or group/subgroup/name, got {project:?}"
+        );
+    }
+    Ok(project)
+}
+
+/// GitLab 工单与合并请求（gitlab.com，#1327）：一张一篇文档，正文里带状态、标签、里程碑的
+/// 变更史。列表按更新时刻增量筛选，备注与事件逐工单读到末页，与 [`sync_github_issues`]
+/// 同一个形状。详见 [`crate::gitlab_issues`]。
+async fn sync_gitlab_issues(
+    state: &AppState,
+    source: &Source,
+    since: Option<DateTime<Utc>>,
+) -> anyhow::Result<SyncStats> {
+    let http = crate::http_fetch::client_for(
+        &reqwest::Url::parse("https://gitlab.com/")?,
+        crate::http_fetch::Reach::Content,
+        crate::http_fetch::Limits::default(),
+    )
+    .await?;
+    sync_gitlab_issues_with_client(state, source, since, &http, "https://gitlab.com/api/v4").await
+}
+
+// HTTP 接缝让回归测试走同一条同步与落库路径，生产固定访问 gitlab.com 的 API。
+async fn sync_gitlab_issues_with_client(
+    state: &AppState,
+    source: &Source,
+    since: Option<DateTime<Utc>>,
+    http: &reqwest::Client,
+    api_base: &str,
+) -> anyhow::Result<SyncStats> {
+    use crate::gitlab_issues as gl;
+    use chrono::SubsecRound as _;
+    let project = gitlab_project(source)?;
+    // 备注与事件没有令牌就是 401，公开项目也一样。先说清楚，不去发那个注定失败的请求，
+    // 也不退而求其次只收没有历史的正文：历史是这个来源存在的理由
+    let auth = source.config["auth_header"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "gitlab_issues source needs config.auth_header: GitLab answers 401 for a \
+                 ticket's notes and events without a token, even on a public project"
+            )
+        })?;
+    // 合并请求默认不收，与 GitHub 的 include_pull_requests 同一个理由
+    let kinds: &[gl::Kind] = if source.config["include_merge_requests"]
+        .as_bool()
+        .unwrap_or(false)
+    {
+        &[gl::Kind::Issue, gl::Kind::MergeRequest]
+    } else {
+        &[gl::Kind::Issue]
+    };
+    let mut base = reqwest::Url::parse(api_base)?;
+    // 项目路径是一段：其中的 `/` 得成 `%2F`
+    base.path_segments_mut()
+        .map_err(|_| anyhow::anyhow!("API base cannot take a path"))?
+        .pop_if_empty()
+        .extend(["projects", project]);
+
+    let window = gl::fetch_window(http, &base, kinds, since, MAX_NEW_PER_SYNC, Some(auth)).await?;
+    let mut stats = SyncStats {
+        checkpoint: window.checkpoint,
+        ..SyncStats::default()
+    };
+    for (kind, item) in &window.tickets {
+        let details = gl::fetch_details(http, &base, *kind, item.iid, Some(auth)).await?;
+        let body = gl::render(*kind, item, &details);
+        // 工单与合并请求的 iid 各自从 1 数起，身份和文件名都得分得开
+        let key = format!("gitlab:{project}{}{}", kind.sigil(), item.iid);
+        let prefix = match kind {
+            gl::Kind::Issue => "",
+            gl::Kind::MergeRequest => "mr-",
+        };
+        let filename = format!("{prefix}{}-{}.md", item.iid, slugify(&item.title));
+        let action = ingest_item(
+            state,
+            source.kb_id,
+            source.id,
+            &key,
+            &filename,
+            "text/markdown",
+            body.as_bytes(),
+            // GitLab 的时刻带毫秒，落库前截到秒（0013 决定 6、7）
+            Some(item.updated_at.trunc_subsecs(0)),
+        )
+        .await?;
+        stats.absorb(action);
+    }
+    Ok(stats)
+}
+
 // HTTP 接缝让回归测试走同一条同步与落库路径，生产固定访问 gitlab.com 的 API。
 async fn sync_gitlab_repo_with_client(
     state: &AppState,
@@ -1073,19 +1184,7 @@ async fn sync_gitlab_repo_with_client(
     api_base: &str,
 ) -> anyhow::Result<SyncStats> {
     use crate::{github_repo as gr, gitlab_repo as gl};
-    let project = source.config["project"]
-        .as_str()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| {
-            anyhow::anyhow!("gitlab_repo source is missing config.project (group/name)")
-        })?;
-    // 子组可以有好几层，但每一段都得有字
-    if project.split('/').count() < 2 || project.split('/').any(str::is_empty) {
-        anyhow::bail!(
-            "config.project should look like group/name or group/subgroup/name, got {project:?}"
-        );
-    }
+    let project = gitlab_project(source)?;
     let auth = source.config["auth_header"]
         .as_str()
         .map(str::trim)
@@ -1803,6 +1902,9 @@ mod github_sync_tests;
 #[cfg(test)]
 #[path = "github_repo_sync_tests.rs"]
 mod github_repo_sync_tests;
+#[cfg(test)]
+#[path = "gitlab_issues_sync_tests.rs"]
+mod gitlab_issues_sync_tests;
 #[cfg(test)]
 #[path = "gitlab_repo_sync_tests.rs"]
 mod gitlab_repo_sync_tests;
