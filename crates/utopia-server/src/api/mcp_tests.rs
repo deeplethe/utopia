@@ -902,6 +902,33 @@ async fn wrong_string_types_are_refused_and_audited_without_writing_memory() -> 
 }
 
 #[tokio::test]
+async fn search_chunks_rejects_invalid_as_of() -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    for invalid in [
+        json!("2025-02-30"),
+        json!("2026-01-01T12:30:00"),
+        json!(" "),
+        json!(20250101),
+        Value::Null,
+    ] {
+        let result = f
+            .call("search_chunks", json!({"query":"orchard","as_of":invalid}))
+            .await?;
+        assert_eq!(result["isError"], true, "invalid as_of {invalid}: {result}");
+        assert!(result.get("structuredContent").is_none(), "{result}");
+        assert!(
+            result["content"][0]["text"]
+                .as_str()
+                .is_some_and(|message| message.contains("as_of")),
+            "{result}"
+        );
+    }
+    f.clean().await
+}
+
+#[tokio::test]
 async fn search_chunks_returns_chunk_and_document_ids_with_the_same_excerpt() -> anyhow::Result<()>
 {
     let Some(f) = Fixture::new().await? else {
@@ -909,6 +936,7 @@ async fn search_chunks_returns_chunk_and_document_ids_with_the_same_excerpt() ->
     };
     let result = f.call("search_chunks", json!({"query":"orchard"})).await?;
     assert_eq!(result["isError"], false);
+    assert_eq!(result["structuredContent"]["as_of"], Value::Null);
     assert_eq!(result["structuredContent"]["limit"], 6);
     assert_eq!(result["structuredContent"]["limit_reached"], false);
     let chunk = &result["structuredContent"]["chunks"][0];
@@ -932,8 +960,24 @@ async fn search_chunks_returns_chunk_and_document_ids_with_the_same_excerpt() ->
         .await?;
     assert_eq!(empty["structuredContent"]["chunks"], json!([]));
     assert_eq!(empty["isError"], false);
+    assert_eq!(empty["structuredContent"]["as_of"], "2025-01-01T00:00:00Z");
     assert_eq!(empty["structuredContent"]["limit_reached"], false);
     assert_eq!(empty["content"][0]["text"], "No results.");
+    let historical = f
+        .call(
+            "search_chunks",
+            json!({"query":"orchard","as_of":"2026-01-02T02:00:00.123+02:00"}),
+        )
+        .await?;
+    assert_eq!(historical["isError"], false);
+    assert_eq!(
+        historical["structuredContent"]["as_of"],
+        "2026-01-02T00:00:00.123Z"
+    );
+    assert_eq!(
+        uuid(&historical["structuredContent"]["chunks"][0]["chunk_id"]),
+        f.chunk
+    );
     let mut indexed = vec![(f.chunk.to_string(), "orchard ".repeat(120))];
     for seq in 2..8 {
         let id = Uuid::now_v7();
