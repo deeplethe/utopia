@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSearch } from "@tanstack/react-router";
 import { Plus, X } from "lucide-react";
@@ -30,6 +30,10 @@ import {
   chipLike,} from "../ui";
 import { Members } from "./Members";
 import { SsoAdmin } from "./Sso";
+import {
+  clearSubmittedDraft, savedModelFields,
+  type ModelCard, type ModelDraft, type ModelDrafts,
+} from "./modelSettingsDraft";
 
 /** 两张模型卡的备注只讲一件事，且只讲最新的那件（#698）。
  *
@@ -55,7 +59,6 @@ export type ModelCardStatus =
   | { kind: "saved" }
   | { kind: "idle" };
 
-export type ModelCard = "chat" | "embed" | "ocr" | "transcribe";
 /** 改了这几格，是哪几张卡的配置变了。字段名的前缀就是卡：chat_ / embed_ / ocr_ / transcribe_；
  *  预设一次填对话与嵌入两张卡的格，两张都算（#1424） */
 export function cardsOf(fields: readonly string[]): ModelCard[] {
@@ -935,151 +938,119 @@ export function Settings() {
      于是地址与页面各说各的 */
   const { tab: tabParam } = useSearch({ from: "/account/admin" });
   const tab = tabParam ?? "models";
-  const queryClient = useQueryClient();
+  if (!workspace)
+    return <div className="p-8 text-body text-ink-2">{S.nav.loading}</div>;
+
+  return <WorkspaceSettings key={workspace.id} workspaceId={workspace.id} tab={tab} />;
+}
+
+function WorkspaceSettings({ workspaceId, tab }: { workspaceId: string; tab: string }) {
   const settings = useQuery({
-    queryKey: ["settings", workspace?.id],
-    queryFn: () => api.settings(workspace!.id),
-    enabled: !!workspace,
+    queryKey: ["settings", workspaceId],
+    queryFn: () => api.settings(workspaceId),
   });
+  const [drafts, setDrafts] = useState<ModelDrafts>({});
+  const savedDraft = useRef<{ card: ModelCard; draft: ModelDraft | undefined } | null>(null);
+  const saved = savedModelFields(settings.data);
+  const form = { ...saved, ...drafts.chat, ...drafts.embed, ...drafts.ocr, ...drafts.transcribe };
+  type Fields = typeof form;
 
-  const [form, setForm] = useState({
-    chat_base_url: "",
-    chat_api_key: "",
-    chat_model: "",
-    chat_reasoning_effort: "",
-    embed_base_url: "",
-    embed_api_key: "",
-    embed_model: "",
-    ocr_provider: "mineru",
-    ocr_base_url: "",
-    ocr_api_key: "",
-    ocr_backend: "",
-    ocr_model: "",
-    transcribe_base_url: "",
-    transcribe_api_key: "",
-    transcribe_model: "",
-  });
-
-  useEffect(() => {
-    if (settings.data) {
-      setForm((f) => ({
-        ...f,
-        chat_base_url: settings.data.chat_base_url ?? "",
-        chat_model: settings.data.chat_model ?? "",
-        chat_reasoning_effort: settings.data.chat_reasoning_effort ?? "",
-        embed_base_url: settings.data.embed_base_url ?? "",
-        embed_model: settings.data.embed_model ?? "",
-        ocr_provider: settings.data.ocr_provider ?? "mineru",
-        ocr_base_url: settings.data.ocr_base_url ?? "",
-        ocr_backend: settings.data.ocr_backend ?? "",
-        ocr_model: settings.data.ocr_model ?? "",
-        transcribe_base_url: settings.data.transcribe_base_url ?? "",
-        transcribe_model: settings.data.transcribe_model ?? "",
-      }));
-    }
-  }, [settings.data]);
-
-  /** 一张卡一个保存。**PUT 是整体替换**（`llm_settings` 的 upsert 只对两个
-      密钥做 COALESCE，其余列直接取 EXCLUDED），所以不能只送这张卡的三项——
-      那会把另一半清成空。底子取服务端那一份、再把这张卡的字段盖上去：
-      既不会清空邻居，也不会把邻居那张卡还没保存的编辑一起交上去。
-      密钥不在底子里：留空 = 保留旧密钥，这是 COALESCE 那两列的用法 */
-  const withSaved = (over: Record<string, unknown>) => ({
-    chat_base_url: settings.data?.chat_base_url ?? "",
-    chat_model: settings.data?.chat_model ?? "",
-    embed_base_url: settings.data?.embed_base_url ?? "",
-    embed_model: settings.data?.embed_model ?? "",
-    ...over,
-  });
-  const usePatch = () =>
-    // eslint-disable-next-line react-hooks/rules-of-hooks
-    useMutation({
-      mutationFn: (patch: Record<string, unknown>) =>
-        api.saveSettings(workspace!.id, patch),
-      onSuccess: () =>
-        queryClient.invalidateQueries({ queryKey: ["settings", workspace?.id] }),
-    });
-  const saveChat = usePatch();
-  const saveEmbed = usePatch();
-  /* 读扫描件的服务、转写模型各有自己的接口：存它们不经过上面那份整体替换，
-     所以不用 withSaved 垫底子。回来的 `requeued` 是因为缺它而等着的文件数 */
-  const saveOcr = useMutation({
-    mutationFn: () =>
-      api.saveOcrSettings(workspace!.id, {
-        provider: form.ocr_provider,
-        base_url: form.ocr_base_url,
-        api_key: form.ocr_api_key,
-        backend: form.ocr_backend,
-        model: form.ocr_model,
-      }),
-    onSuccess: () => {
-      setDirty((d) => ({ ...d, ocr: false }));
-      queryClient.invalidateQueries({ queryKey: ["settings", workspace?.id] });
-    },
-  });
-  const saveTranscribe = useMutation({
-    mutationFn: () =>
-      api.saveTranscribeSettings(workspace!.id, {
-        base_url: form.transcribe_base_url,
-        api_key: form.transcribe_api_key,
-        model: form.transcribe_model,
-      }),
-    onSuccess: () => {
-      setDirty((d) => ({ ...d, transcribe: false }));
-      queryClient.invalidateQueries({ queryKey: ["settings", workspace?.id] });
-    },
-  });
-  const resetSaves = () => {
-    saveChat.reset();
-    saveEmbed.reset();
-    saveOcr.reset();
-    saveTranscribe.reset();
+  // 对话和嵌入共用整体替换的 PUT：邻卡字段取服务端已保存值，密钥只传当前卡的。
+  const sharedFields = {
+    chat_base_url: saved.chat_base_url,
+    chat_model: saved.chat_model,
+    embed_base_url: saved.embed_base_url,
+    embed_model: saved.embed_model,
   };
+  const reloadSettings = async () => {
+    const submitted = savedDraft.current;
+    try {
+      await settings.refetch({ throwOnError: true });
+    } catch {
+      if (submitted) toast.error(S.settings.savedRefreshFailed);
+      return;
+    }
+    if (submitted && savedDraft.current === submitted) {
+      savedDraft.current = null;
+      setDrafts((current) => clearSubmittedDraft(current, submitted.card, submitted.draft));
+    }
+  };
+  const useCardSave = <Body, Result>(
+    card: ModelCard,
+    body: Body,
+    save: (workspaceId: string, body: Body) => Promise<Result>,
+  ) => {
+    const mutation = useMutation({
+      mutationFn: ({ body }: { body: Body; draft: ModelDraft | undefined }) => save(workspaceId, body),
+      onSuccess: async (_, { draft }) => {
+        savedDraft.current = { card, draft };
+        await reloadSettings();
+      },
+    });
+    return { ...mutation, submit: () => mutation.mutate({ body, draft: drafts[card] }) };
+  };
+  const saveChat = useCardSave("chat", {
+    ...sharedFields,
+    chat_base_url: form.chat_base_url,
+    chat_model: form.chat_model,
+    chat_api_key: form.chat_api_key,
+    chat_reasoning_effort: form.chat_reasoning_effort,
+  }, api.saveSettings);
+  const saveEmbed = useCardSave("embed", {
+    ...sharedFields,
+    embed_base_url: form.embed_base_url,
+    embed_model: form.embed_model,
+    embed_api_key: form.embed_api_key,
+  }, api.saveSettings);
+  const saveOcr = useCardSave("ocr", {
+    provider: form.ocr_provider,
+    base_url: form.ocr_base_url,
+    api_key: form.ocr_api_key,
+    backend: form.ocr_backend,
+    model: form.ocr_model,
+  }, api.saveOcrSettings);
+  const saveTranscribe = useCardSave("transcribe", {
+    base_url: form.transcribe_base_url,
+    api_key: form.transcribe_api_key,
+    model: form.transcribe_model,
+  }, api.saveTranscribeSettings);
+  const saves = { chat: saveChat, embed: saveEmbed, ocr: saveOcr, transcribe: saveTranscribe };
+  // 等保存后的回读完成，下一张卡才会拿到 PUT 所需的最新基线。
+  const canSave = settings.isSuccess && !settings.isFetching
+    && !Object.values(saves).some((save) => save.isPending);
 
   /* 四张卡各测各的，一张一个 mutation（#1424）：从前四张共用一次测试，按任意一张四套一起测，
      还得另记一个"是哪张按的"才能只让那一张转"Testing…"（#698）。分开以后测一张，
      别的卡上还作数的结论不受影响 */
   const useCardTest = (card: ModelCard) =>
     // eslint-disable-next-line react-hooks/rules-of-hooks
-    useMutation({ mutationFn: () => api.testSettings(workspace!.id, card) });
+    useMutation({ mutationFn: () => api.testSettings(workspaceId, card) });
   const tests = {
     chat: useCardTest("chat"),
     embed: useCardTest("embed"),
     ocr: useCardTest("ocr"),
     transcribe: useCardTest("transcribe"),
   };
-  /* 改了哪几格，就只让那几张卡的测试结论过期 */
-  const expireTests = (fields: readonly string[]) =>
-    cardsOf(fields).forEach((c) => tests[c].reset());
-  /* 两张卡各自有没有改过、还没保存的格子。测试只测已保存的配置，所以有修改的那张卡
-     不让测，备注改说「先保存」；保存成功才清掉（#698） */
-  const [dirty, setDirty] = useState({
-    chat: false,
-    embed: false,
-    ocr: false,
-    transcribe: false,
-  });
-  /* 开测：这张卡上一轮的结论（Saved/报错、上一轮测试结果）让位给这一轮；别的卡没测，不动 */
-  const saves = { chat: saveChat, embed: saveEmbed, ocr: saveOcr, transcribe: saveTranscribe };
-  const startTest = (card: keyof typeof tests) => {
+  const editCard = (card: ModelCard, fields: ModelDraft) => {
+    tests[card].reset();
+    for (const save of Object.values(saves)) {
+      // 编辑可以让旧备注失效，但要继续跟踪尚未完成的保存。
+      if (!save.isPending) save.reset();
+    }
+    setDrafts((current) => ({ ...current, [card]: { ...current[card], ...fields } }));
+  };
+  const set = (card: ModelCard, field: keyof Fields) =>
+    (event: React.ChangeEvent<HTMLInputElement>) => editCard(card, { [field]: event.target.value });
+
+  const saveCard = (card: ModelCard) => {
+    tests[card].reset();
+    saves[card].submit();
+  };
+  const startTest = (card: ModelCard) => {
     tests[card].reset();
     saves[card].reset();
     tests[card].mutate();
   };
-
-  if (!workspace)
-    return <div className="p-8 text-body text-ink-2">{S.nav.loading}</div>;
-
-  const set =
-    (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement>) => {
-      /* 改一格，旧结论过期：Saved、报错说的都是改之前的那份配置（#698）。测的永远是
-         已存盘的那份，这张卡的测试结果也一起过期；别的卡没动，测出的还作数（#1424） */
-      expireTests([k]);
-      resetSaves();
-      // 字段名的前缀就是卡：chat_ / embed_ / ocr_ / transcribe_
-      setDirty((d) => ({ ...d, [k.split("_")[0]]: true }));
-      setForm({ ...form, [k]: e.target.value });
-    };
 
   const label = "block text-small font-medium text-ink-2 mb-1";
 
@@ -1098,7 +1069,7 @@ export function Settings() {
     {
       error: saveChat.error ? (saveChat.error as Error).message : null,
       saved: saveChat.isSuccess,
-      dirty: dirty.chat,
+      dirty: drafts.chat !== undefined,
     },
   );
   const embedStatus = modelCardStatus(
@@ -1114,7 +1085,7 @@ export function Settings() {
     {
       error: saveEmbed.error ? (saveEmbed.error as Error).message : null,
       saved: saveEmbed.isSuccess,
-      dirty: dirty.embed,
+      dirty: drafts.embed !== undefined,
     },
   );
   const ocrStatus = modelCardStatus(
@@ -1130,7 +1101,7 @@ export function Settings() {
     {
       error: saveOcr.error ? (saveOcr.error as Error).message : null,
       saved: saveOcr.isSuccess,
-      dirty: dirty.ocr,
+      dirty: drafts.ocr !== undefined,
     },
   );
   const transcribeStatus = modelCardStatus(
@@ -1146,7 +1117,7 @@ export function Settings() {
     {
       error: saveTranscribe.error ? (saveTranscribe.error as Error).message : null,
       saved: saveTranscribe.isSuccess,
-      dirty: dirty.transcribe,
+      dirty: drafts.transcribe !== undefined,
     },
   );
   /* 备注的画法四张卡共用：成功走 ok 色、失败走 danger 色——从前成功是中性 accent、
@@ -1173,17 +1144,23 @@ export function Settings() {
           title={ADMIN_TABS.find((t) => t.key === tab)?.label() ?? S.settings.title}
         />
 
-        {tab === "members" && <Members workspaceId={workspace.id} />}
+        {tab === "members" && <Members workspaceId={workspaceId} />}
         {tab === "datasources" && <DataSourcesAdmin />}
         {tab === "sso" && <SsoAdmin />}
         {tab === "deployment" && <DeploymentAdmin />}
 
         {tab === "models" && (
-          /* 两张卡，两个保存：聊天模型与嵌入模型是两套凭据，改一套不该把另一套
-             一起送上去。服务端对缺席与空串都当"这项不改"，所以每张卡只送自己
-             那三项就够了 */
           <div className="space-y-4">
             <p className="text-body text-ink-2">{S.settings.modelsIntro}</p>
+            {settings.isError && (
+              <div className="flex items-center gap-2">
+                <p role="alert" className="text-small text-danger">{settings.error.message}</p>
+                <Button variant="secondary" size="sm" onClick={() => void reloadSettings()}
+                  disabled={settings.isFetching}>
+                  {S.settings.reloadSettings}
+                </Button>
+              </div>
+            )}
 
             {/* 预设一按填满两张卡的字段：它不是设置本身，所以在卡外面 */}
             <div className="flex flex-wrap gap-2">
@@ -1191,17 +1168,8 @@ export function Settings() {
                 <Pill
                   key={name}
                   onClick={() => {
-                    /* 预设只是批量填格，和手输一样让旧结论过期 */
-                    const filled = {
-                      chat_base_url: p.chat,
-                      chat_model: p.chatModel,
-                      embed_base_url: p.embed,
-                      embed_model: p.embedModel,
-                    };
-                    expireTests(Object.keys(filled));
-                    resetSaves();
-                    setDirty((d) => ({ ...d, chat: true, embed: true }));
-                    setForm({ ...form, ...filled });
+                    editCard("chat", { chat_base_url: p.chat, chat_model: p.chatModel });
+                    editCard("embed", { embed_base_url: p.embed, embed_model: p.embedModel });
                   }}
                 >
                   {name}
@@ -1218,25 +1186,13 @@ export function Settings() {
                     onClick={() => {
                       startTest("chat");
                     }}
-                    disabled={tests.chat.isPending || dirty.chat}
+                    disabled={tests.chat.isPending || saveChat.isPending || !!drafts.chat}
                   >
                     {tests.chat.isPending ? S.settings.testing : S.settings.test}
                   </Button>
                   <Button variant="secondary" size="sm"
-                    onClick={() => {
-                      /* 存盘改了服务端，这张卡的旧测试结论说的是上一版配置，一起过期 */
-                      tests.chat.reset();
-                      saveChat.mutate(
-                        withSaved({
-                          chat_base_url: form.chat_base_url,
-                          chat_model: form.chat_model,
-                          chat_api_key: form.chat_api_key,
-                          chat_reasoning_effort: form.chat_reasoning_effort,
-                        }),
-                        { onSuccess: () => setDirty((d) => ({ ...d, chat: false })) },
-                      );
-                    }}
-                    disabled={saveChat.isPending}
+                    onClick={() => saveCard("chat")}
+                    disabled={!canSave}
                   >
                     {saveChat.isPending ? S.settings.saving : S.settings.save}
                   </Button>
@@ -1250,7 +1206,7 @@ export function Settings() {
                     className="w-full"
                     placeholder="https://api.deepseek.com/v1"
                     value={form.chat_base_url}
-                    onChange={set("chat_base_url")}
+                    onChange={set("chat", "chat_base_url")}
                   />
                 </div>
                 <div className="grid grid-cols-2 gap-3">
@@ -1260,7 +1216,7 @@ export function Settings() {
                       className="w-full"
                       placeholder="deepseek-chat"
                       value={form.chat_model}
-                      onChange={set("chat_model")}
+                      onChange={set("chat", "chat_model")}
                     />
                   </div>
                   <div>
@@ -1271,10 +1227,7 @@ export function Settings() {
                     <Dropdown
                       className="w-full"
                       value={form.chat_reasoning_effort}
-                      onChange={(v) => {
-                        setForm((f) => ({ ...f, chat_reasoning_effort: v }));
-                        setDirty((d) => ({ ...d, chat: true }));
-                      }}
+                      onChange={(chat_reasoning_effort) => editCard("chat", { chat_reasoning_effort })}
                       options={[
                         { value: "", label: S.settings.reasoningDefault },
                         { value: "none", label: "none" },
@@ -1298,7 +1251,7 @@ export function Settings() {
                       type="password"
                       placeholder="sk-…"
                       value={form.chat_api_key}
-                      onChange={set("chat_api_key")}
+                      onChange={set("chat", "chat_api_key")}
                     />
                   </div>
                 </div>
@@ -1314,24 +1267,13 @@ export function Settings() {
                     onClick={() => {
                       startTest("embed");
                     }}
-                    disabled={tests.embed.isPending || dirty.embed}
+                    disabled={tests.embed.isPending || saveEmbed.isPending || !!drafts.embed}
                   >
                     {tests.embed.isPending ? S.settings.testing : S.settings.test}
                   </Button>
                   <Button variant="secondary" size="sm"
-                    onClick={() => {
-                      /* 存盘改了服务端，这张卡的旧测试结论说的是上一版配置，一起过期 */
-                      tests.embed.reset();
-                      saveEmbed.mutate(
-                        withSaved({
-                          embed_base_url: form.embed_base_url,
-                          embed_model: form.embed_model,
-                          embed_api_key: form.embed_api_key,
-                        }),
-                        { onSuccess: () => setDirty((d) => ({ ...d, embed: false })) },
-                      );
-                    }}
-                    disabled={saveEmbed.isPending}
+                    onClick={() => saveCard("embed")}
+                    disabled={!canSave}
                   >
                     {saveEmbed.isPending ? S.settings.saving : S.settings.save}
                   </Button>
@@ -1345,7 +1287,7 @@ export function Settings() {
                     className="w-full"
                     placeholder="http://localhost:11434/v1"
                     value={form.embed_base_url}
-                    onChange={set("embed_base_url")}
+                    onChange={set("embed", "embed_base_url")}
                   />
                 </div>
                 <div className="grid grid-cols-2 gap-3">
@@ -1355,7 +1297,7 @@ export function Settings() {
                       className="w-full"
                       placeholder="bge-m3"
                       value={form.embed_model}
-                      onChange={set("embed_model")}
+                      onChange={set("embed", "embed_model")}
                     />
                   </div>
                   <div>
@@ -1369,7 +1311,7 @@ export function Settings() {
                       className="w-full"
                       type="password"
                       value={form.embed_api_key}
-                      onChange={set("embed_api_key")}
+                      onChange={set("embed", "embed_api_key")}
                     />
                   </div>
                 </div>
@@ -1391,16 +1333,13 @@ export function Settings() {
                     onClick={() => {
                       startTest("ocr");
                     }}
-                    disabled={tests.ocr.isPending || dirty.ocr}
+                    disabled={tests.ocr.isPending || saveOcr.isPending || !!drafts.ocr}
                   >
                     {tests.ocr.isPending ? S.settings.testing : S.settings.test}
                   </Button>
                   <Button variant="secondary" size="sm"
-                    onClick={() => {
-                      tests.ocr.reset();
-                      saveOcr.mutate();
-                    }}
-                    disabled={saveOcr.isPending}
+                    onClick={() => saveCard("ocr")}
+                    disabled={!canSave}
                   >
                     {saveOcr.isPending ? S.settings.saving : S.settings.save}
                   </Button>
@@ -1418,10 +1357,9 @@ export function Settings() {
                     value={form.ocr_provider}
                     onChange={(v) => {
                       if (v === form.ocr_provider) return;
-                      tests.ocr.reset();
-                      resetSaves();
-                      setDirty((d) => ({ ...d, ocr: true }));
-                      setForm({ ...form, ocr_provider: v, ocr_base_url: "", ocr_api_key: "", ocr_backend: "", ocr_model: "" });
+                      editCard("ocr", {
+                        ocr_provider: v, ocr_base_url: "", ocr_api_key: "", ocr_backend: "", ocr_model: "",
+                      });
                     }}
                     options={[
                       { value: "mineru", label: "MinerU" },
@@ -1435,7 +1373,7 @@ export function Settings() {
                     className="w-full"
                     placeholder={form.ocr_provider === "ark" ? "https://ark.cn-beijing.volces.com/api/plan/v3" : "http://localhost:8000"}
                     value={form.ocr_base_url}
-                    onChange={set("ocr_base_url")}
+                    onChange={set("ocr", "ocr_base_url")}
                   />
                 </div>
                 <div className="grid grid-cols-2 gap-3">
@@ -1446,7 +1384,7 @@ export function Settings() {
                         className="w-full"
                         placeholder="doubao-seed-2.1-pro"
                         value={form.ocr_model}
-                        onChange={set("ocr_model")}
+                        onChange={set("ocr", "ocr_model")}
                       />
                     </div>
                   ) : (
@@ -1456,7 +1394,7 @@ export function Settings() {
                         className="w-full"
                         placeholder="vlm-auto-engine"
                         value={form.ocr_backend}
-                        onChange={set("ocr_backend")}
+                        onChange={set("ocr", "ocr_backend")}
                       />
                     </div>
                   )}
@@ -1471,7 +1409,7 @@ export function Settings() {
                       className="w-full"
                       type="password"
                       value={form.ocr_api_key}
-                      onChange={set("ocr_api_key")}
+                      onChange={set("ocr", "ocr_api_key")}
                     />
                   </div>
                 </div>
@@ -1488,16 +1426,13 @@ export function Settings() {
                     onClick={() => {
                       startTest("transcribe");
                     }}
-                    disabled={tests.transcribe.isPending || dirty.transcribe}
+                    disabled={tests.transcribe.isPending || saveTranscribe.isPending || !!drafts.transcribe}
                   >
                     {tests.transcribe.isPending ? S.settings.testing : S.settings.test}
                   </Button>
                   <Button variant="secondary" size="sm"
-                    onClick={() => {
-                      tests.transcribe.reset();
-                      saveTranscribe.mutate();
-                    }}
-                    disabled={saveTranscribe.isPending}
+                    onClick={() => saveCard("transcribe")}
+                    disabled={!canSave}
                   >
                     {saveTranscribe.isPending ? S.settings.saving : S.settings.save}
                   </Button>
@@ -1511,7 +1446,7 @@ export function Settings() {
                     className="w-full"
                     placeholder="https://api.openai.com/v1"
                     value={form.transcribe_base_url}
-                    onChange={set("transcribe_base_url")}
+                    onChange={set("transcribe", "transcribe_base_url")}
                   />
                 </div>
                 <div className="grid grid-cols-2 gap-3">
@@ -1521,7 +1456,7 @@ export function Settings() {
                       className="w-full"
                       placeholder="gpt-4o-transcribe-diarize"
                       value={form.transcribe_model}
-                      onChange={set("transcribe_model")}
+                      onChange={set("transcribe", "transcribe_model")}
                     />
                   </div>
                   <div>
@@ -1536,7 +1471,7 @@ export function Settings() {
                       type="password"
                       placeholder="sk-…"
                       value={form.transcribe_api_key}
-                      onChange={set("transcribe_api_key")}
+                      onChange={set("transcribe", "transcribe_api_key")}
                     />
                   </div>
                 </div>
