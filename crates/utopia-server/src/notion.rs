@@ -43,8 +43,11 @@ const NOTION_VERSION: &str = "2026-03-11";
 const MAX_PAGES_PER_SYNC: usize = 500;
 
 /// 每页所有层级合计最多取多少个 block，包含无文字容器。
-/// 已知读不完整的页不发布，以免拿截断正文替换上一版。
-const MAX_BLOCKS_PER_PAGE: usize = 500;
+/// 给长文留出余地。5,000 个顶层块按满批算是 50 次请求；已知读不完整的页不发布。
+const MAX_BLOCKS_PER_PAGE: usize = 5_000;
+
+/// 扩大块数预算时保留原先递归能到的最大层数。
+const MAX_BLOCK_DEPTH: usize = 500;
 
 /// 两次请求之间至少隔这么久。Notion 说的是「平均每秒三次」，取 350 毫秒留一点余量：
 /// 总耗时还取决于每页的嵌套层级与分页数。
@@ -287,25 +290,30 @@ fn page_title(page: &serde_json::Value) -> String {
 async fn page_text(http: &mut Paced, page_id: &str) -> anyhow::Result<String> {
     let mut out = String::new();
     let mut block_count = 0;
-    append_children(http, page_id, &mut out, &mut block_count).await?;
+    append_children(http, page_id, &mut out, &mut block_count, 0).await?;
     Ok(out)
 }
 
 /// 每个父块独立分页，先写父块，再读完子树，最后继续兄弟块。
-/// 输出和预算由整页共享；递归深度也受同一块数上限约束。
+/// 输出和块数预算由整页共享。
 async fn append_children(
     http: &mut Paced,
     parent_id: &str,
     out: &mut String,
     block_count: &mut usize,
+    depth: usize,
 ) -> anyhow::Result<()> {
     let mut cursor: Option<String> = None;
     let limit_error = || anyhow::anyhow!("notion page has more than {MAX_BLOCKS_PER_PAGE} blocks");
 
-    // 递归进入子层也要查预算，不能为第 500 块的子树多发一次请求。
+    // 进入子层前也要查预算，避免多发一次请求。
     if *block_count >= MAX_BLOCKS_PER_PAGE {
         return Err(limit_error());
     }
+    anyhow::ensure!(
+        depth < MAX_BLOCK_DEPTH,
+        "notion page has more than {MAX_BLOCK_DEPTH} levels of blocks"
+    );
 
     loop {
         let mut url = format!(
@@ -336,10 +344,10 @@ async fn append_children(
                     .context("notion blocks: child block is missing id")?;
                 if b["type"].as_str() == Some("table") {
                     let mut rows = String::new();
-                    Box::pin(append_children(http, id, &mut rows, block_count)).await?;
+                    Box::pin(append_children(http, id, &mut rows, block_count, depth + 1)).await?;
                     out.push_str(&render_table(&b["table"], &rows)?);
                 } else {
-                    Box::pin(append_children(http, id, out, block_count)).await?;
+                    Box::pin(append_children(http, id, out, block_count, depth + 1)).await?;
                 }
             }
         }

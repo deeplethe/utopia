@@ -241,64 +241,82 @@ async fn a_traversable_child_at_the_block_limit_is_reported_without_fetching_it(
         &server,
         "page",
         None,
-        vec![
-            json!({"id":"container", "type":"column", "has_children":true, "column":{}}),
-            block("sibling", "toggle", "Must not appear", true),
-        ],
-        Some("root-next"),
+        vec![json!({"id":"container", "type":"column", "has_children":true, "column":{}})],
+        None,
     )
     .await;
-    // 无文字容器也占一块；子层第五页的第 99 块耗尽整页预算。
-    for page in 0..5 {
-        let cursor = format!("child-{page}");
-        let next = format!("child-{}", page + 1);
-        let blocks = (0..100)
-            .map(|index| {
-                let id = format!("item-{}", page * 100 + index);
-                block(&id, "paragraph", &id, page == 4 && index == 98)
-            })
-            .collect();
-        children(
-            &server,
-            "container",
-            if page == 0 { None } else { Some(&cursor) },
-            blocks,
-            Some(&next),
-        )
-        .await;
-    }
-    let error = page_text(&mut paced(&server), "page").await.unwrap_err();
-    assert!(error.to_string().contains("more than 500 blocks"));
-    assert_eq!(request_paths(&server).await.len(), 6);
+    children(
+        &server,
+        "container",
+        None,
+        vec![block("toggle", "toggle", "Last allowed block", true)],
+        None,
+    )
+    .await;
+    // 无文字容器也占一块，所以读到 toggle 时预算刚好耗尽。
+    let mut block_count = MAX_BLOCKS_PER_PAGE - 2;
+    let error = append_children(
+        &mut paced(&server),
+        "page",
+        &mut String::new(),
+        &mut block_count,
+        0,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(block_count, MAX_BLOCKS_PER_PAGE);
+    assert_eq!(
+        error.to_string(),
+        format!("notion page has more than {MAX_BLOCKS_PER_PAGE} blocks")
+    );
+    assert_eq!(
+        request_paths(&server).await,
+        ["/blocks/page/children", "/blocks/container/children"]
+    );
 }
 
 #[tokio::test]
 async fn a_complete_page_at_the_block_limit_is_read_in_full() {
     let server = MockServer::start().await;
-    for page in 0..5 {
-        let cursor = format!("root-{page}");
-        let next = format!("root-{}", page + 1);
-        let blocks = (0..100)
-            .map(|index| block(&format!("{page}-{index}"), "paragraph", "Body", false))
-            .collect();
-        children(
-            &server,
-            "page",
-            if page == 0 { None } else { Some(&cursor) },
-            blocks,
-            (page < 4).then_some(next.as_str()),
-        )
-        .await;
-    }
+    mock_paragraphs(&server, "page", MAX_BLOCKS_PER_PAGE).await;
     assert_eq!(
-        page_text(&mut paced(&server), "page")
-            .await
-            .unwrap()
-            .lines()
-            .count(),
-        MAX_BLOCKS_PER_PAGE
+        page_text(&mut paced(&server), "page").await.unwrap(),
+        (1..=MAX_BLOCKS_PER_PAGE)
+            .map(|number| format!("Paragraph {number}\n"))
+            .collect::<String>()
     );
-    assert_eq!(request_paths(&server).await.len(), 5);
+    assert_eq!(
+        request_paths(&server).await.len(),
+        MAX_BLOCKS_PER_PAGE.div_ceil(100)
+    );
+}
+
+#[tokio::test]
+async fn raising_the_block_budget_keeps_the_recursive_depth_bound() {
+    let server = MockServer::start().await;
+    children(
+        &server,
+        "page",
+        None,
+        vec![block("toggle", "toggle", "Last allowed level", true)],
+        None,
+    )
+    .await;
+    let mut block_count = MAX_BLOCK_DEPTH - 1;
+    let error = append_children(
+        &mut paced(&server),
+        "page",
+        &mut String::new(),
+        &mut block_count,
+        MAX_BLOCK_DEPTH - 1,
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        format!("notion page has more than {MAX_BLOCK_DEPTH} levels of blocks")
+    );
+    assert_eq!(request_paths(&server).await, ["/blocks/page/children"]);
 }
 
 #[tokio::test]
@@ -329,10 +347,14 @@ async fn reaching_the_block_limit_in_a_child_does_not_hide_a_parent_sibling() {
         "page",
         &mut String::new(),
         &mut block_count,
+        0,
     )
     .await
     .unwrap_err();
-    assert!(error.to_string().contains("more than 500 blocks"));
+    assert_eq!(
+        error.to_string(),
+        format!("notion page has more than {MAX_BLOCKS_PER_PAGE} blocks")
+    );
     assert_eq!(
         request_paths(&server).await,
         ["/blocks/page/children", "/blocks/toggle/children"]
@@ -543,39 +565,48 @@ async fn a_table_without_column_headers_keeps_the_first_row_as_data() {
     );
 }
 
+async fn mock_paragraphs(server: &MockServer, parent: &str, count: usize) {
+    for start in (0..count.min(MAX_BLOCKS_PER_PAGE)).step_by(100) {
+        let end = (start + 100).min(count);
+        let cursor = (start != 0).then(|| start.to_string());
+        let next = (end < count).then(|| end.to_string());
+        let blocks = (start + 1..=end)
+            .map(|number| {
+                block(
+                    &number.to_string(),
+                    "paragraph",
+                    &format!("Paragraph {number}"),
+                    false,
+                )
+            })
+            .collect();
+        children(server, parent, cursor.as_deref(), blocks, next.as_deref()).await;
+    }
+}
+
+const LONG_PAGE_BLOCKS: usize = 651;
+
 async fn mock_sync_pages(server: &MockServer, oversized: bool) {
     server.reset().await;
+    let mut pages = vec![json!({"id": "bounded"})];
+    if oversized {
+        pages.push(json!({"id": "new-oversized"}));
+    }
+    pages.push(json!({"id": "short"}));
     Mock::given(method("POST"))
         .and(path("/search"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "results": [{"id":"bounded"}, {"id":"short"}],
+            "results": pages,
             "has_more": false,
         })))
         .expect(1)
         .mount(server)
         .await;
-    for page in 0..5 {
-        let blocks = (0..100)
-            .map(|index| {
-                let index = page * 100 + index;
-                let text = if !oversized && index == MAX_BLOCKS_PER_PAGE - 1 {
-                    "Final decision"
-                } else {
-                    "Introduction"
-                };
-                block(&format!("block-{index}"), "paragraph", text, false)
-            })
-            .collect();
-        let cursor = format!("page-{page}");
-        let next = format!("page-{}", page + 1);
-        children(
-            server,
-            "bounded",
-            (page > 0).then_some(cursor.as_str()),
-            blocks,
-            (page < 4 || oversized).then_some(next.as_str()),
-        )
-        .await;
+    if oversized {
+        mock_paragraphs(server, "bounded", MAX_BLOCKS_PER_PAGE + 1).await;
+        mock_paragraphs(server, "new-oversized", MAX_BLOCKS_PER_PAGE + 1).await;
+    } else {
+        mock_paragraphs(server, "bounded", LONG_PAGE_BLOCKS).await;
     }
     let sibling = if oversized {
         "Updated sibling policy"
@@ -593,7 +624,7 @@ async fn mock_sync_pages(server: &MockServer, oversized: bool) {
 }
 
 #[tokio::test]
-async fn notion_sync_keeps_the_complete_revision_after_a_cutoff() -> anyhow::Result<()> {
+async fn notion_sync_imports_long_pages_and_skips_incomplete_pages() -> anyhow::Result<()> {
     use crate::ingest_sources::sync_source;
     use utopia_store::{documents, sources};
     use uuid::Uuid;
@@ -634,7 +665,13 @@ async fn notion_sync_keeps_the_complete_revision_after_a_cutoff() -> anyhow::Res
         let original = get("notion://bounded").await?;
         let sibling = get("notion://short").await?;
         let original_text = state.blob.get(&original.sha256).await?;
-        anyhow::ensure!(String::from_utf8_lossy(&original_text).contains("Final decision"));
+        let expected = (1..=LONG_PAGE_BLOCKS)
+            .map(|number| format!("Paragraph {number}\n"))
+            .collect::<String>();
+        anyhow::ensure!(
+            &original_text[..] == format!("# untitled\n\n{expected}").as_bytes(),
+            "the complete {LONG_PAGE_BLOCKS}-block body should be imported in order",
+        );
         anyhow::ensure!(documents::versions(&pool, original.id).await?.len() == 1);
         anyhow::ensure!(sources::list_runs(&pool, source, 1).await?[0].status == "ok");
 
@@ -645,20 +682,27 @@ async fn notion_sync_keeps_the_complete_revision_after_a_cutoff() -> anyhow::Res
         let runs = sources::list_runs(&pool, source, 2).await?;
         anyhow::ensure!(
             after.id == original.id && after.sha256 == original.sha256 && after_text == original_text,
-            "known-incomplete Notion page replaced its current revision: original sha={}, current sha={}, conclusion still present={}, run status={:?}",
-            original.sha256, after.sha256, String::from_utf8_lossy(&after_text).contains("Final decision"),
-            runs.first().map(|run| run.status.as_str())
+            "an oversized edit should preserve the complete revision",
         );
         anyhow::ensure!(documents::versions(&pool, original.id).await?.len() == 1);
+        anyhow::ensure!(
+            documents::find_by_external_key(&pool, source, "notion://new-oversized").await?.is_none(),
+            "a newly discovered oversized page should not create a document",
+        );
         let new_sibling = get("notion://short").await?;
         anyhow::ensure!(new_sibling.id == sibling.id && new_sibling.sha256 != sibling.sha256);
         anyhow::ensure!(documents::versions(&pool, sibling.id).await?.len() == 2);
         anyhow::ensure!(String::from_utf8_lossy(&state.blob.get(&new_sibling.sha256).await?).contains("Updated sibling policy"));
         anyhow::ensure!(runs[0].status == "failed");
-        let diagnostic = outcome.expect_err("the incomplete page must be reported").to_string();
-        anyhow::ensure!(diagnostic.contains("notion page bounded") && diagnostic.contains("500"));
+        let diagnostic = outcome.err().context("both incomplete pages should be reported")?.to_string();
+        for id in ["bounded", "new-oversized"] {
+            anyhow::ensure!(
+                diagnostic.contains(&format!("notion page {id}: notion page has more than {MAX_BLOCKS_PER_PAGE} blocks")),
+                "missing cutoff diagnostic for {id}: {diagnostic}",
+            );
+        }
         anyhow::ensure!(runs[0].error.as_deref() == Some(diagnostic.as_str()));
-        anyhow::ensure!(server.received_requests().await.unwrap().len() == 7);
+        anyhow::ensure!(server.received_requests().await.unwrap().len() == 2 + 2 * MAX_BLOCKS_PER_PAGE.div_ceil(100));
         anyhow::Ok(())
     }.await;
     sqlx::query("DELETE FROM knowledge_bases WHERE id = $1")
