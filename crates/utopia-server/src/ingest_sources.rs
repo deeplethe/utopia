@@ -979,10 +979,11 @@ async fn sync_github_repo_with_client(
     let mut stats = SyncStats::default();
     for (entry, key) in chosen.iter().zip(&keys) {
         // 没变的整条跳过：已落库的字节算出同一个 git SHA，就不必再花两次请求
+        // 回收站里的文档要走入库流程，即使上游内容没变也要恢复。
         let old =
             utopia_store::documents::find_by_external_key(&state.pool, source.id, key).await?;
         let unchanged = match old {
-            Some(d) if Some(d.size_bytes) == entry.size => state
+            Some(d) if d.deleted_at.is_none() && Some(d.size_bytes) == entry.size => state
                 .blob
                 .get(&d.sha256)
                 .await
@@ -1133,15 +1134,16 @@ async fn sync_gitlab_repo_with_client(
     let mut stats = SyncStats::default();
     for (entry, key) in chosen.iter().zip(&keys) {
         // 没变的整条跳过：树里没有大小，但已落库的字节算出同一个 git SHA 就够了
+        // 回收站里的文档要走入库流程，即使上游内容没变也要恢复。
         let old =
             utopia_store::documents::find_by_external_key(&state.pool, source.id, key).await?;
         let unchanged = match old {
-            Some(d) => state
+            Some(d) if d.deleted_at.is_none() => state
                 .blob
                 .get(&d.sha256)
                 .await
                 .is_ok_and(|b| gr::git_blob_sha(&b) == entry.id),
-            None => false,
+            _ => false,
         };
         if unchanged {
             continue;
