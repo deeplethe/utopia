@@ -254,11 +254,10 @@ async fn large_group_progress(provider: Provider, group_size: usize) -> anyhow::
                 && (time(&value) == time(FIRST)
                     || time(&value) == time(FIRST) + chrono::Duration::seconds(1))
         }),
-        // 夹具没有凭据，读不到账户时区，下界按 UTC-12 写：12:34 往前 12 小时
-        Provider::Jira => request
-            .url
-            .query_pairs()
-            .any(|(key, value)| key == "jql" && value.contains("2026-01-02 00:34")),
+        Provider::Jira => request.url.query_pairs().any(|(key, value)| {
+            key == "jql"
+                && value.contains(&format!("updated >= {}", time(FIRST).timestamp_millis()))
+        }),
     });
     assert!(
         incremental,
@@ -273,7 +272,7 @@ async fn github_imports_1001_equal_time_items_then_skips_the_old_prefix() -> any
 }
 
 #[tokio::test]
-async fn jira_imports_501_equal_time_items_then_skips_the_rounded_prefix() -> anyhow::Result<()> {
+async fn jira_imports_501_equal_time_items_then_skips_the_old_prefix() -> anyhow::Result<()> {
     large_group_progress(Provider::Jira, 501).await
 }
 

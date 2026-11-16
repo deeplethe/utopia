@@ -52,6 +52,11 @@ neither the 200-item processing budget nor the ten-page listing budget.
 Pages containing only skipped items therefore cannot exhaust the listing
 budget. For GitHub, `since` can be the checkpoint plus one second.
 
+*Revised 2026-11-16 (#1484):* Jira's bound is no longer rounded to the minute.
+A quoted minute is read in the searching account's time zone (0013 §3), so the
+bound is now an inclusive epoch-millisecond instant. Items updated at the
+checkpoint itself still come back and are skipped as above.
+
 Store the completed timestamp on the source, independently of retained sync
 audit rows. Do not derive it from a run's start or finish time, or advance it
 to the clock time merely because a query is empty. A failed run leaves the
@@ -166,6 +171,8 @@ must demonstrate:
   later group and advances the checkpoint past T.
 - GitHub's inclusive boundary and Jira's minute-rounded query bound preserve
   this progress without omissions or duplicate versions and processing jobs.
+  *Revised 2026-11-16 (#1484):* Jira's bound is now an inclusive
+  epoch-millisecond instant; only items at the checkpoint come back again.
 - A failed page fetch, detail fetch or write cannot advance the checkpoint;
   retry recovers the whole group. Updates during pagination remain reachable.
 - A page-moving update rejects the window; once the listing stabilizes, a
