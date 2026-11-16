@@ -293,6 +293,36 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    // 被取代的分块留不留向量由部署决定：不设 `UTOPIA_SUPERSEDED_VECTOR_DAYS` 就什么都不排
+    if let Some(days) = cfg.superseded_vector_days {
+        let prune_state = state.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(86_400));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tick.tick().await;
+                let bases = match utopia_store::retention::bases(&prune_state.pool).await {
+                    Ok(bases) => bases,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "列出要清理的库失败");
+                        continue;
+                    }
+                };
+                for kb_id in bases {
+                    if let Err(e) = utopia_store::jobs::enqueue_unless_queued(
+                        &prune_state.pool,
+                        utopia_store::retention::JOB_KIND,
+                        serde_json::json!({ "kb_id": kb_id, "days": days }),
+                    )
+                    .await
+                    {
+                        tracing::warn!(kb_id = %kb_id, error = %e, "清理任务入队失败");
+                    }
+                }
+            }
+        });
+    }
+
     let app = api::router(state, &cfg);
     let listener = tokio::net::TcpListener::bind(&cfg.bind_addr).await?;
     tracing::info!("Utopia 服务启动于 http://{}", cfg.bind_addr);
@@ -587,6 +617,28 @@ async fn dispatch(st: &state::AppState, job: &utopia_store::jobs::Job) -> anyhow
                 .and_then(|s| s.parse().ok())
                 .ok_or_else(|| anyhow::anyhow!("payload 缺少 kb_id"))?;
             adjudication::adjudicate_entities(st, kb_id).await
+        }
+        utopia_store::retention::JOB_KIND => {
+            let kb_id: Uuid = job
+                .payload
+                .get("kb_id")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse().ok())
+                .ok_or_else(|| anyhow::anyhow!("payload 缺少 kb_id"))?;
+            let days = job
+                .payload
+                .get("days")
+                .and_then(|v| v.as_i64())
+                .ok_or_else(|| anyhow::anyhow!("payload 缺少 days"))?;
+            let vectors_cleared =
+                utopia_store::retention::prune_superseded(&st.pool, kb_id, days).await?;
+            tracing::info!(
+                %kb_id,
+                days,
+                vectors_cleared,
+                "被取代的分块清理完成"
+            );
+            Ok(())
         }
         "govern" => {
             let kb_id: Uuid = job
