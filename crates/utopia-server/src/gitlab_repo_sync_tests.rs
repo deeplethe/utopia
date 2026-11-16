@@ -7,13 +7,14 @@ use uuid::Uuid;
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 const PROJECT: &str = "/projects/QuintinBotes%2Futopia-gitlab-fixture/repository";
+const README: &str = "README.md";
 
 /// 阶段 0：录下的树分两页给。阶段 1：去掉 README.md，每一页都说还有下一页，翻到上限也翻不完。
 /// 阶段 2：去掉 README.md，一页给完
 fn tree_page(fixture: &Value, stage: u8, uri: &str, page: Option<&str>) -> ResponseTemplate {
     let mut entries = fixture["tree"].as_array().unwrap().clone();
     if stage > 0 {
-        entries.retain(|e| e["path"] != "README.md");
+        entries.retain(|e| e["path"] != README);
     }
     let next = format!(
         r#"<{uri}{PROJECT}/tree?page_token=2&pagination=keyset&recursive=true>; rel="next""#
@@ -110,7 +111,7 @@ async fn a_gitlab_project_sync_takes_each_changed_file_once() -> anyhow::Result<
 
         let first = sync().await?;
         anyhow::ensure!(first.created == 3, "第一轮建了 {}", first.created);
-        for path in ["README.md", "docs/copy-of-guide.md", "docs/nested/deep.mdx"] {
+        for path in [README, "docs/copy-of-guide.md", "docs/nested/deep.mdx"] {
             anyhow::ensure!(doc(path).await?.is_some(), "{path} 该收");
         }
         for path in [
@@ -154,9 +155,39 @@ async fn a_gitlab_project_sync_takes_each_changed_file_once() -> anyhow::Result<
                 && again[0].1.ends_with("/files/big.md"),
             "没变又取了：{again:?}"
         );
+
+        let original = doc(README).await?.unwrap();
+        let content = state.blob.get(&original.sha256).await?;
+        let versions = utopia_store::documents::versions(&pool, original.id).await?.len();
+        utopia_store::documents::delete(&pool, kb, original.id, None).await?;
+        assert!(doc(README).await?.unwrap().deleted_at.is_some());
+
+        let seen = requests().await.len();
+        let restored = sync().await?;
+        let document = doc(README).await?.unwrap();
+        anyhow::ensure!(document.deleted_at.is_none(), "unchanged GitLab file stayed in the trash");
+        assert_eq!((restored.created, restored.updated), (0, 1));
+        assert_eq!(document.id, original.id);
+        assert_eq!(state.blob.get(&document.sha256).await?, content);
+        assert_eq!(utopia_store::documents::versions(&pool, document.id).await?.len(), versions);
+        let blob_path = format!("/blobs/{}/raw", crate::github_repo::git_blob_sha(&content));
+        for request in &requests().await[seen..] {
+            let path = request.url.path().strip_prefix(PROJECT).unwrap();
+            assert!(
+                path == "/tree"
+                    || path == blob_path
+                    || (request.method == wiremock::http::Method::HEAD
+                        && matches!(path, "/files/README.md" | "/files/big.md"))
+                    || (path == "/commits"
+                        && request.url.query_pairs().any(|(k, v)| k == "path" && v == README)),
+                "the restore sync refetched an unchanged live file: {}",
+                request.url,
+            );
+        }
+
         *stage.lock().unwrap() = 1;
         sync().await?;
-        let missing = || async { anyhow::Ok(doc("README.md").await?.unwrap().missing_since) };
+        let missing = || async { anyhow::Ok(doc(README).await?.unwrap().missing_since) };
         anyhow::ensure!(missing().await?.is_none(), "没翻完的树不该判消失");
         *stage.lock().unwrap() = 2;
         sync().await?;

@@ -402,3 +402,53 @@ async fn an_external_id_prefix_docs_underscore_finds_docs_a_md_but_not_docsxa_md
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn an_exact_name_search_by_a_read_token_returns_only_that_entity() -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    let result = async {
+        sqlx::query(
+            "INSERT INTO entities(id,kb_id,type_id,canonical_name)
+             VALUES ($1,$2,$3,'Zhang San Jr')",
+        )
+        .bind(Uuid::now_v7())
+        .bind(f.kb)
+        .bind(f.person)
+        .execute(&f.pool)
+        .await?;
+        let token = f.read_token(f.kb).await;
+        let mut answers = Vec::new();
+        for suffix in ["", "&exact=true"] {
+            let request = Request::get(format!(
+                "/api/v1/kbs/{}/entities?q=zhang%20san{suffix}",
+                f.kb
+            ))
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())?;
+            let response = f.app.clone().oneshot(request).await?;
+            anyhow::ensure!(
+                response.status() == StatusCode::OK,
+                "{suffix}: {}",
+                response.status()
+            );
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await?;
+            answers.push(serde_json::from_slice::<serde_json::Value>(&bytes)?);
+        }
+        anyhow::ensure!(
+            answers[0]["total"] == 2,
+            "without exact both are found: {}",
+            answers[0]
+        );
+        anyhow::ensure!(
+            answers[1]["total"] == 1 && answers[1]["entities"][0]["id"] == json!(f.entity),
+            "with exact only Zhang San is found: {}",
+            answers[1]
+        );
+        Ok(())
+    }
+    .await;
+    f.cleanup().await?;
+    result
+}

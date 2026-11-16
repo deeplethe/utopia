@@ -471,7 +471,8 @@ async fn lookup(
     // 现在算——和现状一致，回放图上的搜索框另走 `/kbs/{id}/entities` 自己挂
     // 时刻
     let (hits, total) =
-        utopia_store::graph::search_entities(&ctx.state.pool, ctx.kb_id, raw, 8, 0, None).await?;
+        utopia_store::graph::search_entities(&ctx.state.pool, ctx.kb_id, raw, 8, 0, None, false)
+            .await?;
     if !hits.is_empty() {
         return Ok((hits, Some(total)));
     }
@@ -482,7 +483,7 @@ async fn lookup(
     let mut pool: Vec<GraphNode> = Vec::new();
     for w in &words {
         let (found, _) =
-            utopia_store::graph::search_entities(&ctx.state.pool, ctx.kb_id, w, 40, 0, None)
+            utopia_store::graph::search_entities(&ctx.state.pool, ctx.kb_id, w, 40, 0, None, false)
                 .await?;
         for n in found {
             if !pool.iter().any(|p| p.id == n.id) {
