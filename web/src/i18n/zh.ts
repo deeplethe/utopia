@@ -811,6 +811,9 @@ export const zh: Strings = {
     button: "检索",
     searching: "检索中…",
     noResults: "没有结果",
+    previousPage: "上一页",
+    nextPage: "下一页",
+    retry: "重试搜索",
     chunkOf: (filename: string, seq: number) => `${filename} · 第 ${seq} 段`,
   },
   ask: {
