@@ -884,6 +884,9 @@ export const en = {
     button: "Search",
     searching: "Searching…",
     noResults: "No results found",
+    previousPage: "Previous page",
+    nextPage: "Next page",
+    retry: "Retry search",
     chunkOf: (filename: string, seq: number) => `${filename} · section ${seq}`,
   },
   ask: {
