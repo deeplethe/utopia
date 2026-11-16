@@ -15,6 +15,7 @@ export const CREATABLE_SOURCE_KINDS = [
   "github_issues",
   "github_repo",
   "gitlab_repo",
+  "gitlab_issues",
   "jira_issues",
   "s3",
   "azure_blob",
@@ -38,13 +39,17 @@ export type SourceKind = CreatableSourceKind | "memory" | "upload";
  */
 export function hasSyncFields(
   kind: string,
-  f: { repo?: string; jiraUrl?: string; jiraProject?: string },
+  f: { repo?: string; jiraUrl?: string; jiraProject?: string; token?: string },
 ): boolean {
   if (kind === "github_issues" || kind === "github_repo") {
     return /^[^/\s]+\/[^/\s]+$/.test(f.repo?.trim() ?? "");
   }
   // GitLab 的项目路径可以有好几层子组：group/sub/name
-  if (kind === "gitlab_repo") return /^[^/\s]+(\/[^/\s]+)+$/.test(f.repo?.trim() ?? "");
+  if (kind === "gitlab_repo" || kind === "gitlab_issues") {
+    if (!/^[^/\s]+(\/[^/\s]+)+$/.test(f.repo?.trim() ?? "")) return false;
+    // gitlab_issues 的备注与事件没有令牌就是 401，新建时令牌必填。编辑时不传这一项：留空是保留库里的原值
+    return kind === "gitlab_repo" || f.token === undefined || f.token.trim() !== "";
+  }
   if (kind === "jira_issues") return Boolean(f.jiraUrl?.trim() && f.jiraProject?.trim());
   return true;
 }

@@ -1,5 +1,6 @@
 //! Every ticket in the GitHub and Jira fixtures renders exactly the text it rendered before the
-//! two connectors shared one renderer (0013 decision 7). A changed byte re-versions every ticket
+//! two connectors shared one renderer (0013 decision 7), and every GitLab one the text it was
+//! first recorded with. A changed byte re-versions every ticket
 //! on its next sync, so this compares whole documents, not fragments.
 //!
 //! Regenerate only on purpose: `UTOPIA_WRITE_TICKET_GOLDEN=1 cargo test -p utopia-server ticket_golden`.
@@ -72,6 +73,29 @@ fn rendered() -> BTreeMap<String, String> {
     let page: jira::SearchPage = serde_json::from_value(raw).unwrap();
     for issue in &page.issues {
         out.insert(format!("jira {}", issue.key), jira::render(issue));
+    }
+    // GitLab came in on the shared renderer (#1327); its recording holds labels, a milestone, both
+    // closings of a merge request and a system note, so it needs no variant
+    use crate::gitlab_issues as gl;
+    #[derive(serde::Deserialize)]
+    struct Gitlab {
+        issues: Vec<gl::Item>,
+        merge_requests: Vec<gl::Item>,
+        details: std::collections::HashMap<String, gl::Details>,
+    }
+    let f: Gitlab =
+        serde_json::from_str(include_str!("../tests/fixtures/gitlab_issues.json")).unwrap();
+    for (kind, items) in [
+        (gl::Kind::Issue, &f.issues),
+        (gl::Kind::MergeRequest, &f.merge_requests),
+    ] {
+        for item in items {
+            let details = &f.details[&format!("{}/{}", kind.path(), item.iid)];
+            out.insert(
+                format!("gitlab {}{}", kind.sigil(), item.iid),
+                gl::render(kind, item, details),
+            );
+        }
     }
     out
 }

@@ -1380,6 +1380,7 @@ function SourceModal({
     kind === "github_issues" ||
     kind === "github_repo" ||
     kind === "gitlab_repo" ||
+    kind === "gitlab_issues" ||
     kind === "jira_issues" ||
     kind === "s3" ||
     kind === "azure_blob" ||
@@ -1420,6 +1421,12 @@ function SourceModal({
                       ...(authHeader.trim() ? { auth_header: authHeader.trim() } : {}),
                       include: globList(includeGlobs),
                       exclude: globList(excludeGlobs),
+                    }
+                : kind === "gitlab_issues"
+                  ? {
+                      project: repo.trim(),
+                      ...(authHeader.trim() ? { auth_header: authHeader.trim() } : {}),
+                      ...(includePrs ? { include_merge_requests: true } : {}),
                     }
                 : kind === "jira_issues"
                   ? {
@@ -1502,7 +1509,7 @@ function SourceModal({
               ? davUrl.trim()
             : kind === "s3" || kind === "azure_blob" || kind === "gcs"
             ? s3Bucket.trim()
-            : hasSyncFields(kind, { repo, jiraUrl, jiraProject }));
+            : hasSyncFields(kind, { repo, jiraUrl, jiraProject, token: authHeader }));
 
   // 注意用 div 而非 label：label 会把 :hover/click 转发给内部第一个可标记控件
   //（button 也算），导致图标网格/日程选择器悬停时第一个按钮常亮
@@ -1837,31 +1844,37 @@ function SourceModal({
               )}
             </>
           )}
-          {(kind === "github_issues" || kind === "github_repo" || kind === "gitlab_repo") && (
+          {(kind === "github_issues" || kind === "github_repo" || kind.startsWith("gitlab_")) && (
             <>
               {field(
-                kind === "gitlab_repo" ? S.library.gitlabProjectField : S.library.repoField,
+                kind.startsWith("gitlab_") ? S.library.gitlabProjectField : S.library.repoField,
                 <Input className="w-full font-mono"
-                  placeholder={kind === "gitlab_repo" ? "group/name" : "owner/name"}
+                  placeholder={kind.startsWith("gitlab_") ? "group/name" : "owner/name"}
                   value={repo}
                   onChange={(e) => setRepo(e.target.value)}
                 />,
               )}
               {field(
-                kind === "gitlab_repo" ? S.library.gitlabTokenField : S.library.tokenField,
+                kind === "gitlab_issues"
+                  ? S.library.gitlabIssuesTokenField
+                  : kind === "gitlab_repo" ? S.library.gitlabTokenField : S.library.tokenField,
                 <Input className="w-full font-mono"
                   type="password"
-                  placeholder={kind === "gitlab_repo" ? "Bearer glpat-…" : "Bearer ghp_…"}
+                  placeholder={kind.startsWith("gitlab_") ? "Bearer glpat-…" : "Bearer ghp_…"}
                   value={authHeader}
                   onChange={(e) => setAuthHeader(e.target.value)}
                 />,
               )}
-              {kind === "github_issues" ? (
+              {kind === "github_issues" || kind === "gitlab_issues" ? (
                 <Checkbox
                   className="mb-4"
                   checked={includePrs}
                   onChange={(v) => setIncludePrs(v)}
-                  label={S.library.includePullRequests}
+                  label={
+                    kind === "gitlab_issues"
+                      ? S.library.includeMergeRequests
+                      : S.library.includePullRequests
+                  }
                 />
               ) : (
                 <>
@@ -1920,8 +1933,10 @@ function SourceEditModal({
   const [endpoint, setEndpoint] = useState(cfg.endpoint ?? "");
   const [authHeader, setAuthHeader] = useState("");
   // GitLab 的项目路径存在 `project`（与 Jira 的项目 key 同名不同义），表单里同用这一格
-  const [repo, setRepo] = useState((kind === "gitlab_repo" ? cfg.project : cfg.repo) ?? "");
-  const [includePrs, setIncludePrs] = useState(Boolean(cfg.include_pull_requests));
+  const [repo, setRepo] = useState((kind.startsWith("gitlab_") ? cfg.project : cfg.repo) ?? "");
+  const [includePrs, setIncludePrs] = useState(
+    Boolean(kind === "gitlab_issues" ? cfg.include_merge_requests : cfg.include_pull_requests),
+  );
   const [includeGlobs, setIncludeGlobs] = useState((cfg.include ?? []).join(", "));
   const [excludeGlobs, setExcludeGlobs] = useState((cfg.exclude ?? []).join(", "));
   const [confirmingDelete, setConfirmingDelete] = useState(false);
@@ -1943,6 +1958,9 @@ function SourceEditModal({
     (kind === "github_issues" &&
       (repo.trim() !== (cfg.repo ?? "") ||
         includePrs !== Boolean(cfg.include_pull_requests))) ||
+    (kind === "gitlab_issues" &&
+      (repo.trim() !== (cfg.project ?? "") ||
+        includePrs !== Boolean(cfg.include_merge_requests))) ||
     ((kind === "github_repo" || kind === "gitlab_repo") &&
       (repo.trim() !== ((kind === "gitlab_repo" ? cfg.project : cfg.repo) ?? "") ||
         String(globList(includeGlobs) ?? "") !== String(cfg.include ?? "") ||
@@ -1968,6 +1986,13 @@ function SourceEditModal({
                     ...(authHeader.trim() ? { auth_header: authHeader.trim() } : {}),
                     include_pull_requests: includePrs,
                   }
+                : kind === "gitlab_issues"
+                  ? {
+                      project: repo.trim(),
+                      ...(authHeader.trim() ? { auth_header: authHeader.trim() } : {}),
+                      // 留空 = 后端保留库里原值（凭据只进不出）
+                      include_merge_requests: includePrs,
+                    }
                 : kind === "github_repo" || kind === "gitlab_repo"
                   ? githubRepoConfig(
                       cfg,
@@ -2095,31 +2120,37 @@ function SourceEditModal({
               </p>
             </>
           )}
-          {(kind === "github_issues" || kind === "github_repo" || kind === "gitlab_repo") && (
+          {(kind === "github_issues" || kind === "github_repo" || kind.startsWith("gitlab_")) && (
             <>
               {field(
-                kind === "gitlab_repo" ? S.library.gitlabProjectField : S.library.repoField,
+                kind.startsWith("gitlab_") ? S.library.gitlabProjectField : S.library.repoField,
                 <Input className="w-full font-mono"
-                  placeholder={kind === "gitlab_repo" ? "group/name" : "owner/name"}
+                  placeholder={kind.startsWith("gitlab_") ? "group/name" : "owner/name"}
                   value={repo}
                   onChange={(e) => setRepo(e.target.value)}
                 />,
               )}
               {field(
-                kind === "gitlab_repo" ? S.library.gitlabTokenField : S.library.tokenField,
+                kind === "gitlab_issues"
+                  ? S.library.gitlabIssuesTokenField
+                  : kind === "gitlab_repo" ? S.library.gitlabTokenField : S.library.tokenField,
                 <Input className="w-full font-mono"
                   type="password"
-                  placeholder={kind === "gitlab_repo" ? "Bearer glpat-…" : "Bearer ghp_…"}
+                  placeholder={kind.startsWith("gitlab_") ? "Bearer glpat-…" : "Bearer ghp_…"}
                   value={authHeader}
                   onChange={(e) => setAuthHeader(e.target.value)}
                 />,
               )}
-              {kind === "github_issues" ? (
+              {kind === "github_issues" || kind === "gitlab_issues" ? (
                 <Checkbox
                   className="mb-4"
                   checked={includePrs}
                   onChange={(v) => setIncludePrs(v)}
-                  label={S.library.includePullRequests}
+                  label={
+                    kind === "gitlab_issues"
+                      ? S.library.includeMergeRequests
+                      : S.library.includePullRequests
+                  }
                 />
               ) : (
                 <>
