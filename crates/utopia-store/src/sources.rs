@@ -1,7 +1,7 @@
 //! 摄入来源仓储："来源即文件夹"——source 是容器，挂着它摄入的文档，可定时同步。
 
 use chrono::{DateTime, Utc};
-use sqlx::PgPool;
+use sqlx::{PgPool, Postgres, Transaction};
 use utopia_core::models::{Role, Source, SourceKind, SourceView, SyncRun, SOURCE_SECRET_KEYS};
 use utopia_core::{secrets, AppError, AppResult};
 use uuid::Uuid;
@@ -10,7 +10,7 @@ use uuid::Uuid;
 /// 本机目录监听（watch_folder）已否决——自部署用户看不到服务器磁盘；
 /// 对象存储 / WebDAV / Notion 是它的替代形态（0013）。
 /// custom = 自定义拉取器：任何实现 Utopia ingest 接口的 URL（返回 items JSON）即可定时摄取。
-/// github_issues / jira_issues = 工单：一张工单连同它的状态变更史成为一篇文档。
+/// github_issues / gitlab_issues / jira_issues = 工单：一张工单连同它的状态变更史成为一篇文档。
 ///
 /// 种类的清单**不在这里写**：`SourceKind`（utopia-core）一个枚举出全部——创建的白名单、
 /// 同步的分派、前端的下拉框（有测试对表）。从前这里有一张手写的 `KINDS`，五种连接器
@@ -21,20 +21,60 @@ pub fn creatable_kinds() -> Vec<&'static str> {
 
 /// 校验并规范化标准 5 段 cron 表达式（内部用 cron crate 的 6 段：补秒位）。
 pub fn validate_cron(expr: &str) -> AppResult<String> {
-    let normalized = expr.split_whitespace().collect::<Vec<_>>().join(" ");
-    let fields = normalized.split(' ').count();
-    if fields != 5 {
+    let mut fields: Vec<String> = expr.split_whitespace().map(str::to_string).collect();
+    if fields.len() != 5 {
         return Err(AppError::invalid_detail(
             "bad_cron_fields",
             "Cron expression must have 5 fields (minute hour day month weekday)",
-            format!("got {fields}"),
+            format!("got {}", fields.len()),
         ));
     }
+    if let Some(names) = weekday_names(&fields[4]) {
+        fields[4] = names;
+    }
+    let normalized = fields.join(" ");
     use std::str::FromStr;
     cron::Schedule::from_str(&format!("0 {normalized}")).map_err(|e| {
         AppError::invalid_detail("bad_cron", "Invalid cron expression", e.to_string())
     })?;
     Ok(normalized)
+}
+
+/// 星期那一段的数字按标准 cron 读（0–7，0 与 7 都是周日），存成名字。
+///
+/// cron crate 的数字星期是 Quartz 那一套，1 是周日：照 Advanced 旁边链着的 crontab.guru
+/// 写 `1-5`，同步落在周日到周四，`0` 则被当成越界拒掉。名字两边读法一样，存下来的
+/// 表达式也就没有歧义。没有数字、或读不懂的写法原样交给 cron crate 去校验
+fn weekday_names(field: &str) -> Option<String> {
+    if !field.bytes().any(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let mut days = [false; 7];
+    for part in field.split(',') {
+        let (range, step) = match part.split_once('/') {
+            Some((range, step)) => (range, step.parse::<usize>().ok().filter(|s| *s > 0)?),
+            None => (part, 1),
+        };
+        let (from, to) = match range.split_once('-') {
+            _ if range == "*" => (0, 6),
+            Some((from, to)) => (from.parse().ok()?, to.parse().ok()?),
+            None => {
+                let day = range.parse().ok()?;
+                (day, day)
+            }
+        };
+        if from > to || to > 7 {
+            return None;
+        }
+        for day in (from..=to).step_by(step) {
+            days[day % 7] = true;
+        }
+    }
+    let names = [1, 2, 3, 4, 5, 6, 0]
+        .into_iter()
+        .filter(|d| days[*d])
+        .map(|d| ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][d]);
+    Some(names.collect::<Vec<_>>().join(","))
 }
 
 pub const RSS_CONTENT_MODE_KEY: &str = "content_mode";
@@ -72,7 +112,14 @@ pub fn rss_full_content_enabled(kind: &str, config: &serde_json::Value) -> AppRe
 /// cron 的下一次触发时刻（服务器本地时区）。
 fn cron_next_after(expr: &str, after: DateTime<Utc>) -> Option<DateTime<Utc>> {
     use std::str::FromStr;
-    let schedule = cron::Schedule::from_str(&format!("0 {expr}")).ok()?;
+    // 改成存名字之前保存的来源，表达式里还是数字星期：同样按标准 cron 读，
+    // 不然存着 `1-5` 的来源照旧周日到周四同步
+    let mut fields: Vec<&str> = expr.split_whitespace().collect();
+    let names = fields.get(4).copied().and_then(weekday_names);
+    if let Some(names) = &names {
+        fields[4] = names;
+    }
+    let schedule = cron::Schedule::from_str(&format!("0 {}", fields.join(" "))).ok()?;
     let local_after = after.with_timezone(&chrono::Local);
     schedule
         .after(&local_after)
@@ -92,6 +139,7 @@ pub async fn list(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<SourceView>> {
                 listed_source.sync_interval_minutes, listed_source.sync_cron,
                 listed_source.last_sync_at, listed_source.last_sync_status,
                 listed_source.last_sync_error, listed_source.last_sync_added,
+                listed_source.sync_checkpoint,
                 (SELECT count(*) FROM documents d
                  WHERE d.source_id = listed_source.id AND d.deleted_at IS NULL) AS doc_count,
                 (SELECT count(*) FROM documents d
@@ -281,13 +329,22 @@ pub async fn update(
         && old_full
         && new_full
         && rss_feed_url(&previous.config) != rss_feed_url(&next_config);
-    let source = sqlx::query_as(
+    // gitlab_issues 换了项目、或打开了合并请求：checkpoint 之前的那些工单从没读过，而增量只问
+    // 它之后的。清掉它，下一轮从头读；没变的工单靠去重不记新版本（0072）。关掉合并请求不用重读
+    let merge_requests =
+        |config: &serde_json::Value| config["include_merge_requests"].as_bool().unwrap_or(false);
+    let reread = previous.kind == "gitlab_issues"
+        && (previous.config["project"].as_str().map(str::trim)
+            != next_config["project"].as_str().map(str::trim)
+            || (!merge_requests(&previous.config) && merge_requests(&next_config)));
+    let source: Source = sqlx::query_as(
         "UPDATE sources SET
             name = COALESCE($2, name),
             config = COALESCE($3, config),
             icon = COALESCE($4, icon),
             sync_interval_minutes = CASE WHEN $5 THEN $6 ELSE sync_interval_minutes END,
-            sync_cron = CASE WHEN $5 THEN $7 ELSE sync_cron END
+            sync_cron = CASE WHEN $5 THEN $7 ELSE sync_cron END,
+            sync_checkpoint = CASE WHEN $8 THEN NULL ELSE sync_checkpoint END
          WHERE id = $1 RETURNING *",
     )
     .bind(id)
@@ -297,13 +354,54 @@ pub async fn update(
     .bind(schedule.is_some())
     .bind(schedule.as_ref().and_then(|(i, _)| *i))
     .bind(schedule.as_ref().and_then(|(_, c)| c.clone()))
+    .bind(reread)
     .fetch_one(&mut *tx)
     .await?;
+    if reread {
+        // 正在跑的那一轮是按旧配置列的，它要写下的 checkpoint 不作数。checkpoint 本来就空着时
+        // （第一轮），上面的清空挡不住它：空对空，`finish_timestamp_sync` 照样提交。把那一轮
+        // 记成失败，它只认 running 的轮次，于是 checkpoint 跟着一起回滚
+        sqlx::query(
+            "UPDATE source_sync_runs SET finished_at = now(), status = 'failed', error = $2
+             WHERE source_id = $1 AND status = 'running'",
+        )
+        .bind(id)
+        .bind("Source configuration changed during sync")
+        .execute(&mut *tx)
+        .await?;
+    }
 
     if (!old_full && new_full) || feed_url_changed {
         crate::rss_full_content::enable_source(&mut tx, id).await?;
     }
+    if !previous.names_are_identities() && source.names_are_identities() {
+        crate::name_vectors::drop_for_source(&mut tx, id).await?;
+    }
     tx.commit().await?;
+    opened(source)
+}
+
+/// 只动配置里的几个键：`set` 里的写进去（密钥照样封印），`remove` 里的删掉，别的键原样。
+/// 一条语句完成，不先读后写——两个请求同时改不同的键时，谁也不会把对方刚写的盖掉
+pub async fn patch_config(
+    pool: &PgPool,
+    id: Uuid,
+    set: &serde_json::Value,
+    remove: &[&str],
+) -> AppResult<Source> {
+    let mut set = set.clone();
+    secrets::seal_json_keys(&mut set, SOURCE_SECRET_KEYS);
+    let source = sqlx::query_as(
+        "UPDATE sources SET config =
+            (CASE WHEN jsonb_typeof(config) = 'object' THEN config ELSE '{}'::jsonb END - $3::text[]) || $2
+         WHERE id = $1 RETURNING *",
+    )
+    .bind(id)
+    .bind(set)
+    .bind(remove)
+    .fetch_optional(pool)
+    .await?
+    .ok_or(AppError::NotFound)?;
     opened(source)
 }
 
@@ -351,14 +449,46 @@ pub async fn due_sources(pool: &PgPool) -> AppResult<Vec<Source>> {
         .collect())
 }
 
-/// 标记入队（幂等：已在队列/运行中则返回 false，避免重复入队）。
-pub async fn mark_queued(pool: &PgPool, id: Uuid) -> AppResult<bool> {
+/// 状态、任务和 worker 通知一起提交；已在队列/运行中则返回 false。
+pub async fn enqueue_sync(pool: &PgPool, id: Uuid) -> AppResult<bool> {
+    let mut tx = pool.begin().await?;
+    let queued = mark_queued_tx(&mut tx, id).await?;
+    if queued {
+        crate::jobs::enqueue_with_max_attempts_tx(
+            &mut tx,
+            "sync_source",
+            serde_json::json!({ "source_id": id }),
+            3,
+        )
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(queued)
+}
+
+/// 换了 Drive 文件夹，即使旧同步正在运行，也要再排一次读取新配置。
+/// 配置由调用方先保存；这里只保证状态和后续任务一起提交。
+pub async fn enqueue_sync_after_config_change(pool: &PgPool, id: Uuid) -> AppResult<()> {
+    let mut tx = pool.begin().await?;
+    mark_queued_tx(&mut tx, id).await?;
+    crate::jobs::enqueue_with_max_attempts_tx(
+        &mut tx,
+        "sync_source",
+        serde_json::json!({ "source_id": id }),
+        3,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+async fn mark_queued_tx(tx: &mut Transaction<'_, Postgres>, id: Uuid) -> AppResult<bool> {
     let res = sqlx::query(
         "UPDATE sources SET last_sync_status = 'queued'
          WHERE id = $1 AND last_sync_status NOT IN ('queued', 'running')",
     )
     .bind(id)
-    .execute(pool)
+    .execute(&mut **tx)
     .await?;
     Ok(res.rows_affected() > 0)
 }
@@ -431,6 +561,76 @@ pub async fn touch_sync_time(pool: &PgPool, id: Uuid, at: DateTime<Utc>) -> AppR
 // ---------------------------------------------------------------------------
 // 同步运行记录（渠道审计历史）
 // ---------------------------------------------------------------------------
+
+/// 工单来源的进度独立于只保留 50 条的审计历史；NULL 也不能回退到旧的 ok 行。
+pub async fn sync_checkpoint(pool: &PgPool, source_id: Uuid) -> AppResult<Option<DateTime<Utc>>> {
+    sqlx::query_scalar("SELECT sync_checkpoint FROM sources WHERE id = $1")
+        .bind(source_id)
+        .fetch_optional(pool)
+        .await?
+        .ok_or(AppError::NotFound)
+}
+
+/// 完整时间戳组的进度与成功记录一起提交，任一写入失败都保留旧游标。
+pub async fn finish_timestamp_sync(
+    pool: &PgPool,
+    run_id: Uuid,
+    source_id: Uuid,
+    previous_checkpoint: Option<DateTime<Utc>>,
+    checkpoint: Option<DateTime<Utc>>,
+    created_docs: i32,
+    updated_docs: i32,
+) -> AppResult<()> {
+    if checkpoint < previous_checkpoint {
+        return Err(AppError::Validation(
+            "Source checkpoint cannot move backwards".into(),
+        ));
+    }
+    let mut tx = pool.begin().await?;
+    let source = sqlx::query(
+        "UPDATE sources SET sync_checkpoint = $3, last_sync_status = 'ok',
+                last_sync_error = NULL, last_sync_added = $4, last_sync_at = now()
+         WHERE id = $1 AND kind IN ('github_issues', 'gitlab_issues', 'jira_issues')
+           AND sync_checkpoint IS NOT DISTINCT FROM $2::timestamptz",
+    )
+    .bind(source_id)
+    .bind(previous_checkpoint)
+    .bind(checkpoint)
+    .bind(created_docs + updated_docs)
+    .execute(&mut *tx)
+    .await?;
+    if source.rows_affected() != 1 {
+        return Err(AppError::Conflict(
+            "Source checkpoint changed during sync".into(),
+        ));
+    }
+    let run = sqlx::query(
+        "UPDATE source_sync_runs SET finished_at = now(), status = 'ok', error = NULL,
+                created_docs = $3, updated_docs = $4
+         WHERE id = $1 AND source_id = $2 AND status = 'running'",
+    )
+    .bind(run_id)
+    .bind(source_id)
+    .bind(created_docs)
+    .bind(updated_docs)
+    .execute(&mut *tx)
+    .await?;
+    if run.rows_affected() != 1 {
+        return Err(AppError::Conflict(
+            "Source sync run is no longer running".into(),
+        ));
+    }
+    sqlx::query(
+        "DELETE FROM source_sync_runs WHERE source_id = $1 AND id NOT IN
+         (SELECT id FROM source_sync_runs WHERE source_id = $1
+          ORDER BY started_at DESC LIMIT 50)",
+    )
+    .bind(source_id)
+    .execute(&mut *tx)
+    .await?;
+    tx.commit().await?;
+    Ok(())
+}
 
 /// 调度时钟包含失败尝试，不能作增量游标。回到上次成功运行的开始，
 /// 让那次拉取期间发生的更新也能在下一轮读到；没有成功记录就重新全量读取。
@@ -515,6 +715,32 @@ mod tests {
         assert!(validate_cron("9 * * *").is_err()); // 4 段
         assert!(validate_cron("99 9 * * *").is_err()); // 分钟越界
         assert!(validate_cron("0 0 0 0 0 0").is_err()); // 6 段
+    }
+
+    #[test]
+    fn cron_weekday_numbers_read_as_standard_cron() {
+        // crontab.guru 的 1-5 是周一到周五；cron crate 的数字星期却从周日 = 1 数起
+        assert_eq!(
+            validate_cron("0 9 * * 1-5").unwrap(),
+            "0 9 * * Mon,Tue,Wed,Thu,Fri"
+        );
+        assert_eq!(validate_cron("0 9 * * 0").unwrap(), "0 9 * * Sun");
+        assert_eq!(validate_cron("0 9 * * 5-7").unwrap(), "0 9 * * Fri,Sat,Sun");
+    }
+
+    #[test]
+    fn a_source_saved_with_weekday_numbers_runs_on_standard_cron_days() {
+        use chrono::TimeZone;
+        // 2026-10-31 是周六；`1-5` 的下一次是周一，不是周日
+        let saturday = chrono::Local
+            .with_ymd_and_hms(2026, 10, 31, 12, 0, 0)
+            .unwrap()
+            .with_timezone(&Utc);
+        let monday = chrono::Local
+            .with_ymd_and_hms(2026, 11, 2, 9, 0, 0)
+            .unwrap()
+            .with_timezone(&Utc);
+        assert_eq!(cron_next_after("0 9 * * 1-5", saturday), Some(monday));
     }
 
     #[test]

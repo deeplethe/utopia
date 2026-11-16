@@ -11,11 +11,21 @@ use utopia_core::models::Role;
 use utopia_store::{access::require_kb, ontology_regressions as cases};
 use uuid::Uuid;
 
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExpectedBinding {
+    #[default]
+    Bound,
+    None,
+}
+
 #[derive(Deserialize)]
 pub struct Create {
     pub statement_id: Uuid,
-    pub relation_type_id: Uuid,
-    pub direction: String,
+    #[serde(default)]
+    pub expected_binding: ExpectedBinding,
+    pub relation_type_id: Option<Uuid>,
+    pub direction: Option<String>,
 }
 
 pub async fn list(
@@ -34,13 +44,24 @@ pub async fn create(
     Json(req): Json<Create>,
 ) -> ApiResult<(StatusCode, Json<Value>)> {
     require_kb(&state.pool, &user, kb, Role::Editor).await?;
+    let valid = match req.expected_binding {
+        ExpectedBinding::Bound => req.relation_type_id.is_some() && req.direction.is_some(),
+        ExpectedBinding::None => req.relation_type_id.is_none() && req.direction.is_none(),
+    };
+    if !valid {
+        return Err(utopia_core::AppError::invalid(
+            "bad_case_expectation",
+            "A bound expectation needs a property and direction; a none expectation has neither.",
+        )
+        .into());
+    }
     let id = cases::add(
         &state.pool,
         kb,
         cases::NewCase {
             statement_id: req.statement_id,
             expected_property_id: req.relation_type_id,
-            expected_direction: &req.direction,
+            expected_direction: req.direction.as_deref(),
             created_by: user.id,
             origin: "person",
         },

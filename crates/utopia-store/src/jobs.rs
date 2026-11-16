@@ -373,20 +373,27 @@ pub async fn status_in_kb(pool: &PgPool, kb_id: Uuid, id: i64) -> AppResult<Opti
 /// 认领一个到期任务；没有则返回 None。
 ///
 /// 不调对话模型的任务排在前面（`job_priority`，迁移 0116，#1300）：同步、文档入库这些几秒
-/// 的活，不该等在几百个更早的抽取后面
-async fn claim_one(pool: &PgPool) -> AppResult<Option<Job>> {
-    let job = sqlx::query_as(
+/// 的活，不该等在几百个更早的抽取后面。`no_chat_only` 只认领这些，给保留通道用
+async fn claim_one(pool: &PgPool, no_chat_only: bool) -> AppResult<Option<Job>> {
+    // 写成字面量而不是绑定参数：这样它是索引条件，扫到优先级 0 的尽头就停；绑定参数只能
+    // 逐行筛，模型任务堆到上万条时，常规名额占满后每 200ms 都要把它们全扫一遍
+    let only = if no_chat_only {
+        "AND job_priority(kind) = 0"
+    } else {
+        ""
+    };
+    let job = sqlx::query_as(&format!(
         "UPDATE jobs SET status = 'running', locked_at = now(),
                 attempts = attempts + 1, updated_at = now()
          WHERE id = (
              SELECT id FROM jobs
-             WHERE status = 'queued' AND run_at <= now()
+             WHERE status = 'queued' AND run_at <= now() {only}
              ORDER BY job_priority(kind), run_at
              FOR UPDATE SKIP LOCKED
              LIMIT 1
          )
-         RETURNING id, kind, payload, attempts, max_attempts, locked_at",
-    )
+         RETURNING id, kind, payload, attempts, max_attempts, locked_at"
+    ))
     .fetch_optional(pool)
     .await?;
     Ok(job)
@@ -586,8 +593,16 @@ async fn persist_with_retry(
     }
 }
 
+/// 常规名额全占满之后，还能再认领几个不调对话模型的任务（#1300）。
+///
+/// 光排序不够：抽取等模型许可的时候照样占着 worker 名额。本地模型上名额常被等许可的
+/// 抽取占满，排在最前面的同步也只能等某个抽取跑完。这两个名额只给 `job_priority` 为 0
+/// 的任务，所以 `worker_concurrency` 管的是其余一切，同时在跑的最多再多两个
+pub const NO_CHAT_LANE: usize = 2;
+
 /// worker 调度循环：运行中任务数低于目标并发就继续认领（有活立即续派），
 /// 空闲时等入队通知、2s 轮询兜底（#517）；每个任务在独立 tokio task 中执行，长抽取不再阻塞同步。
+/// 常规名额满了，还有 [`NO_CHAT_LANE`] 个名额只认领不调对话模型的任务。
 /// `concurrency` 每轮热读——系统设置里改并发数即时生效。
 /// 任务分发逻辑由调用方以 handler 注入（store 不依赖上层 crate）。
 pub async fn run_worker<F, Fut>(pool: PgPool, concurrency: Arc<AtomicUsize>, handler: F)
@@ -596,6 +611,7 @@ where
     Fut: std::future::Future<Output = anyhow::Result<()>> + Send + 'static,
 {
     let running = Arc::new(AtomicUsize::new(0));
+    let in_lane = Arc::new(AtomicUsize::new(0));
     // 孤儿回收：进程被杀时 running 任务无人收尸，文档会永远停在 extracting。
     // 单进程部署下，启动时仍为 running 的必是孤儿——一律重排队（处理器均幂等）。
     match sqlx::query(
@@ -624,16 +640,19 @@ where
             return;
         }
         let cap = concurrency.load(Ordering::Relaxed).max(1);
-        if running.load(Ordering::Relaxed) >= cap {
+        // 常规名额满了就只往保留通道里认领，通道也满了才歇
+        let lane = running.load(Ordering::Relaxed) >= cap;
+        if lane && in_lane.load(Ordering::Relaxed) >= NO_CHAT_LANE {
             tokio::time::sleep(Duration::from_millis(200)).await;
             continue;
         }
-        match claim_one(&pool).await {
+        match claim_one(&pool, lane).await {
             Ok(Some(job)) => {
+                // 从哪边的名额认领的，跑完就还给哪边
+                let running = if lane { &in_lane } else { &running }.clone();
                 running.fetch_add(1, Ordering::Relaxed);
                 let pool = pool.clone();
                 let handler = handler.clone();
-                let running = running.clone();
                 tokio::spawn(async move {
                     // **处理器 panic 也要收尸。** 直接 `handler(job).await` 的话，
                     // panic 会把这个 spawn 出来的 future 一起掀掉：`mark_failed`
@@ -663,6 +682,8 @@ where
                     running.fetch_sub(1, Ordering::Relaxed);
                 });
             }
+            // 常规名额满着：随时可能空出一个，照旧 200ms 再看
+            Ok(None) if lane => tokio::time::sleep(Duration::from_millis(200)).await,
             Ok(None) => {
                 wait_for_work(listener.as_mut(), IDLE_POLL).await;
             }

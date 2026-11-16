@@ -100,8 +100,8 @@ function CaseRow({ kbId, item }: { kbId: string; item: OntologyRegressionCase })
           </div>
         </Td>
         <Td>
-          <div>{item.expected_property_label}</div>
-          <div className="text-fine text-ink-2">{directionText(item.expected_direction)}</div>
+          <div>{item.expected_binding === "none" ? S.ontology.caseUnbound : item.expected_property_label}</div>
+          {item.expected_direction && <div className="text-fine text-ink-2">{directionText(item.expected_direction)}</div>}
         </Td>
         <Td>
           <div>
@@ -119,10 +119,13 @@ function CaseRow({ kbId, item }: { kbId: string; item: OntologyRegressionCase })
         </Td>
         <Td>
           <Status tone={!result ? "neutral" : result.passed ? "success" : "warn"}>
-            {!result ? S.ontology.caseNotChecked : result.human_bound ? S.ontology.caseHumanBound : result.passed ? S.ontology.casePassed : S.ontology.caseMismatch}
+            {!result ? S.ontology.caseNotChecked : result.conflict === "human_binding" ? S.ontology.caseHumanConflict : result.human_bound ? S.ontology.caseHumanBound : result.passed ? S.ontology.casePassed : S.ontology.caseMismatch}
           </Status>
           {result?.human_bound && (
             <p className="mt-1 max-w-64 text-fine text-ink-2">{S.ontology.caseHumanHint}</p>
+          )}
+          {result?.conflict === "human_binding" && (
+            <p className="mt-1 max-w-64 text-fine text-ink-2">{S.ontology.caseHumanConflictHint}</p>
           )}
         </Td>
         <Td className="text-small u-num">

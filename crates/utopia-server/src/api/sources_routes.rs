@@ -6,12 +6,13 @@ use axum::Json;
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use serde_json::json;
-use utopia_core::models::{Role, SOURCE_SECRET_KEYS};
+use utopia_core::models::{Role, SourceKind, SOURCE_SECRET_KEYS};
 use uuid::Uuid;
 
 use super::graph_routes::require_kb;
 use crate::auth::{AuthUser, SessionOrToken};
 use crate::error::ApiResult;
+use crate::pushed_keys::{is_push_kind, pushed_key};
 use crate::state::AppState;
 
 /// 生成 api 来源的推送密钥。
@@ -47,7 +48,7 @@ fn push_key_matches(stored: Option<&str>, offered: &str) -> bool {
 /// `require_kb` 只查人对库的权限；来源 id 是另一个维度——不比对的话，A 库的
 /// Editor 拿着 B 库来源的 id 就能同步、清理、删除它。不属于就当不存在（404），
 /// 与 `get_token` 一直以来的做法一致
-async fn source_in_kb(
+pub(crate) async fn source_in_kb(
     state: &AppState,
     kb_id: Uuid,
     source_id: Uuid,
@@ -55,6 +56,28 @@ async fn source_in_kb(
     let source = utopia_store::sources::get(&state.pool, source_id).await?;
     if source.kb_id != kb_id {
         return Err(utopia_core::AppError::NotFound.into());
+    }
+    Ok(source)
+}
+
+/// 改、删、清缺失、重抽一个来源。令牌只管推送型，与建来源同一条线（0014 决定 6）：
+/// 改得动 `url` 的地址，漏出去的令牌就能让服务器去敲任意地址。会话照旧管所有来源
+async fn source_to_manage(
+    state: &AppState,
+    caller: &SessionOrToken,
+    kb_id: Uuid,
+    source_id: Uuid,
+) -> ApiResult<utopia_core::models::Source> {
+    caller.require_write(Some(kb_id))?;
+    require_kb(state, &caller.user, kb_id, Role::Editor).await?;
+    let source = source_in_kb(state, kb_id, source_id).await?;
+    if caller.pat.is_some() && !is_push_kind(&source.kind) {
+        return Err(utopia_core::AppError::CodedForbidden {
+            code: "token_source_kind",
+            message: "A token manages only statements or api sources; other kinds take a session"
+                .into(),
+        }
+        .into());
     }
     Ok(source)
 }
@@ -109,12 +132,22 @@ pub async fn create(
     let user = caller.user;
     require_kb(&state, &user, kb_id, Role::Editor).await?;
     validate_rss_config(&body.kind, &body.config)?;
+    let drive = config_is_drive_owned(&body.kind);
+    // 没配 OAuth 客户端的部署连不上 Google，建出来也只会一直失败（0074 决定 2）
+    if drive && crate::google_drive::oauth_config().is_none() {
+        return Err(utopia_core::AppError::invalid(
+            "google_drive_not_configured",
+            "Google Drive is not configured on this server",
+        )
+        .into());
+    }
+    let config = if drive { json!({}) } else { body.config };
     let source = utopia_store::sources::create(
         &state.pool,
         kb_id,
         &body.kind,
         &body.name,
-        &body.config,
+        &config,
         body.icon.as_deref(),
         body.sync_interval_minutes,
         body.sync_cron.as_deref(),
@@ -122,13 +155,7 @@ pub async fn create(
     .await?;
     // 拉取型来源建好立即同步一次（有配置即产出，无需等下一个调度周期）
     if matches!(source.kind.as_str(), "url" | "rss" | "custom") {
-        let _ = utopia_store::sources::mark_queued(&state.pool, source.id).await;
-        utopia_store::jobs::enqueue(
-            &state.pool,
-            "sync_source",
-            json!({ "source_id": source.id }),
-        )
-        .await?;
+        utopia_store::sources::enqueue_sync(&state.pool, source.id).await?;
     }
     // api 来源：生成专属推送密钥（此后可随时经 get_token 查看）
     let mut ingest_token: Option<String> = None;
@@ -154,12 +181,6 @@ pub async fn create(
     Ok(Json(
         json!({ "source": mask_secrets(source), "ingest_token": ingest_token }),
     ))
-}
-
-/// 有推送密钥的来源：`api` 推文档，`statements` 推陈述（0054）。两种的密钥同一套
-/// 生成、查看、轮换
-fn is_push_kind(kind: &str) -> bool {
-    matches!(kind, "api" | "statements")
 }
 
 /// 查看推送密钥（Editor；列表响应从不携带，查看走这里）。
@@ -207,6 +228,12 @@ fn validate_rss_config(kind: &str, config: &serde_json::Value) -> utopia_core::A
     Ok(())
 }
 
+/// Google Drive 来源的配置只由它自己的连接、选文件夹、断开三条路由写（0074）。
+/// 通用的建、改要是也能写，任何编辑者都能绕过「只有连上的那个人能选文件夹」
+fn config_is_drive_owned(kind: &str) -> bool {
+    SourceKind::parse(kind) == Some(SourceKind::GoogleDrive)
+}
+
 /// 更新时凭据的合并规则，每个 `SOURCE_SECRET_KEYS` 里的键一样：新配置里**没有**这个键
 /// 或值是空串 → 保留库里的原值（表单留空就是「别动」）；显式 `null` → 删掉；
 /// 其余照新值。响应从不回显，所以客户端没有办法把旧值原样送回来，规则只能长在这里
@@ -252,14 +279,15 @@ pub struct ScheduleBody {
 
 pub async fn update(
     State(state): State<AppState>,
-    AuthUser(user): AuthUser,
+    caller: SessionOrToken,
     Path((kb_id, source_id)): Path<(Uuid, Uuid)>,
     Json(body): Json<UpdateBody>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    require_kb(&state, &user, kb_id, Role::Editor).await?;
-    let existing = source_in_kb(&state, kb_id, source_id).await?;
+    let existing = source_to_manage(&state, &caller, kb_id, source_id).await?;
     // 凭据只进不出：响应从不回显，表单留空 / 没传 = 保留库里原值
-    let mut config = body.config;
+    let mut config = body
+        .config
+        .filter(|_| !config_is_drive_owned(&existing.kind));
     if let Some(cfg) = config.as_mut() {
         keep_secrets(cfg, &existing.config);
     }
@@ -281,11 +309,14 @@ pub async fn update(
     let _ = utopia_store::audit::record(
         &state.pool,
         Some(kb_id),
-        user.id,
+        caller.user.id,
         "source.updated",
         "source",
         Some(source_id),
-        json!({ "name": body.name, "config_changed": config.is_some() }),
+        utopia_store::audit::via_token(
+            json!({ "name": body.name, "config_changed": config.is_some() }),
+            caller.token_id(),
+        ),
     )
     .await;
     Ok(Json(json!({ "source": mask_secrets(source) })))
@@ -294,14 +325,13 @@ pub async fn update(
 /// 批量删除该来源下所有"不在来源中"的文档（url 对账 / custom 墓碑标出的）。
 pub async fn cleanup_missing(
     State(state): State<AppState>,
-    AuthUser(user): AuthUser,
+    caller: SessionOrToken,
     Path((kb_id, source_id)): Path<(Uuid, Uuid)>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    require_kb(&state, &user, kb_id, Role::Editor).await?;
-    source_in_kb(&state, kb_id, source_id).await?;
+    source_to_manage(&state, &caller, kb_id, source_id).await?;
     let ids = utopia_store::documents::list_missing(&state.pool, source_id).await?;
     for id in &ids {
-        utopia_store::documents::delete(&state.pool, kb_id, *id, Some(user.id)).await?;
+        utopia_store::documents::delete(&state.pool, kb_id, *id, Some(caller.user.id)).await?;
         let search = state.search.clone();
         let did = id.to_string();
         tokio::task::spawn_blocking(move || search.delete_document(&did))
@@ -322,14 +352,17 @@ pub async fn cleanup_missing(
 #[path = "sources_cleanup_tests.rs"]
 mod cleanup_tests;
 
+#[cfg(test)]
+#[path = "sources_checkpoint_tests.rs"]
+mod checkpoint_tests;
+
 pub async fn delete(
     State(state): State<AppState>,
-    AuthUser(user): AuthUser,
+    caller: SessionOrToken,
     Path((kb_id, source_id)): Path<(Uuid, Uuid)>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    require_kb(&state, &user, kb_id, Role::Editor).await?;
     // Memory 来源常驻：记忆空间不因来源整理而蒸发（记忆文档本身可在 Library 删除）
-    let source = source_in_kb(&state, kb_id, source_id).await?;
+    let source = source_to_manage(&state, &caller, kb_id, source_id).await?;
     if source.kind == utopia_store::memory::MEMORY_SOURCE_KIND {
         return Err(utopia_core::AppError::invalid(
             "memory_source_permanent",
@@ -342,11 +375,11 @@ pub async fn delete(
     let _ = utopia_store::audit::record(
         &state.pool,
         Some(kb_id),
-        user.id,
+        caller.user.id,
         "source.deleted",
         "source",
         Some(source_id),
-        json!({}),
+        utopia_store::audit::via_token(json!({}), caller.token_id()),
     )
     .await;
     Ok(Json(json!({ "ok": true })))
@@ -371,14 +404,8 @@ pub async fn sync_now(
 ) -> ApiResult<Json<serde_json::Value>> {
     require_kb(&state, &user, kb_id, Role::Editor).await?;
     source_in_kb(&state, kb_id, source_id).await?;
-    let queued = utopia_store::sources::mark_queued(&state.pool, source_id).await?;
+    let queued = utopia_store::sources::enqueue_sync(&state.pool, source_id).await?;
     if queued {
-        utopia_store::jobs::enqueue(
-            &state.pool,
-            "sync_source",
-            json!({ "source_id": source_id }),
-        )
-        .await?;
         state.emit_source(kb_id);
     }
     Ok(Json(json!({ "queued": queued })))
@@ -386,6 +413,9 @@ pub async fn sync_now(
 
 #[derive(Deserialize)]
 pub struct IngestBody {
+    /// 墓碑带着 external_id 时用不上文件名（身份是 external_id），缺了也收；
+    /// 其余情况仍然必填，空串在下面的校验里挡
+    #[serde(default)]
     pub filename: String,
     /// 墓碑推送（`deleted: true`）可以不带 content——指南一直这么写，而字段
     /// 从前是必填，缺了就在反序列化那一步被拒。其余情况仍然必填：空串在
@@ -496,7 +526,7 @@ async fn handle_push(
             "external_id or filename is required".into(),
         ));
     }
-    let key = format!("api:{identity}");
+    let key = pushed_key(source, &identity);
 
     // 墓碑：标记"不在来源中"（与 custom 的 deleted[] 同一条路径），content 可省略
     if body.deleted {
@@ -810,7 +840,7 @@ async fn handle_statements_push(
 ) -> Result<crate::ingest_sources::IngestAction, PushError> {
     let (body, content) = validate_statements_payload(bytes).map_err(PushError::Rejected)?;
     let identity = body.external_id.trim().to_string();
-    let key = format!("statements:{identity}");
+    let key = pushed_key(source, &identity);
     let Some(content) = content else {
         utopia_store::documents::mark_missing_keys(&state.pool, source.id, &[key])
             .await
@@ -844,14 +874,10 @@ async fn handle_statements_push(
 /// 走正常管道——实体消解、事实去重、时态冲突照常，既有人工决策全部保留。
 pub async fn re_extract(
     State(state): State<AppState>,
-    AuthUser(user): AuthUser,
+    caller: SessionOrToken,
     Path((kb_id, source_id)): Path<(Uuid, Uuid)>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    require_kb(&state, &user, kb_id, Role::Editor).await?;
-    let source = utopia_store::sources::get(&state.pool, source_id).await?;
-    if source.kb_id != kb_id {
-        return Err(utopia_core::AppError::NotFound.into());
-    }
+    let source = source_to_manage(&state, &caller, kb_id, source_id).await?;
     // `queue_extraction` 自己也会把这种来源的文档滤掉，那样这里回的是「排了 0 篇」。
     // 点按钮的人该听到的是为什么
     if !source.extracts() {
@@ -870,11 +896,14 @@ pub async fn re_extract(
     let _ = utopia_store::audit::record(
         &state.pool,
         Some(kb_id),
-        user.id,
+        caller.user.id,
         "source.re_extract",
         "source",
         Some(source_id),
-        json!({ "name": source.name, "documents": ids.len() }),
+        utopia_store::audit::via_token(
+            json!({ "name": source.name, "documents": ids.len() }),
+            caller.token_id(),
+        ),
     )
     .await;
     Ok(Json(json!({ "queued": ids.len() })))
@@ -952,6 +981,7 @@ mod tests {
             last_sync_status: "never".into(),
             last_sync_error: None,
             last_sync_added: 0,
+            sync_checkpoint: None,
             ingest_token: Some("utp_x".into()),
             created_at: chrono::Utc::now(),
         };

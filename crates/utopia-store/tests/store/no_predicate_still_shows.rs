@@ -261,6 +261,7 @@ async fn a_fact_without_a_predicate_is_still_visible_everywhere() -> anyhow::Res
             None,
             None,
             50,
+            0,
         )
         .await?;
         let c = changes.iter().find(|c| c.fact_id == f.surfaced);

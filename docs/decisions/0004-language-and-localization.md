@@ -1,6 +1,6 @@
 # 0004 · Language follows the reader of each text
 
-- **Status**: Implemented · open: the UI does not guess the browser language
+- **Status**: Implemented · revised 2026-11-03 (#1468) · open: the UI does not guess the browser language
 - **Written**: 2026-08-29 · condensed into English 2026-09-03
 - **Related**: [0001](0001-ontology-import-and-governance.md) made `description`
   load-bearing; [0003](0003-ontology-growth-loop.md) separated `reason` from
@@ -47,6 +47,12 @@ The last row is not copy. It is a quotation.
    someone clicks "Suggest with AI", so the caller states the language;
    `label`/`description` in the same call follow `kb.ontology_lang`. `lang_name()` sends
    `Chinese` rather than `zh`; the cold-start path passes `en`.
+   > **Revised 2026-11-03 (#1468).** `lang_name()` and the cold-start path that passed `en`
+   > went with Suggest in #1129. The [0061](0061-the-ontology-is-proposed-from-the-open-graph-and-judged-by-its-questions.md)
+   > agent then asked for "the language of the ontology", which an empty base does not have,
+   > so the model picked one per batch (#1467). The agent now takes `kb.ontology_lang` from
+   > its caller and names it in the prompt, `Chinese` rather than `zh`, for labels and
+   > definitions; keys stay ASCII.
 6. **Extracted data stays verbatim.** An entity is `张三` because paragraph 3 says so;
    translating it breaks the evidence match, splits one person across Chinese and English
    documents, and empties `surface_predicate`. Provenance has no switch.

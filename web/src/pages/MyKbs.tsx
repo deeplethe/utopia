@@ -7,7 +7,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import { Lock, Plus, Search } from "lucide-react";
 import { api, type MyKb } from "../api";
-import { S } from "../i18n";
+import { S, lang } from "../i18n";
 import { useKb } from "../kb";
 import { kbGroups } from "./kbGroups";
 import {
@@ -261,10 +261,16 @@ function NewKbModal({
   // 组织、产品的起点"；量过之后本体从文档里长出来的是库自己的十几个类，而 915 个
   // 类的包让每块抽取提示词从 2k 涨到 18k tokens。要包的人在这里勾
   const [packs, setPacks] = useState<string[]>([]);
+  // 场景包（0073）：按业务场景预置的类、属性和能力问题，排在标准包之后装
+  const [scenarios, setScenarios] = useState<string[]>([]);
 
   const available = useQuery({
     queryKey: ["ontologyPacks"],
     queryFn: api.ontologyPacks,
+  });
+  const scenarioPacks = useQuery({
+    queryKey: ["scenarioPacks"],
+    queryFn: api.scenarioPacks,
   });
 
   // 勾选顺序即安装顺序：第一个包的类会认领同名的种子类，
@@ -281,6 +287,7 @@ function NewKbModal({
         description: desc.trim() || null,
         visibility: restricted ? "restricted" : "open",
         ontology_packs: packs,
+        scenario_packs: scenarios,
       }),
     onSuccess: (kb) => onDone(kb.id),
   });
@@ -341,6 +348,24 @@ function NewKbModal({
             placeholder={S.settings.kbs.packsPick}
             emptyHint={S.settings.kbs.packsNone}
             onToggle={toggle}
+          />
+        </Field>
+        <Field label={S.settings.kbs.scenariosLabel} hint={S.settings.kbs.scenariosHint}>
+          <MultiSearchSelect
+            className="w-full"
+            values={scenarios}
+            options={(scenarioPacks.data?.packs ?? []).map((p) => ({
+              value: p.id,
+              label: p.name[lang],
+              hint: `${p.summary[lang]} · ${S.settings.kbs.scenariosCount(p.classes, p.properties, p.questions)}`,
+            }))}
+            placeholder={S.settings.kbs.scenariosPick}
+            emptyHint={S.settings.kbs.scenariosNone}
+            onToggle={(id) =>
+              setScenarios((prev) =>
+                prev.includes(id) ? prev.filter((p) => p !== id) : [...prev, id],
+              )
+            }
           />
         </Field>
         {create.isError && (

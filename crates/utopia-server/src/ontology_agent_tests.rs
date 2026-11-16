@@ -461,8 +461,8 @@ async fn an_unbound_shape_becomes_a_proposal_that_serves_a_question_and_adoption
     let cases = utopia_store::ontology_regressions::list(&f.pool, f.kb).await?;
     assert_eq!(cases.len(), 1);
     assert_eq!(cases[0].statement_id, example_id);
-    assert_eq!(cases[0].expected_property_id, id);
-    assert_eq!(cases[0].expected_direction, "forward");
+    assert_eq!(cases[0].expected_property_id, Some(id));
+    assert_eq!(cases[0].expected_direction.as_deref(), Some("forward"));
     assert_eq!(cases[0].created_by, Some(f.user));
     assert_eq!(cases[0].origin, "adoption");
     assert!(
@@ -1213,4 +1213,131 @@ async fn a_class_deleted_during_adoption_answers_unknown_class() -> anyhow::Resu
     assert_eq!(body["code"], "unknown_class");
     assert_eq!(f.left_by("city").await?, (false, "open".to_string(), 0, 0));
     f.cleanup().await
+}
+
+#[tokio::test]
+async fn adoption_skips_negative_examples_without_vetoing_creation_or_reuse() -> anyhow::Result<()>
+{
+    for (section, key) in [("relation_types", "founded_in"), ("map_to", "located_in")] {
+        for ordinary_example in [false, true] {
+            let Some(f) = Fx::new(Vec::new()).await? else {
+                return Ok(());
+            };
+            let result = async {
+                f.decide_none().await?;
+                let negative = f.shape("founded in").await?;
+                let statement_id =
+                    serde_json::from_value(negative["example_statement_ids"][0].clone())?;
+                let case = utopia_store::ontology_regressions::add(
+                    &f.pool,
+                    f.kb,
+                    utopia_store::ontology_regressions::NewCase {
+                        statement_id,
+                        expected_property_id: None,
+                        expected_direction: None,
+                        created_by: f.user,
+                        origin: "person",
+                    },
+                )
+                .await?;
+                let before = utopia_store::ontology_regressions::get(&f.pool, f.kb, case)
+                    .await?
+                    .unwrap();
+                let mut shapes = vec![negative];
+                if ordinary_example {
+                    shapes.push(f.shape("located in").await?);
+                }
+                f.seed(
+                    section,
+                    key,
+                    if section == "map_to" {
+                        json!({"kind":"relation"})
+                    } else {
+                        founded_in()
+                    },
+                    json!({"phrases":shapes}),
+                )
+                .await?;
+                let (status, body) = f
+                    .post(
+                        "/ontology/proposals/adopt",
+                        json!({"section":section,"key":key}),
+                    )
+                    .await?;
+                assert_eq!(status, StatusCode::OK, "{body}");
+                assert_eq!(
+                    f.left_by(key).await?,
+                    (
+                        true,
+                        "adopted".into(),
+                        if section == "map_to" { 1 } else { 2 },
+                        1 + i64::from(ordinary_example)
+                    )
+                );
+                let positive: i64 = sqlx::query_scalar(
+                    "SELECT count(*) FROM ontology_regression_cases
+                    WHERE kb_id=$1 AND statement_id=$2 AND expected_property_id IS NOT NULL",
+                )
+                .bind(f.kb)
+                .bind(statement_id)
+                .fetch_one(&f.pool)
+                .await?;
+                assert_eq!(
+                    positive, 0,
+                    "negative examples do not gain an automatic positive case"
+                );
+                let property: Uuid = serde_json::from_value(body["id"].clone())?;
+                // Creation queues alignment; exercise that later committed decision without a model.
+                // Reuse has already written the person's binding in the adoption transaction.
+                if section != "map_to" {
+                    let sig = phrase_bindings::signatures(&f.pool, f.kb)
+                        .await?
+                        .into_iter()
+                        .find(|s| s.phrase == "founded in")
+                        .unwrap();
+                    phrase_bindings::decide(
+                        &f.pool,
+                        f.kb,
+                        &sig,
+                        Decision {
+                            relation_type_id: Some(property),
+                            direction: Some("forward"),
+                            status: "bound",
+                            decided_by: "agent",
+                            votes: &Value::Null,
+                            basis: None,
+                            marks: None,
+                            marks_asked: false,
+                        },
+                    )
+                    .await?;
+                }
+                let after = utopia_store::ontology_regressions::get(&f.pool, f.kb, case)
+                    .await?
+                    .unwrap();
+                assert_eq!(
+                    (after.created_by, after.created_at, after.origin),
+                    (before.created_by, before.created_at, before.origin)
+                );
+                let report = after.last_result.unwrap();
+                assert_eq!(report["passed"], false);
+                assert_eq!(report["actual_property_id"], json!(property));
+                assert_eq!(
+                    report["conflict"],
+                    if section == "map_to" {
+                        json!("human_binding")
+                    } else {
+                        Value::Null
+                    }
+                );
+                assert!(f.model.requests.lock().unwrap().is_empty());
+                assert_eq!(f.model.embeds.load(Ordering::SeqCst), 0);
+                anyhow::Ok(())
+            }
+            .await;
+            f.cleanup().await?;
+            result?;
+        }
+    }
+    Ok(())
 }

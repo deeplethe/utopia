@@ -49,6 +49,8 @@ export const zh: Strings = {
     docsUrl: "https://utopia.bi/docs",
   },
   err: {
+    bad_case_expectation: "请选择属性及方向，或选择预期无绑定。",
+
     bad_email: "这看起来不像一个邮箱地址。",
     password_too_short: "密码至少 8 位。",
     bad_display_name: "显示名需要 1–64 个字符。",
@@ -107,6 +109,7 @@ export const zh: Strings = {
     unknown_entity_type: "这个类不在当前本体里。",
     nothing_to_update: "没有要改的内容。",
     self_merge: "实体不能合并到自己身上。",
+    new_from_required: "填写这条事实的新起点日期。",
     close_at_required: "选一个这条事实结束的日期——新的那条没说自己何时开始。",
     empty_query: "输入点什么再检索。",
     no_data_sources: "这个知识库没有挂载任何数据库。",
@@ -114,6 +117,15 @@ export const zh: Strings = {
     source_not_granted:
       "这个数据源没有授权给本工作区。请部署管理员在「管理 → 数据源」里授权。",
     memory_source_permanent: "「记忆」是知识库自带的来源，会一直在。",
+    google_drive_not_configured:
+      "这台服务器没有配置 Google Drive。需要管理员设置 UTOPIA_GOOGLE_DRIVE_CLIENT_ID、_CLIENT_SECRET 与 _REDIRECT_URI。",
+    google_drive_connected_by_someone_else: "这个来源读的是别人的 Google Drive。先断开，再连你自己的。",
+    google_drive_not_connector: "只有连上这个 Google Drive 的人能选它的文件夹。",
+    google_drive_not_connected: "先连接一个 Google 账号。",
+    google_drive_unavailable: "读不了 Google Drive。",
+    google_drive_busy: "同时进行的 Google Drive 连接太多，过几分钟再试。",
+    google_drive_too_many_folders: "最多选 50 个文件夹，可以改选它们共同的上级。",
+    google_drive_invalid_folder: "这不是一个 Google Drive 文件夹 id。",
     source_name_required: "给这个来源起个名字。",
     bad_cron: "这个 cron 表达式解析不了。",
     bad_cron_fields: "cron 表达式有五段：分 时 日 月 周。",
@@ -218,7 +230,7 @@ export const zh: Strings = {
     copied: "已复制",
     mcpTitle: "MCP 客户端配置",
     mcpHint:
-      "适用于 Claude Code、Claude Desktop 及其它 Streamable HTTP 客户端。每个库有自己的端点，选 agent 要对话的那个库。别的客户端键名可能不同。",
+      "适用于 Claude Code、Claude Desktop 及其它 Streamable HTTP 客户端。即使令牌允许访问全部库，这段配置也只连接一个知识库，复制前请确认选中的库。别的客户端键名可能不同。",
     mcpBase: "库",
     yourTokens: "你的令牌",
     noTokens: "还没有令牌。",
@@ -534,6 +546,7 @@ export const zh: Strings = {
       phrase_is_value: "已保留，但短语就是那个值",
       phrase_is_subject: "已保留，但短语就是主语的名字",
       object_is_value: "已保留，宾语按值记下",
+      attr_datatype: "已保留为开放陈述，但值按属性声明的类型读不出来",
     },
     reExtractSource: "重新抽取",
     reExtractTitle: "重新抽取这个来源？",
@@ -580,12 +593,15 @@ export const zh: Strings = {
       custom: "自定义",
       github_issues: "GitHub 工单",
       github_repo: "GitHub 仓库文件",
+      gitlab_repo: "GitLab 项目文件",
+      gitlab_issues: "GitLab 工单",
       jira_issues: "Jira 工单",
       s3: "S3 / MinIO",
       azure_blob: "Azure Blob",
       gcs: "Google Cloud Storage",
       webdav: "WebDAV",
       notion: "Notion",
+      google_drive: "Google Drive",
     },
     sourceKindHints: {
       folder: "可在文件夹中管理上传的文件：上传、拖入、删除都在这里。",
@@ -601,6 +617,14 @@ export const zh: Strings = {
       github_repo:
         "读取一个仓库默认分支上的 markdown 文件。每个文件成为一篇文档，" +
         "日期取最后一次改动它的提交；没变的文件不会重抓。",
+      gitlab_repo:
+        "读取一个 gitlab.com 项目默认分支上的 markdown 文件，做法与 GitHub 仓库文件相同。" +
+        "私有项目要一个带 read_api 的令牌。自建 GitLab 没有验证过。",
+      gitlab_issues:
+        "同步一个 gitlab.com 项目的工单，打开开关后连同合并请求。" +
+        "**每张连同它的状态、标签、里程碑变更史**成为一篇文档，都带着日期。" +
+        "**必须配一个带 read_api 的令牌**：没有令牌 GitLab 不给备注和事件，公开项目也一样。" +
+        "自建 GitLab 没有验证过。",
       s3:
         "从 S3 桶里读文档，或者任何说同一套协议的东西（MinIO、Ceph、R2）。" +
         "**端点留空就是 AWS**，填了就是自建。每个对象成为一篇文档，" +
@@ -617,6 +641,10 @@ export const zh: Strings = {
       notion:
         "同步一个 Notion 集成能看见的页面——把页面分享给集成，它就会出现在这里。" +
         "日期取页面最后一次编辑的时刻，那是页面自己的时钟，不是我们抓它的时刻。",
+      google_drive:
+        "同步你在 Google Drive 里选的文件夹，共享云端硬盘也算。" +
+        "**用你自己的 Google 账号连接**，只读；Docs、Sheets、Slides 以 Word、Excel、PowerPoint " +
+        "文件进来。日期取每个文件最后一次修改的时刻。",
       api: "外部系统把 JSON 文档推送到这里，用这个来源自己的令牌认证。",
       statements:
         "外部系统把已经是抽取契约形状的陈述推送到这里，不经模型；发事件，别发整张表的状态。",
@@ -674,6 +702,7 @@ export const zh: Strings = {
     rssHydrationCounts: (c: { pending: number; queued: number; retrying: number; complete: number; terminal: number }) =>
       `待处理 ${c.pending} · 排队 ${c.queued} · 重试 ${c.retrying} · 完成 ${c.complete} · 终止 ${c.terminal}`,
     repoField: "仓库（owner/name）",
+    gitlabProjectField: "项目（group/name，可带子组）",
     jiraUrlField: "Jira 地址",
     jiraProjectField: "项目 key",
     s3BucketField: "桶名",
@@ -691,10 +720,46 @@ export const zh: Strings = {
     davPassField: "密码",
     notionTokenField: "内部集成令牌",
     notionQueryField: "搜索词（可选——留空则取全部已分享页面）",
+    googleDrive: {
+      createHint: "建好来源之后，连接一个 Google 账号并选择文件夹。",
+      notConfigured:
+        "这台服务器没有配置 Google Drive。需要管理员设置 UTOPIA_GOOGLE_DRIVE_CLIENT_ID、_CLIENT_SECRET 与 _REDIRECT_URI。",
+      account: "Google 账号",
+      connect: "连接 Google Drive",
+      reconnect: "重新连接",
+      disconnect: "断开",
+      waiting: "请在 Google 的窗口里完成……",
+      connectedAs: (email: string) => `已连接：${email}`,
+      connectedNoEmail: "已连接",
+      notConnected: "尚未连接。同步以连接者的权限读取 Drive。",
+      folders: "要同步的文件夹",
+      onlyConnector: "只有连上这个 Google Drive 的人能选文件夹：这些是他自己 Drive 里的文件夹。",
+      foldersHint: "包含子文件夹。这些文件夹之外的文件一概不读。",
+      myDrive: "我的云端硬盘",
+      sharedWithMe: "与我共享",
+      top: "Google Drive",
+      empty: "这里没有文件夹。",
+      open: "打开",
+      noneSelected: "还没有选文件夹。",
+      remove: "移除",
+      saveFolders: "保存并同步",
+      saved: "文件夹已保存，同步已开始。",
+      disconnectConfirm: (account: string, mine: boolean, connector: string) =>
+        mine
+          ? `停止读取你的 Google Drive（${account}）？这里会删掉它的授权和选好的文件夹，再连接要从头选。`
+          : `停止读取 ${connector} 连上的 Google Drive（${account}）？文件夹只有 ${connector} 选过。这里会删掉它的授权和那些文件夹。`,
+      unnamedAccount: "已连接的账号",
+      someoneElse: "别人",
+      cancel: "取消",
+      disconnected: "Google Drive 已断开。",
+    },
     tokenField: "GitHub 令牌（可选，不再显示）",
+    gitlabTokenField: "带 read_api 的 GitLab 令牌（可选，不再显示）",
     includePullRequests: "把 PR 也当工单收进来",
-    includeGlobsField: "包含的 glob（逗号分隔，可选）",
-    excludeGlobsField: "排除的 glob（逗号分隔，可选）",
+    gitlabIssuesTokenField: "带 read_api 的 GitLab 令牌（读备注与事件要用，不再显示）",
+    includeMergeRequests: "把合并请求也当工单收进来",
+    includeGlobsField: "包含的 glob（逗号分隔，可选；填了就替换默认值）",
+    excludeGlobsField: "排除的 glob（逗号分隔，可选；填了就替换默认值）",
     interval: "同步计划",
     intervalManual: "仅手动",
     intervalEvery: (m: number) =>
@@ -754,6 +819,9 @@ export const zh: Strings = {
     button: "检索",
     searching: "检索中…",
     noResults: "没有结果",
+    previousPage: "上一页",
+    nextPage: "下一页",
+    retry: "重试搜索",
     chunkOf: (filename: string, seq: number) => `${filename} · 第 ${seq} 段`,
   },
   ask: {
@@ -1057,7 +1125,8 @@ export const zh: Strings = {
       openRegHint: "关闭后注册表单不再开放，只有管理员能在此创建账户。",
       workers: "后台工作线程",
       workersHint:
-        "同时运行的任务数的外层上限（1–256），作用是防止工作无限堆积。" +
+        "最多同时运行多少个模型任务（抽取、消解，1–256），另有两个名额保留给同步这类入库任务：" +
+        "它们不调模型，所以不必排在模型任务后面。这是防止工作无限堆积的外层上限；" +
         "真正的节流是下面的按模型上限，所以这个数留得比它们之和宽裕些。即时生效。",
       workersApply: "应用",
       modelConcurrency: "模型并发",
@@ -1157,6 +1226,12 @@ export const zh: Strings = {
       packsPick: "搜索本体包…",
       packsNone: "不选 —— 本体从文档里长出来",
       packsCount: (c: number, p: number) => `${c} 个类 · ${p} 个属性`,
+      scenariosLabel: "场景包",
+      scenariosHint: "按业务场景预置的类、属性和要回答的问题，建出来就是这个库自己的本体。可不选。",
+      scenariosPick: "搜索场景…",
+      scenariosNone: "不选 —— 之后在本体页手工建",
+      scenariosCount: (c: number, p: number, q: number) =>
+        `${c} 个类 · ${p} 个属性 · ${q} 个问题`,
       name: "名称",
       description: "描述",
       visibility: "可见性",
@@ -1181,11 +1256,22 @@ export const zh: Strings = {
     save: "保存",
     saving: "保存中…",
     saved: "已保存",
+    savedRefreshFailed: "已保存，但未能加载最新设置。",
+    reloadSettings: "重新加载设置",
     test: "测试连接",
     testing: "测试中…",
     chatLabel: "对话",
     embedLabel: "向量",
     ok: (reply: string) => `已连通，认证通过（${reply}）`,
+    /** 任务发出的每种请求各一行（#1354） */
+    chatShapes: {
+      plain: "普通请求",
+      streaming: "流式、温度 0、带完成上限（抽取）",
+      tools: "带一个工具（对话、第二眼）",
+    },
+    chatShapeOk: "通过",
+    chatShapeRefused: (error: string) => `被拒：${error}`,
+    chatShapeTimedOut: (error: string) => `超时（${error}）`,
     okDim: (dim: number) => `已连通，认证通过（维度 ${dim}）`,
     unsaved: "有未保存的修改。先保存这张卡，再测试。",
     readersTitle: "读扫描件与录音",
@@ -1233,7 +1319,11 @@ export const zh: Strings = {
     caseHideEvidence: "收起原文证据",
     caseMake: "添加回归案例",
     caseAddTitle: "添加属性回归案例",
-    caseAddHint: "保存这条开放陈述应绑定的属性及方向，再将已有的对齐决定与此预期比较。",
+    caseExpectBound: "绑定到属性",
+    caseNoneHint: "只有明确判为无绑定才通过。未定或已绑定均失败；尚无判定时保持未检查。",
+    caseHumanConflict: "失败：与人工绑定冲突",
+    caseHumanConflictHint: "此案例预期无绑定，但人已将陈述绑定到属性。案例失败，正式人工绑定保留。",
+    caseAddHint: "保存这条开放陈述应绑定到属性，还是保持无绑定，再将对齐决定与此预期比较。",
     caseExpectedProperty: "预期属性",
     caseDirection: "方向",
     caseForward: "主语 → 宾语",
@@ -1822,6 +1912,7 @@ export const zh: Strings = {
       "fact.nod_rejected": "已驳回一条记忆事实",
       "fact.close": "已闭合",
       "conflict.close_old": "闭合旧的",
+      "conflict.retime_new": "重定了新事实起点",
       "conflict.keep_both": "两条都留",
       "conflict.reject_new": "驳回新的",
       "merge.revert": "撤销合并",
@@ -1835,6 +1926,7 @@ export const zh: Strings = {
       escalate_unsure: "裁决的把握不够",
       escalate_sample: "抽给人看的一份；裁决器本有把握",
       escalate_impact: "留给人；这次合并不会只留在图里",
+      escalate_identity: "留给人；来源把一侧的名字声明为身份标识",
       proposed: "agent 看过了，留了一条建议",
       governed: "agent 按先例裁的",
       namesake: "同一篇文档里有两个同名实体",
@@ -2050,6 +2142,8 @@ export const zh: Strings = {
     conflictSince: (d: string) => `自 ${d} 起`,
     closeOld: "闭合旧的",
     closeOldAt: (d: string) => `在 ${d} 闭合旧的`,
+    retimeNew: "重定新事实起点",
+    conflictDate: "闭合旧事实或重定新事实起点的日期",
     keepBoth: "两条都留",
     rejectNew: "驳回新的",
     closeAtPlaceholder: "2024-06-15 · 2024-06 · 2024 · 2024-06-15T14:32Z",
@@ -2129,6 +2223,8 @@ export const zh: Strings = {
     auditUntil: "截止日期",
     auditClear: "清除筛选",
     auditTotal: (n: number) => `共 ${n} 条`,
+    activityLoadError: "无法加载活动日志。",
+    activityRetry: "重试",
     activityEmpty: "还没有记录。",
     deletedUser: "一位已移除的用户",
     adjudicator: "AI 裁决器",

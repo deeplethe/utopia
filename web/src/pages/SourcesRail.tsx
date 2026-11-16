@@ -73,12 +73,15 @@ export const KIND_ICON: Record<SourceKind, LucideIcon> = {
   custom: Puzzle,
   github_issues: CircleDot,
   github_repo: FileText,
+  gitlab_repo: FileText,
+  gitlab_issues: CircleDot,
   jira_issues: SquareKanban,
   s3: HardDrive,
   azure_blob: Cloud,
   gcs: Cloud,
   webdav: FolderOpen,
   notion: Notebook,
+  google_drive: HardDrive,
   memory: Brain,
   upload: Upload,
 };
@@ -90,12 +93,15 @@ export const SYNCING_KINDS = new Set([
   "custom",
   "github_issues",
   "github_repo",
+  "gitlab_repo",
+  "gitlab_issues",
   "jira_issues",
   "s3",
   "azure_blob",
   "gcs",
   "webdav",
   "notion",
+  "google_drive",
 ]);
 
 export const SYNC_DOT: Record<SourceView["last_sync_status"], string> = {

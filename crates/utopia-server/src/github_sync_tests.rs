@@ -260,14 +260,15 @@ async fn incremental_github_sync_preserves_the_complete_discussion() -> anyhow::
             .iter()
             .filter(|request| request.url.path() == "/repos/test/repo/issues")
             .collect();
-        anyhow::ensure!(issue_requests.len() == 6);
+        // 每轮先选窗口，再复读检查分页期间是否发生移动。
+        anyhow::ensure!(issue_requests.len() == 12);
         for (index, request) in issue_requests.iter().enumerate() {
             let lower_bound = request
                 .url
                 .query_pairs()
                 .find(|(key, _)| key == "since")
                 .map(|(_, value)| time(&value));
-            anyhow::ensure!(lower_bound == if index == 0 { None } else { since });
+            anyhow::ensure!(lower_bound == if index < 2 { None } else { since });
         }
         anyhow::ensure!(
             requests

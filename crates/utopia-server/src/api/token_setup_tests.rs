@@ -351,6 +351,80 @@ async fn a_write_token_creating_a_url_source_is_refused_with_token_source_kind(
 }
 
 #[tokio::test]
+async fn a_write_token_renames_re_extracts_sweeps_and_deletes_its_api_source() -> anyhow::Result<()>
+{
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    let result = async {
+        let kb = f.seeded_kb("history-mirror").await?;
+        let token = f.token(f.admin, "write", None).await;
+        let (_, created) = f.create_source_of_kind(kb, &token, "api").await?;
+        let path = format!(
+            "/kbs/{kb}/sources/{}",
+            created["source"]["id"].as_str().unwrap()
+        );
+
+        let renamed = f
+            .send("PATCH", &path, &token, Some(json!({ "name": "commits" })))
+            .await?;
+        let re_extracted = f
+            .send("POST", &format!("{path}/re-extract"), &token, None)
+            .await?;
+        let swept = f
+            .send("POST", &format!("{path}/missing/cleanup"), &token, None)
+            .await?;
+        let deleted = f.send("DELETE", &path, &token, None).await?;
+        anyhow::ensure!(
+            renamed.1["source"]["name"] == "commits"
+                && re_extracted.1["queued"] == 0
+                && swept.1["deleted"] == 0
+                && deleted.1["ok"] == true,
+            "{renamed:?} {re_extracted:?} {swept:?} {deleted:?}"
+        );
+        anyhow::Ok(())
+    }
+    .await;
+    f.cleanup().await?;
+    result
+}
+
+#[tokio::test]
+async fn a_write_token_changing_a_url_source_is_refused_with_token_source_kind(
+) -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    let result = async {
+        let kb = f.seeded_kb("pull").await?;
+        let source = utopia_store::sources::create(
+            &f.pool,
+            kb,
+            "url",
+            "site",
+            &json!({ "url": "https://example.com" }),
+            None,
+            None,
+            None,
+        )
+        .await?;
+        let token = f.token(f.admin, "write", None).await;
+
+        let path = format!("/kbs/{kb}/sources/{}", source.id);
+        let body = json!({ "config": { "url": "http://169.254.169.254" } });
+        let (status, refused) = f.send("PATCH", &path, &token, Some(body)).await?;
+        anyhow::ensure!(
+            status == StatusCode::FORBIDDEN && refused["code"] == "token_source_kind",
+            "{status} {refused}"
+        );
+        anyhow::Ok(())
+    }
+    .await;
+    f.cleanup().await?;
+    result
+}
+
+#[tokio::test]
 async fn a_read_token_lists_bases_and_is_refused_on_every_setup_route() -> anyhow::Result<()> {
     let Some(f) = Fixture::new().await? else {
         return Ok(());

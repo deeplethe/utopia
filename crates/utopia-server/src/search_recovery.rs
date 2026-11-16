@@ -109,7 +109,12 @@ mod tests {
             assert!(marker(&index_dir).exists());
             assert!(open(&index_dir).is_err(), "a second writer must be refused");
             assert_eq!(search.len(), 2, "the live writer keeps its committed data");
-            assert_eq!(search.search(&kb.to_string(), "firstneedle", 10)?.len(), 1);
+            assert_eq!(
+                search
+                    .search(&kb.to_string(), "firstneedle", 10, None)?
+                    .len(),
+                1
+            );
             drop(search);
 
             let search = open(&index_dir)?;
@@ -123,9 +128,14 @@ mod tests {
             rebuild(&index_dir, &search, live)?;
             assert_eq!(search.len(), 2);
             assert!(search
-                .search(&kb.to_string(), "firstneedle", 10)?
+                .search(&kb.to_string(), "firstneedle", 10, None)?
                 .is_empty());
-            assert_eq!(search.search(&kb.to_string(), "thirdneedle", 10)?.len(), 1);
+            assert_eq!(
+                search
+                    .search(&kb.to_string(), "thirdneedle", 10, None)?
+                    .len(),
+                1
+            );
             assert!(!marker(&index_dir).exists());
         }
         Ok(())
@@ -154,7 +164,12 @@ mod tests {
         drop(search);
         let search = open(&index_dir)?;
         assert_eq!(search.len(), 2);
-        assert_eq!(search.search(&kb.to_string(), "legacyneedle", 10)?.len(), 1);
+        assert_eq!(
+            search
+                .search(&kb.to_string(), "legacyneedle", 10, None)?
+                .len(),
+            1
+        );
 
         // The database may become empty between attempts. Completing that
         // recovery must clear its marker instead of rebuilding on every boot.

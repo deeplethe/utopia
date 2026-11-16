@@ -21,12 +21,16 @@ export function AddOntologyRegressionDialog({
     queryFn: () => api.ontology(kbId),
   });
   const [property, setProperty] = useState("");
+  const [expected, setExpected] = useState<"bound" | "none">("bound");
   const [direction, setDirection] = useState<"forward" | "reverse">("forward");
   const options = (ontology.data?.relation_types ?? [])
     .filter((p) => p.kind === (isValue ? "attribute" : "relation"))
     .map((p) => ({ value: p.id, label: p.label, hint: p.key }));
   const add = useMutation({
-    mutationFn: () => api.addOntologyRegression(kbId, {
+    mutationFn: () => api.addOntologyRegression(kbId, expected === "none" ? {
+      statement_id: statementId,
+      expected_binding: "none",
+    } : {
       statement_id: statementId,
       relation_type_id: property,
       direction: isValue ? "forward" : direction,
@@ -45,20 +49,28 @@ export function AddOntologyRegressionDialog({
       closeLabel={S.ui.close}
       saveLabel={S.ontology.caseAdd}
       cancelLabel={S.ontology.cancel}
-      canSave={options.some((p) => p.value === property)}
+      canSave={expected === "none" || options.some((p) => p.value === property)}
       busy={add.isPending}
       onSave={() => add.mutate()}
       onCancel={onClose}
     >
       <p className="mb-4 text-body text-ink">{statement}</p>
-      {ontology.isError ? (
+      <Field label={S.ontology.caseExpected}>
+        <Segmented value={expected} onChange={setExpected} options={[
+          { value: "bound" as const, label: S.ontology.caseExpectBound },
+          { value: "none" as const, label: S.ontology.caseUnbound },
+        ]} />
+      </Field>
+      {expected === "none" ? (
+        <p className="mt-4 text-small text-ink-2">{S.ontology.caseNoneHint}</p>
+      ) : ontology.isError ? (
         <p role="alert" className="text-small text-danger">{(ontology.error as Error).message}</p>
       ) : ontology.isPending ? (
         <Loading>{S.nav.loading}</Loading>
       ) : options.length === 0 ? (
         <p className="text-small text-ink-2">{S.ontology.caseNoProperties}</p>
       ) : (
-        <div className="space-y-4">
+        <div className="mt-4 space-y-4">
           <Field label={S.ontology.caseExpectedProperty}>
             <SearchSelect value={property} options={options} onChange={setProperty} />
           </Field>

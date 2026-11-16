@@ -437,7 +437,8 @@ pub(crate) fn currency_unit(tok: &str) -> Option<&'static str> {
             "$" | "USD" | "usd" | "US$" | "dollar" | "dollars" | "美元" => "$",
             "€" | "EUR" | "eur" | "euro" | "euros" | "欧元" => "€",
             "£" | "GBP" | "gbp" | "pound" | "pounds" | "英镑" => "£",
-            "¥" | "JPY" | "jpy" | "yen" | "日元" => "¥",
+            // 中文排版的「￥」是全角的同一个符号
+            "¥" | "￥" | "JPY" | "jpy" | "yen" | "日元" => "¥",
             "CNY" | "cny" | "RMB" | "rmb" | "yuan" | "人民币" | "元" | "元人民币" | "人民币元" => {
                 "¥"
             }
@@ -471,6 +472,8 @@ fn scan_quantity(s: &str, strict: bool) -> Option<Quantity> {
     if s.is_empty() {
         return None;
     }
+    let negated = if strict { None } else { accounting_negative(s) };
+    let s = negated.as_deref().unwrap_or(s);
     let (body, percent) = match s.strip_suffix('%') {
         Some(b) => (b.trim_end(), true),
         None => (s, false),
@@ -492,14 +495,18 @@ fn scan_quantity(s: &str, strict: bool) -> Option<Quantity> {
             }
         }
     }
-    // 2. 数字：前导的 [-+0-9.,_]
+    // 2. 数字：前导的 [-+0-9.,_]，负号也可以是排版用的 U+2212
     let num_end = rest
         .char_indices()
-        .find(|(_, c)| !matches!(c, '0'..='9' | '.' | ',' | '_' | '-' | '+'))
+        .find(|(_, c)| !matches!(c, '0'..='9' | '.' | ',' | '_' | '-' | '+' | '−'))
         .map(|(i, _)| i)
         .unwrap_or(rest.len());
     let (num, after) = rest.split_at(num_end);
-    let cleaned: String = num.chars().filter(|c| !matches!(c, ',' | '_')).collect();
+    let cleaned: String = num
+        .chars()
+        .filter(|c| !matches!(c, ',' | '_'))
+        .map(|c| if c == '−' { '-' } else { c })
+        .collect();
     let mut n: f64 = cleaned.parse().ok()?;
     // 3. 数字后面：紧贴或空格隔开的量级词、货币词，逐个吃；吃不动的就是「其余」
     let mut tail = after.trim_start();
@@ -512,7 +519,8 @@ fn scan_quantity(s: &str, strict: bool) -> Option<Quantity> {
         // 取下一个记号：中文按字（量级/货币词最长两三个字），其它按空白分词
         let (tok, next) = next_token(tail);
         if !ate_magnitude {
-            if let Some(m) = magnitude(tok) {
+            // 标题里写成「$5 Billion」：量级词不分大小写，不然 5 billion 读成 5
+            if let Some(m) = magnitude(&tok.to_ascii_lowercase()) {
                 // Parse the written decimal with its scale in one conversion. Multiplying
                 // an already rounded f64 needs an epsilon that can erase real fractions.
                 // The suffix is at most three bytes (e12), so allocation stays O(num.len()).
@@ -554,6 +562,35 @@ fn scan_quantity(s: &str, strict: bool) -> Option<Quantity> {
     })
 }
 
+/// 财报的写法：括号里的数是负数。`(1,234)` → `-1,234`，`$(1.2) billion` → `$-1.2 billion`，
+/// `(12.5%)` → `-12.5%`。括号前只许有一个货币，括号里只许是数，括号后只许是量级词、
+/// 货币或 `%`：「(1) 1,200 employees」「(2024) 500」里的括号是编号和年份，不是负号
+fn accounting_negative(s: &str) -> Option<String> {
+    let (head, rest) = s.split_once('(')?;
+    let (inner, after) = rest.split_once(')')?;
+    if !head.trim().is_empty() && currency_unit(head.trim()).is_none() {
+        return None;
+    }
+    let mut tail = after.trim();
+    tail = tail.strip_suffix('%').unwrap_or(tail).trim_end();
+    while !tail.is_empty() {
+        let (tok, next) = next_token(tail);
+        if magnitude(&tok.to_ascii_lowercase()).is_none() && currency_unit(tok).is_none() {
+            return None;
+        }
+        tail = next.trim_start();
+    }
+    let digits = inner.trim().strip_suffix('%').unwrap_or(inner.trim());
+    if !digits.starts_with(|c: char| c.is_ascii_digit())
+        || !digits
+            .chars()
+            .all(|c| c.is_ascii_digit() || matches!(c, ',' | '.'))
+    {
+        return None;
+    }
+    Some(format!("{head}-{}{after}", inner.trim()))
+}
+
 /// 读出来的一个量。`n` 已经乘上了量级词；`scaled` 记下原文写没写量级词——换算到属性
 /// 声明的单位时要知道 `5000` 是原文就这么写的数，还是 `5000万` 展开出来的
 struct Quantity {
@@ -581,8 +618,11 @@ fn strip_approx(s: &str) -> &str {
         "~",
         "≈",
     ] {
-        if let Some(rest) = s.strip_prefix(p) {
-            s = rest.trim_start();
+        // 句首的「About 350」「Approximately 1,200」：英文的约数词不分大小写
+        if s.get(..p.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(p))
+        {
+            s = s[p.len()..].trim_start();
             break;
         }
     }
@@ -754,20 +794,29 @@ pub fn attribute_value(
         return normalize_attr_value(datatype, raw);
     };
     // 声明的单位拆成量级和其余：「万元」→ (4, 元)，「million dollars」→ (6, dollars)
+    // 币种写在前面的「USD million」「€ million」，量级在末尾
     let (tok, rest) = next_token(declared);
+    let trailing = declared
+        .rsplit_once(char::is_whitespace)
+        .and_then(|(head, last)| Some((magnitude(&last.to_ascii_lowercase())?, head.trim())));
     let (exponent, base) = match magnitude(&tok.to_ascii_lowercase()) {
         Some(m) => (m, rest.trim()),
-        None => (0, declared),
+        None => trailing.unwrap_or((0, declared)),
     };
     let written = q.unit.as_deref().and_then(currency_unit);
     let wanted = currency_unit(base);
     if written.is_some() && wanted.is_some() && written != wanted {
         return None;
     }
-    // 原文写了量级词，或写了和声明一样的单位（「50000000元」对「万元」），n 才是绝对量，
-    // 要除下来；光秃秃的数就是声明单位下的数。除法走一次十进制解析，同 `scan_quantity`
-    // 乘量级词的道理：先算成 f64 再除会留下 23000.000000000004
-    let n = if q.scaled || (written.is_some() && written == wanted) {
+    // 原文写了量级词，或写了和声明一样的单位（「50000000元」对「万元」、「12,000人」对
+    // 「万人」），或写了计数量词，n 才是绝对量，要除下来；光秃秃的数就是声明单位下的数。
+    // 除法走一次十进制解析，同 `scan_quantity` 乘量级词的道理：先算成 f64 再除会留下
+    // 23000.000000000004
+    let counted = q
+        .unit
+        .as_deref()
+        .is_some_and(|u| u == base || COUNTERS.iter().any(|c| c.trim() == u));
+    let n = if q.scaled || counted || (written.is_some() && written == wanted) {
         format!("{}e-{exponent}", q.n).parse().ok()?
     } else {
         q.n
@@ -832,6 +881,33 @@ pub fn read_time(s: &str) -> Option<(DateTime<Utc>, &'static str)> {
     })
 }
 
+/// 「17th」「2nd」「23rd」里的日。后缀得和数字相符：11、12、13 是 th，不是 11st。
+fn ordinal_day(w: &str) -> Option<&str> {
+    let (digits, suffix) = w.split_at_checked(w.len().checked_sub(2)?)?;
+    if digits.is_empty() || digits.len() > 2 || !digits.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let n: u32 = digits.parse().ok()?;
+    let expected = match n % 100 {
+        11..=13 => "th",
+        _ => match n % 10 {
+            1 => "st",
+            2 => "nd",
+            3 => "rd",
+            _ => "th",
+        },
+    };
+    suffix.eq_ignore_ascii_case(expected).then_some(digits)
+}
+
+fn day_digits(w: &str) -> Option<&str> {
+    if w.chars().all(|c| c.is_ascii_digit()) {
+        Some(w)
+    } else {
+        ordinal_day(w)
+    }
+}
+
 /// 没照规则 3 写、但说得清是哪一天（或哪个月）的日期（#688）。
 ///
 /// 合同、公告里的日期多半这么写，模型常常照抄；从前这些值全被当成「不是日期」丢掉。
@@ -853,15 +929,26 @@ pub fn written_date(s: &str) -> Option<(NaiveDate, &'static str)> {
         .filter(|w| !w.is_empty())
         .collect();
     let is_number = |w: &str| w.chars().all(|c| c.is_ascii_digit());
+    // 日可以带序数后缀（March 17th、2nd March）；月名不带
     let (day, month, year) = match words.as_slice() {
-        [m, d, y] if !is_number(m) && is_number(d) && is_number(y) => (Some(*d), *m, *y),
-        [d, m, y] if is_number(d) && !is_number(m) && is_number(y) => (Some(*d), *m, *y),
+        [m, d, y] if !is_number(m) && day_digits(d).is_some() && is_number(y) => {
+            (day_digits(d), *m, *y)
+        }
+        [d, m, y] if day_digits(d).is_some() && !is_number(m) && is_number(y) => {
+            (day_digits(d), *m, *y)
+        }
         [m, y] if !is_number(m) && is_number(y) => (None, *m, *y),
         _ => return None,
     };
     if year.len() != 4 || day.is_some_and(|d| d.len() > 2) {
         return None;
     }
+    // 美联社写法把九月缩成四个字母的「Sept.」，chrono 的 `%b` 只认三个字母
+    let month = if month.eq_ignore_ascii_case("sept") {
+        "Sep"
+    } else {
+        month
+    };
     let month = ["%B", "%b"].iter().find_map(|f| {
         NaiveDate::parse_from_str(&format!("1 {month} 2000"), &format!("%d {f} %Y"))
             .ok()
@@ -1173,8 +1260,25 @@ mod tests {
             Some(json!(5e9))
         );
         assert_eq!(
+            normalize_attr_value("number", &json!("$2.5 Billion")),
+            Some(json!(2.5e9))
+        );
+        assert_eq!(
             normalize_attr_value("number", &json!("52%")),
             Some(json!(52.0))
+        );
+        // 排版过的负号是 U+2212（维基百科、排版出来的 PDF 都这么写），读法同 `-`
+        assert_eq!(
+            normalize_attr_value("number", &json!("−3.2%")),
+            Some(json!(-3.2))
+        );
+        assert_eq!(
+            normalize_attr_value("number", &json!("−1,250")),
+            Some(json!(-1250.0))
+        );
+        assert_eq!(
+            attribute_value("number", Some("万元"), &json!("−2.3亿元")),
+            Some(json!(-23000.0))
         );
         // 原来就认的两种写法不受影响
         assert_eq!(
@@ -1229,6 +1333,7 @@ mod tests {
         use serde_json::json;
         let day = |s: &str| normalize_attr_value("date", &json!(s));
         for written in [
+            "March 17th, 2020",
             "March 17, 2020",
             "March 17 2020",
             "march 17, 2020",
@@ -1244,6 +1349,15 @@ mod tests {
             "2020年3月17日",
         ] {
             assert_eq!(day(written), Some(json!("2020-03-17")), "{written}");
+        }
+        for (written, iso) in [
+            ("2nd March 2020", "2020-03-02"),
+            ("March 11th, 2020", "2020-03-11"),
+            ("March 21st, 2020", "2020-03-21"),
+            ("March 22nd, 2020", "2020-03-22"),
+            ("March 23rd, 2020", "2020-03-23"),
+        ] {
+            assert_eq!(day(written), Some(json!(iso)), "{written}");
         }
         // 只写到月的是月，不补日
         for written in ["March 2020", "Mar. 2020", "2020年3月"] {
@@ -1274,6 +1388,25 @@ mod tests {
         assert_eq!(
             read_time("17 Mar 2020").map(|(t, p)| (t.date_naive().to_string(), p)),
             Some(("2020-03-17".to_string(), "day"))
+        );
+    }
+
+    #[test]
+    fn september_abbreviated_as_sept_is_read() {
+        use serde_json::json;
+        let day = |s: &str| normalize_attr_value("date", &json!(s));
+        for written in [
+            "Sept. 17, 2020",
+            "Sept 17, 2020",
+            "17 Sept. 2020",
+            "SEPT. 17, 2020",
+        ] {
+            assert_eq!(day(written), Some(json!("2020-09-17")), "{written}");
+        }
+        assert_eq!(day("Sept. 2020"), Some(json!("2020-09")));
+        assert_eq!(
+            read_time("Sept. 30, 2025").map(|(t, p)| (t.date_naive().to_string(), p)),
+            Some(("2025-09-30".to_string(), "day"))
         );
     }
 
@@ -1405,6 +1538,28 @@ mod tests {
         );
         assert_eq!(normalize_attr_value("text", &json!([1])), None);
     }
+
+    /// 财报表里括号里的数是负数：从前整格读不出来，这个值就丢了
+    #[test]
+    fn an_accounting_negative_is_read_as_negative() {
+        use serde_json::json;
+        let n = |s: &str| normalize_attr_value("number", &json!(s));
+        assert_eq!(n("(1,234)"), Some(json!(-1234.0)));
+        assert_eq!(n("$(1.2) billion"), Some(json!(-1200000000.0)));
+        assert_eq!(n("(12.5%)"), Some(json!(-12.5)));
+        assert_eq!(
+            attribute_value("number", Some("万元"), &json!("(350)万元")),
+            Some(json!(-350.0))
+        );
+        // 括号里不是数、括号前不是货币的，照旧读不出
+        assert_eq!(n("(see note 4)"), None);
+        assert_eq!(n("Q3 (12)"), None);
+        // 括号后面跟着别的数：括号是编号或年份，不是负号
+        assert_eq!(n("(1) 1,200 employees"), None);
+        assert_eq!(n("(2024) 500"), None);
+        // 宾语判定不跟着变：点了名的「(1984)」仍是一个东西
+        assert!(!literal_object("(1984)", true));
+    }
 }
 
 #[cfg(test)]
@@ -1452,8 +1607,50 @@ mod an_attribute_value_is_read_in_its_declared_unit {
         // 光秃秃的数就是声明单位下的数
         assert_eq!(value("number", Some("万元"), "5000"), Some(json!(5000.0)));
         assert_eq!(value("number", Some("人"), "约350名"), Some(json!(350.0)));
+        assert_eq!(
+            value("number", Some("人"), "Approximately 1,200"),
+            Some(json!(1200.0))
+        );
+        assert_eq!(
+            value("number", Some("people"), "About 350 people"),
+            Some(json!(350.0))
+        );
         // 只写到年的日期按年
         assert_eq!(value("date", None, "1982年"), Some(json!("1982")));
+    }
+
+    /// 财报的单位常把币种写在量级前面：「USD million」「€ million」，同「million dollars」
+    #[test]
+    fn a_unit_with_its_currency_first_is_still_read_in_millions() {
+        assert_eq!(
+            value("number", Some("USD million"), "$5 billion"),
+            Some(json!(5000.0))
+        );
+        assert_eq!(
+            value("number", Some("€ million"), "€30 million"),
+            Some(json!(30.0))
+        );
+        assert_eq!(value("number", Some("USD million"), "€30 million"), None);
+        assert_eq!(
+            value("number", Some("million dollars"), "$5 billion"),
+            Some(json!(5000.0))
+        );
+    }
+
+    /// 数后面写了人数的词，那就是一个个数出来的人，落到「万人」上要除下来
+    #[test]
+    fn a_counted_figure_is_read_into_a_larger_unit() {
+        assert_eq!(value("number", Some("万人"), "12,000人"), Some(json!(1.2)));
+        assert_eq!(value("number", Some("万人"), "约3500名"), Some(json!(0.35)));
+        assert_eq!(
+            value("number", Some("thousand people"), "1,250 employees"),
+            Some(json!(1.25))
+        );
+        assert_eq!(
+            value("number", Some("万人"), "1400万人"),
+            Some(json!(1400.0))
+        );
+        assert_eq!(value("number", Some("万人"), "1.2"), Some(json!(1.2)));
     }
 
     /// 换不了的不换：货币对不上、读不出数的，宁缺勿脏
@@ -1463,6 +1660,19 @@ mod an_attribute_value_is_read_in_its_declared_unit {
         assert_eq!(value("number", Some("人"), "超过一千人"), None);
         assert_eq!(value("date", None, "2023年底"), None);
         assert_eq!(value("bool", None, "尚未上市"), None);
+    }
+
+    /// 中文财务文本的金额多用全角的「￥」，与「¥」是同一个符号
+    #[test]
+    fn a_full_width_yen_sign_is_read_as_the_currency() {
+        assert_eq!(value("number", None, "￥5,000万"), Some(json!(5e7)));
+        assert_eq!(
+            value("number", Some("万元"), "￥5,000万"),
+            Some(json!(5000.0))
+        );
+        assert_eq!(value("number", Some("元"), "￥1,280"), Some(json!(1280.0)));
+        assert_eq!(value("number", Some("万美元"), "￥5,000万"), None);
+        assert!(literal_object("￥5000万", true));
     }
 
     #[test]

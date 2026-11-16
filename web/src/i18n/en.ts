@@ -47,6 +47,8 @@ export const en = {
   /** 服务端校验错误的措辞。key = 服务端给的 code；缺一条就退回英文原句，不会崩。
       契约守卫（调错接口才碰得到）刻意不在这里——它们的读者是开发者 */
   err: {
+    bad_case_expectation: "Choose a property and direction, or expect no binding.",
+
     bad_email: "That doesn't look like an email address.",
     password_too_short: "Password must be at least 8 characters.",
     bad_display_name: "Display name must be 1-64 characters.",
@@ -116,6 +118,7 @@ export const en = {
     unknown_entity_type: "That class is not in this ontology.",
     nothing_to_update: "Nothing to change.",
     self_merge: "An entity cannot be merged into itself.",
+    new_from_required: "Enter the new start date for this fact.",
     close_at_required:
       "Pick the date this fact ended — the new one does not say when it started.",
     empty_query: "Type something to search for.",
@@ -125,6 +128,17 @@ export const en = {
       "This data source is not granted to this workspace. Ask a deployment admin to grant it in Administration → Data sources.",
     memory_source_permanent:
       "The Memory source is part of the knowledge base and stays.",
+    google_drive_not_configured:
+      "Google Drive is not set up on this server. An administrator sets UTOPIA_GOOGLE_DRIVE_CLIENT_ID, _CLIENT_SECRET and _REDIRECT_URI.",
+    google_drive_connected_by_someone_else:
+      "This source reads someone else's Google Drive. Disconnect it first, then connect your own.",
+    google_drive_not_connector:
+      "Only the person who connected this Google Drive can choose its folders.",
+    google_drive_not_connected: "Connect a Google account first.",
+    google_drive_unavailable: "Google Drive could not be read.",
+    google_drive_busy: "Too many Google Drive connections are in progress. Try again in a few minutes.",
+    google_drive_too_many_folders: "Choose at most 50 folders. Choose a common parent instead.",
+    google_drive_invalid_folder: "That is not a Google Drive folder id.",
     source_name_required: "Give this source a name.",
     bad_cron: "That cron expression could not be parsed.",
     bad_cron_fields:
@@ -243,7 +257,7 @@ export const en = {
     copied: "Copied",
     mcpTitle: "MCP client configuration",
     mcpHint:
-      "For Claude Code, Claude Desktop and other Streamable HTTP clients. Each base has its own endpoint, so pick the one the agent should talk to. Other clients spell the keys differently.",
+      "For Claude Code, Claude Desktop and other Streamable HTTP clients. This snippet connects to one knowledge base, even if the token allows all bases. Check the selected base before copying. Other clients spell the keys differently.",
     mcpBase: "Base",
     yourTokens: "Your tokens",
     noTokens: "No tokens yet.",
@@ -593,6 +607,7 @@ export const en = {
       phrase_is_value: "Kept, but the phrase is the value itself",
       phrase_is_subject: "Kept, but the phrase is the subject's own name",
       object_is_value: "Kept, with the object read as a value",
+      attr_datatype: "Kept as an open statement, but the value cannot be read as the attribute's datatype",
     } as Record<string, string>,
     // 来源级重抽：不危险，只是费时费钱——轻确认，文案直说成本与保留项
     reExtractSource: "Re-extract",
@@ -641,12 +656,15 @@ export const en = {
       custom: "Custom",
       github_issues: "GitHub issues",
       github_repo: "GitHub repository files",
+      gitlab_repo: "GitLab project files",
+      gitlab_issues: "GitLab issues",
       jira_issues: "Jira issues",
       s3: "S3 / MinIO",
       azure_blob: "Azure Blob",
       gcs: "Google Cloud Storage",
       webdav: "WebDAV",
       notion: "Notion",
+      google_drive: "Google Drive",
     },
     sourceKindHints: {
       folder: "Holds the files you upload: add, drag in and remove them here.",
@@ -663,6 +681,16 @@ export const en = {
       github_repo:
         "Reads markdown files off a repository's default branch. Each file becomes one " +
         "document dated by its last commit; unchanged files are not fetched again.",
+      gitlab_repo:
+        "Reads markdown files off a gitlab.com project's default branch, the same way as " +
+        "GitHub repository files. A private project needs a token with read_api. " +
+        "Self-managed GitLab has not been verified.",
+      gitlab_issues:
+        "Syncs a gitlab.com project's issues, and its merge requests when switched on. " +
+        "**Each one, together with its state, label and milestone history**, becomes one " +
+        "document, all dated. **A token with read_api is required**: GitLab does not return " +
+        "notes or events without one, even for a public project. " +
+        "Self-managed GitLab has not been verified.",
       s3:
         "Reads documents out of an S3 bucket, or anything speaking the same protocol " +
         "(MinIO, Ceph, R2). **Leave the endpoint empty for AWS**; fill it in for a " +
@@ -681,6 +709,10 @@ export const en = {
         "Syncs the pages a Notion integration can see — share a page with the integration " +
         "and it appears here. Dated by when the page was last edited, which is the page's " +
         "own clock rather than ours.",
+      google_drive:
+        "Syncs the folders you choose from your Google Drive, shared drives included. " +
+        "**You connect with your own Google account**, read-only; Docs, Sheets and Slides " +
+        "arrive as Word, Excel and PowerPoint files. Dated by each file's last modification.",
       api: "External systems push JSON documents here, authenticated with this source's own token.",
       statements:
         "Your system pushes statements already in the extraction contract; no model reads them. Send events, not the state of a table.",
@@ -741,6 +773,7 @@ export const en = {
     rssHydrationCounts: (c: { pending: number; queued: number; retrying: number; complete: number; terminal: number }) =>
       `pending ${c.pending} · queued ${c.queued} · retrying ${c.retrying} · complete ${c.complete} · terminal ${c.terminal}`,
     repoField: "Repository (owner/name)",
+    gitlabProjectField: "Project (group/name, subgroups allowed)",
     jiraUrlField: "Jira site URL",
     jiraProjectField: "Project key",
     s3BucketField: "Bucket",
@@ -758,10 +791,47 @@ export const en = {
     davPassField: "Password",
     notionTokenField: "Internal integration token",
     notionQueryField: "Search term (optional — empty takes every shared page)",
+    googleDrive: {
+      createHint: "After creating the source, connect a Google account and choose the folders.",
+      notConfigured:
+        "Google Drive is not set up on this server. An administrator sets UTOPIA_GOOGLE_DRIVE_CLIENT_ID, _CLIENT_SECRET and _REDIRECT_URI.",
+      account: "Google account",
+      connect: "Connect Google Drive",
+      reconnect: "Reconnect",
+      disconnect: "Disconnect",
+      waiting: "Finish in the Google window…",
+      connectedAs: (email: string) => `Connected as ${email}`,
+      connectedNoEmail: "Connected",
+      notConnected: "Not connected. Syncing reads Drive with the permissions of whoever connects it.",
+      folders: "Folders to sync",
+      onlyConnector:
+        "Only the person who connected this Google Drive can choose its folders, because they are folders from their own Drive.",
+      foldersHint: "Subfolders are included. Files outside these folders are never read.",
+      myDrive: "My Drive",
+      sharedWithMe: "Shared with me",
+      top: "Google Drive",
+      empty: "No folders here.",
+      open: "Open",
+      noneSelected: "No folders chosen yet.",
+      remove: "Remove",
+      saveFolders: "Save folders and sync",
+      saved: "Folders saved. A sync has started.",
+      disconnectConfirm: (account: string, mine: boolean, connector: string) =>
+        mine
+          ? `Stop reading your Google Drive (${account})? Its access and the chosen folders are removed here, and connecting again starts from scratch.`
+          : `Stop reading the Google Drive ${connector} connected (${account})? Only ${connector} chose its folders. Its access and those folders are removed here.`,
+      unnamedAccount: "the connected account",
+      someoneElse: "someone else",
+      cancel: "Cancel",
+      disconnected: "Google Drive disconnected.",
+    },
     tokenField: "GitHub token (optional, never shown again)",
+    gitlabTokenField: "GitLab token with read_api (optional, never shown again)",
     includePullRequests: "Treat pull requests as tickets too",
-    includeGlobsField: "Include globs (comma-separated, optional)",
-    excludeGlobsField: "Exclude globs (comma-separated, optional)",
+    gitlabIssuesTokenField: "GitLab token with read_api (needed for notes and events, never shown again)",
+    includeMergeRequests: "Treat merge requests as tickets too",
+    includeGlobsField: "Include globs (comma-separated, optional; replaces the default)",
+    excludeGlobsField: "Exclude globs (comma-separated, optional; replaces the default)",
     interval: "Sync schedule",
     intervalManual: "Manual only",
     intervalEvery: (m: number) =>
@@ -823,6 +893,9 @@ export const en = {
     button: "Search",
     searching: "Searching…",
     noResults: "No results found",
+    previousPage: "Previous page",
+    nextPage: "Next page",
+    retry: "Retry search",
     chunkOf: (filename: string, seq: number) => `${filename} · section ${seq}`,
   },
   ask: {
@@ -1194,9 +1267,11 @@ export const en = {
         "When off, the sign-up form is closed and only admins can create accounts here.",
       workers: "Background workers",
       workersHint:
-        "An outer ceiling on how many jobs run at once (1–256), there to stop work piling up " +
-        "without bound. The real throttle is the per-model limit below, so keep this comfortably " +
-        "above the sum of those. Takes effect immediately.",
+        "How many model jobs (extraction, resolution) can run at once (1–256), plus two slots " +
+        "reserved for intake jobs such as syncs, which make no model call and so never wait " +
+        "behind model work. It is an outer ceiling that stops work piling up without bound; the " +
+        "real throttle is the per-model limit below, so keep this comfortably above the sum of " +
+        "those. Takes effect immediately.",
       workersApply: "Apply",
       /* 真正的节流：约束来自供应商的速率限制，而那是按模型算的 */
       modelConcurrency: "Model concurrency",
@@ -1308,6 +1383,14 @@ export const en = {
       packsPick: "Search packs…",
       packsNone: "None — the ontology grows out of the documents",
       packsCount: (c: number, p: number) => `${c} classes · ${p} properties`,
+      scenariosLabel: "Scenario packs",
+      scenariosHint:
+        "Classes, properties and the questions to answer for one kind of corpus; " +
+        "installed as this base's own ontology. Optional.",
+      scenariosPick: "Search scenarios…",
+      scenariosNone: "None — build the ontology by hand later",
+      scenariosCount: (c: number, p: number, q: number) =>
+        `${c} classes · ${p} properties · ${q} questions`,
       name: "Name",
       description: "Description",
       visibility: "Visibility",
@@ -1333,11 +1416,22 @@ export const en = {
     save: "Save",
     saving: "Saving…",
     saved: "Saved",
+    savedRefreshFailed: "Saved, but the latest settings could not be loaded.",
+    reloadSettings: "Reload settings",
     test: "Test connection",
     testing: "Testing…",
     chatLabel: "Chat",
     embedLabel: "Embedding",
     ok: (reply: string) => `Reachable and authenticated (${reply})`,
+    /** One line per request shape the jobs send (#1354) */
+    chatShapes: {
+      plain: "Plain request",
+      streaming: "Streamed at temperature 0 with the completion ceiling (extraction)",
+      tools: "With a tool (chat, second look)",
+    },
+    chatShapeOk: "ok",
+    chatShapeRefused: (error: string) => `refused: ${error}`,
+    chatShapeTimedOut: (error: string) => `timed out (${error})`,
     okDim: (dim: number) => `Reachable and authenticated (dim ${dim})`,
     unsaved: "Unsaved changes. Save this card to test them.",
     readersTitle: "Reading scans and recordings",
@@ -1388,7 +1482,11 @@ export const en = {
     caseHideEvidence: "Hide source evidence",
     caseMake: "Add regression case",
     caseAddTitle: "Add a property regression case",
-    caseAddHint: "Save the property and direction this open statement should bind to. Its existing alignment decision will be compared with this expectation.",
+    caseExpectBound: "Bind to a property",
+    caseNoneHint: "Only an explicit no-binding decision passes. An undecided or bound result fails; no decision remains unchecked.",
+    caseHumanConflict: "Failed: manual binding conflict",
+    caseHumanConflictHint: "This case expects no binding, but a person bound the statement. The case fails; the manual binding is retained.",
+    caseAddHint: "Save whether this open statement should bind to a property or remain unbound. Its alignment decision is compared with that expectation.",
     caseExpectedProperty: "Expected property",
     caseDirection: "Direction",
     caseForward: "Subject → Object",
@@ -2087,6 +2185,7 @@ export const en = {
       "fact.nod_rejected": "Rejected a remembered fact",
       "fact.close": "Closed",
       "conflict.close_old": "Closed old",
+      "conflict.retime_new": "Retimed new start",
       "conflict.keep_both": "Kept both",
       "conflict.reject_new": "Rejected new",
       "merge.revert": "Reverted merge",
@@ -2103,6 +2202,8 @@ export const en = {
       escalate_sample: "Sampled for a person; the adjudicator was confident",
       /* 执行闸门（0027）：合并会立刻送出图外的东西，把握再高也留给人 */
       escalate_impact: "Held for a person; the merge would not stay in the graph",
+      escalate_identity:
+        "Held for a person; a source treats one side's names as identifiers",
       proposed: "The agent looked and left a proposal",
       governed: "Decided by the agent from precedent",
       namesake: "Two entities with this name in one document",
@@ -2348,6 +2449,8 @@ export const en = {
     conflictSince: (d: string) => `since ${d}`,
     closeOld: "Close old",
     closeOldAt: (d: string) => `Close old at ${d}`,
+    retimeNew: "Retime new start",
+    conflictDate: "Date to close the old fact or retime the new start",
     keepBoth: "Keep both",
     rejectNew: "Reject new",
     closeAtPlaceholder: "2024-06-15 · 2024-06 · 2024 · 2024-06-15T14:32Z",
@@ -2439,6 +2542,8 @@ export const en = {
     auditUntil: "Up to this date",
     auditClear: "Clear filters",
     auditTotal: (n: number) => `${n} events`,
+    activityLoadError: "Could not load the activity log.",
+    activityRetry: "Retry",
     activityEmpty: "Nothing recorded yet.",
     deletedUser: "a removed user",
     // actor_id 为空的两种引擎动作：审阅队列里的自动裁决，和其余后台工作

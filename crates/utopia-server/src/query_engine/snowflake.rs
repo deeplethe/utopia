@@ -54,6 +54,67 @@ struct PartitionInfo {
     row_count: u64,
 }
 
+/// SQL API 把日期与时刻给成从纪元起的数：DATE 是天数（`18262`），TIME 与
+/// TIMESTAMP_* 是秒数带九位小数（`1616173619.000000000`），TIMESTAMP_TZ 再跟一个
+/// 空格和 1440 加时区分钟数。原样交出去，模型看到的只是一个大数。这里写回 ISO，
+/// 其余类型照 `coerce`
+fn cell(ty: &str, raw: &serde_json::Value) -> serde_json::Value {
+    use chrono::SecondsFormat::AutoSi;
+    let serde_json::Value::String(s) = raw else {
+        return raw.clone();
+    };
+    let ty = ty.to_ascii_lowercase();
+    let text = match ty.as_str() {
+        "date" => s
+            .parse::<i64>()
+            .ok()
+            .and_then(|days| chrono::DateTime::from_timestamp(days.checked_mul(86_400)?, 0))
+            .map(|t| t.date_naive().to_string()),
+        "time" => epoch(s)
+            .and_then(|(secs, nanos)| {
+                chrono::NaiveTime::from_num_seconds_from_midnight_opt(
+                    u32::try_from(secs).ok()?,
+                    nanos,
+                )
+            })
+            .map(|t| t.to_string()),
+        "timestamp_ntz" => epoch(s)
+            .and_then(|(secs, nanos)| chrono::DateTime::from_timestamp(secs, nanos))
+            .map(|t| t.naive_utc().to_string()),
+        "timestamp_ltz" => epoch(s)
+            .and_then(|(secs, nanos)| chrono::DateTime::from_timestamp(secs, nanos))
+            .map(|t| t.to_rfc3339_opts(AutoSi, true)),
+        "timestamp_tz" => s.split_once(' ').and_then(|(at, offset)| {
+            let minutes = offset.trim().parse::<i32>().ok()? - 1440;
+            let zone = chrono::FixedOffset::east_opt(minutes * 60)?;
+            let (secs, nanos) = epoch(at)?;
+            let t = chrono::DateTime::from_timestamp(secs, nanos)?;
+            Some(t.with_timezone(&zone).to_rfc3339_opts(AutoSi, false))
+        }),
+        _ => return coerce(&ty, raw),
+    };
+    text.map_or_else(|| raw.clone(), serde_json::Value::String)
+}
+
+/// `-1.500000000` → (-2, 500000000)：秒向下取整，纳秒总是正的
+fn epoch(s: &str) -> Option<(i64, u32)> {
+    let (whole, frac) = s.split_once('.').unwrap_or((s, ""));
+    let secs = whole.parse::<i64>().ok()?;
+    if frac.len() > 9 || !frac.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let nanos = if frac.is_empty() {
+        0
+    } else {
+        format!("{frac:0<9}").parse::<u32>().ok()?
+    };
+    if nanos > 0 && whole.starts_with('-') {
+        Some((secs - 1, 1_000_000_000 - nanos))
+    } else {
+        Some((secs, nanos))
+    }
+}
+
 impl SnowflakeEngine {
     pub fn new(conn: SnowflakeConn) -> Self {
         Self { conn }
@@ -141,7 +202,7 @@ impl SnowflakeEngine {
             .map(|row| {
                 row.iter()
                     .enumerate()
-                    .map(|(i, v)| coerce(types.get(i).map(|t| t.ty.as_str()).unwrap_or(""), v))
+                    .map(|(i, v)| cell(types.get(i).map(|t| t.ty.as_str()).unwrap_or(""), v))
                     .collect()
             })
             .collect();
@@ -168,7 +229,7 @@ impl SnowflakeEngine {
                 rows.extend(chunk_rows.into_iter().map(|row| {
                     row.iter()
                         .enumerate()
-                        .map(|(i, v)| coerce(types.get(i).map(|t| t.ty.as_str()).unwrap_or(""), v))
+                        .map(|(i, v)| cell(types.get(i).map(|t| t.ty.as_str()).unwrap_or(""), v))
                         .collect()
                 }));
             }
@@ -289,6 +350,43 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(out.rows, vec![r#"{"REGION":"east","TOTAL":42.1}"#]);
+    }
+
+    /// SQL API 的日期与时刻是从纪元起的数：DATE 是天，TIME 与 TIMESTAMP_* 是秒，
+    /// TIMESTAMP_TZ 后面再跟 1440 加上时区的分钟
+    #[tokio::test]
+    async fn dates_and_times_read_as_dates_and_times() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v2/statements"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "resultSetMetaData": { "numRows": 2, "rowType": [
+                    { "name": "D", "type": "date" },
+                    { "name": "T", "type": "time" },
+                    { "name": "NTZ", "type": "timestamp_ntz" },
+                    { "name": "LTZ", "type": "timestamp_ltz" },
+                    { "name": "TZ", "type": "timestamp_tz" }
+                ] },
+                "data": [
+                    ["18262", "82919.000000000", "1616173619.000000000", "1616173619.500000000", "1616173619.000000000 1500"],
+                    ["-1", "0.000000000", "-1.500000000", null, "1616173619.000000000 1080"]
+                ],
+                "code": "090001",
+                "statementHandle": "h1"
+            })))
+            .mount(&server)
+            .await;
+        let out = SnowflakeEngine::new(conn(&server))
+            .execute("SELECT d, t, ntz, ltz, tz FROM events")
+            .await
+            .unwrap();
+        assert_eq!(
+            out.rows,
+            vec![
+                r#"{"D":"2020-01-01","T":"23:01:59","NTZ":"2021-03-19 17:06:59","LTZ":"2021-03-19T17:06:59.500Z","TZ":"2021-03-19T18:06:59+01:00"}"#,
+                r#"{"D":"1969-12-31","T":"00:00:00","NTZ":"1969-12-31 23:59:58.500","LTZ":null,"TZ":"2021-03-19T11:06:59-06:00"}"#,
+            ]
+        );
     }
 
     #[tokio::test]

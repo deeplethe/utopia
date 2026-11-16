@@ -301,7 +301,49 @@ impl Fx {
         let _ = std::fs::remove_dir_all(&self.dir);
         Ok(())
     }
+
+    /// From now on an assistant answer in this base fails to save. One trigger, created once
+    /// and never dropped, rejects marked bases: creating and dropping a trigger per test locks
+    /// `conversation_messages` under every other test, and a queued `DROP TRIGGER` deadlocks
+    /// with a test that holds a row lock while it reads messages.
+    pub(super) async fn reject_answer_saves(&self) -> anyhow::Result<()> {
+        static INSTALLED: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
+        INSTALLED
+            .get_or_try_init(|| async {
+                sqlx::raw_sql(
+                    "SELECT pg_advisory_xact_lock(hashtext('test_reject_answer_save'));
+                     CREATE OR REPLACE FUNCTION test_reject_answer_save() RETURNS trigger
+                     LANGUAGE plpgsql AS $$ BEGIN
+                       IF NEW.role = 'assistant' AND EXISTS(
+                         SELECT 1 FROM conversations c JOIN knowledge_bases k ON k.id = c.kb_id
+                          WHERE c.id = NEW.conversation_id AND k.name = 'reject-answer-saves')
+                       THEN RAISE EXCEPTION 'private persistence diagnostic'; END IF;
+                       RETURN NEW;
+                     END $$;
+                     DO $$ BEGIN
+                       IF NOT EXISTS(SELECT 1 FROM pg_trigger WHERE tgname = 'test_reject_answer_save'
+                                        AND tgrelid = 'conversation_messages'::regclass) THEN
+                         CREATE TRIGGER test_reject_answer_save BEFORE INSERT ON conversation_messages
+                           FOR EACH ROW EXECUTE FUNCTION test_reject_answer_save();
+                       END IF;
+                     END $$;",
+                )
+                .execute(&self.pool)
+                .await
+                .map(drop)
+            })
+            .await?;
+        sqlx::query("UPDATE knowledge_bases SET name = 'reject-answer-saves' WHERE id = $1")
+            .bind(self.kb)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
 }
+
+/// Held by tests that keep a database lock open while they wait on the chat under test, so
+/// two such tests never queue behind each other's locks.
+pub(super) static HELD_DB_LOCKS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// 发给模型的请求里，最后一条消息的正文
 fn last_message(request: &serde_json::Value) -> String {
@@ -867,14 +909,8 @@ async fn save_failure_is_an_error_without_publishing_the_buffered_answer_or_retr
         let Some(f) = fixture(Scripted::new(replies)).await? else {
             return Ok(());
         };
-        let name = format!("reject_assistant_{}", f.kb.simple());
-        sqlx::raw_sql(&format!("CREATE FUNCTION {name}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.role='assistant' AND EXISTS(SELECT 1 FROM conversations WHERE id=NEW.conversation_id AND kb_id='{}') THEN RAISE EXCEPTION 'injected persistence failure'; END IF; RETURN NEW; END $$; CREATE TRIGGER {name} BEFORE INSERT ON conversation_messages FOR EACH ROW EXECUTE FUNCTION {name}();",f.kb)).execute(&f.pool).await?;
+        f.reject_answer_saves().await?;
         let sse = f.ask("What happened?").await?;
-        sqlx::raw_sql(&format!(
-            "DROP TRIGGER {name} ON conversation_messages; DROP FUNCTION {name}();"
-        ))
-        .execute(&f.pool)
-        .await?;
         assert!(sse.contains("event: error"), "{sse}");
         assert!(!sse.contains("event: done"), "{sse}");
         if budget {

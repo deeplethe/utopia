@@ -37,6 +37,11 @@ fn pair_key(item: &ReviewItem, precedents: &[String]) -> String {
     digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+#[cfg(test)]
+pub(crate) fn seed_measurement_cache_key(item: &ReviewItem, precedents: &[String]) -> String {
+    pair_key(item, precedents)
+}
+
 /// 攒批没定的对要不要带工具再看一遍（0028）：没判决或把握不到线；硬规则拦得住的不看
 /// （大类不同、版本尾巴、含名字的一句话——再看也改不了规则）；有撤回的不看，那是人的事
 fn wants_another_look(
@@ -382,23 +387,24 @@ async fn apply_verdict(
     why: Option<&str>,
 ) -> anyhow::Result<Outcome> {
     // 有把握就动手，不再抽一成给人（0026 修订）：队列里等人的，只剩机器拿不准、
-    // 或闸门说合了会送出图外的那些
+    // 或闸门说合了会送出图外、会推翻来源身份声明的那些
     let outcome = match same {
         Some(true) if conf >= AUTO_CONF => {
             // 执行闸门（0027）：合并会立刻送出图外的东西——违规、派生、答案——留给人，
-            // 把握再高也不动手。人看到的是留下的原因，不是「裁决器没把握」
-            let impact = utopia_store::execution_gate::impact_of(
+            // 身份来源也留给人（0071），把握再高也不动手。人看到的是留下的原因，
+            // 不是「裁决器没把握」
+            if let Some(hold) = utopia_store::execution_gate::hold_for_merge(
                 &state.pool,
                 kb_id,
                 item.left.id,
                 item.right.id,
             )
-            .await?;
-            if let Some(hold) = utopia_store::execution_gate::hold(&impact) {
+            .await?
+            {
                 utopia_store::resolution::escalate_review(
                     &state.pool,
                     item.id,
-                    &format!("escalate_impact|{hold}"),
+                    &hold.review_reason(),
                 )
                 .await?;
                 return Ok(Outcome::Escalated);
@@ -493,6 +499,10 @@ async fn apply_verdict(
     };
     Ok(outcome)
 }
+
+#[cfg(test)]
+#[path = "adjudication_identity_tests.rs"]
+mod identity_tests;
 
 #[cfg(test)]
 mod tests {

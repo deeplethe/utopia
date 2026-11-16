@@ -182,6 +182,42 @@ async fn both_channels_fuse_with_bm25_first() -> anyhow::Result<()> {
         .mount(&server)
         .await;
     f.point_embeddings_at(&server).await?;
+    let source = Uuid::now_v7();
+    sqlx::raw_sql(&format!(
+        "INSERT INTO sources(id,kb_id,kind,name) VALUES ('{source}','{}','api','ci');
+         UPDATE documents SET source_id='{source}', external_key='api:obs-7' WHERE id='{}'",
+        f.kb, f.doc
+    ))
+    .execute(&f.pool)
+    .await?;
+    let opts = super::SearchOpts {
+        top_k: 8,
+        offset: 0,
+        as_of: None,
+        filter: None,
+    };
+    let page = super::hybrid_scored(&f.state, f.kb, f.ws, "apple harvest", opts, None).await?;
+    let hits: Vec<_> = page
+        .results
+        .iter()
+        .map(|h| {
+            (
+                h.score,
+                h.bm25_rank,
+                h.vector_rank,
+                h.chunk.source_id,
+                h.external_id.as_deref(),
+            )
+        })
+        .collect();
+    assert!(page.vector_used);
+    assert_eq!(
+        hits,
+        vec![
+            (2.0 / 61.0, Some(1), Some(1), Some(source), Some("obs-7")),
+            (1.0 / 62.0, None, Some(2), Some(source), Some("obs-7")),
+        ]
+    );
     let ids = f.search("apple harvest").await?;
     assert_eq!(
         ids,
@@ -235,7 +271,7 @@ async fn historical_search_keeps_live_candidates_before_limiting_results() -> an
     let raw = f
         .state
         .search
-        .search(&f.kb.to_string(), "apple harvest", 24)?;
+        .search(&f.kb.to_string(), "apple harvest", 24, None)?;
     assert_eq!(raw.len(), 7);
     assert_eq!(raw.last().unwrap().chunk_id, f.b.to_string());
     let current = super::hybrid(&f.state, f.kb, f.ws, "apple harvest", 6, None, None).await?;
@@ -261,6 +297,179 @@ async fn historical_search_keeps_live_candidates_before_limiting_results() -> an
     assert_eq!(
         six, expected,
         "ineligible hits must not consume the final limit"
+    );
+    Ok(())
+}
+
+/// `count` chunks replace the fixture's two (#1271): BM25 ranks them c0 first (more
+/// "apple" in the same length), the vector channel ranks them the other way round.
+async fn seed_ranked_chunks(f: &Fixture, count: usize) -> anyhow::Result<MockServer> {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/embeddings"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "data": [{ "embedding": [1.0, 0.0, 0.0, 0.0] }]
+        })))
+        .mount(&server)
+        .await;
+    f.point_embeddings_at(&server).await?;
+    sqlx::query("DELETE FROM chunks WHERE document_id=$1")
+        .bind(f.doc)
+        .execute(&f.pool)
+        .await?;
+    let mut indexed = Vec::new();
+    for seq in 0..count {
+        let id = Uuid::now_v7();
+        let text = std::iter::repeat_n("apple", count - seq)
+            .chain(std::iter::repeat_n("pear", seq))
+            .collect::<Vec<_>>()
+            .join(" ");
+        sqlx::query(
+            "INSERT INTO chunks(id,kb_id,document_id,seq,text,embedding)
+             VALUES($1,$2,$3,$4,$5,$6::text::vector)",
+        )
+        .bind(id)
+        .bind(f.kb)
+        .bind(f.doc)
+        .bind(seq as i32)
+        .bind(&text)
+        .bind(format!("[{},1,0,0]", seq + 1))
+        .execute(&f.pool)
+        .await?;
+        indexed.push((id.to_string(), text));
+    }
+    f.state
+        .search
+        .reindex_document(&f.kb.to_string(), &f.doc.to_string(), &indexed)?;
+    Ok(server)
+}
+
+fn page(offset: usize, top_k: usize) -> super::SearchOpts {
+    super::SearchOpts {
+        top_k,
+        offset,
+        as_of: None,
+        filter: None,
+    }
+}
+
+/// Pages slice one fused list (#1271). A page asking each channel for fewer
+/// candidates than a deeper page fuses a different list, so two pages of fifteen
+/// would not join into one of thirty.
+#[tokio::test]
+async fn two_pages_of_fifteen_join_into_the_first_thirty_hits() -> anyhow::Result<()> {
+    let Some(f) = fixture().await? else {
+        return Ok(());
+    };
+    let _server = seed_ranked_chunks(&f, 30).await?;
+    let walk = |opts| super::hybrid_scored(&f.state, f.kb, f.ws, "apple", opts, None);
+    let first = walk(page(0, 15)).await?;
+    let second = walk(page(15, 15)).await?;
+    let whole = walk(page(0, 30)).await?;
+    let ids =
+        |hits: &[super::ScoredChunk]| hits.iter().map(|h| h.chunk.chunk.id).collect::<Vec<_>>();
+    let joined = [ids(&first.results), ids(&second.results)].concat();
+    f.cleanup().await?;
+    assert_eq!(whole.results.len(), 30);
+    assert_eq!(
+        joined,
+        ids(&whole.results),
+        "no hit repeats and none is skipped"
+    );
+    assert_eq!(
+        (first.has_more, second.has_more, whole.has_more),
+        (true, false, false)
+    );
+    Ok(())
+}
+
+/// The next page past depth 100 is a 422, so the page ending there has no more
+#[tokio::test]
+async fn a_page_ending_at_depth_100_of_101_hits_has_no_more() -> anyhow::Result<()> {
+    let Some(f) = fixture().await? else {
+        return Ok(());
+    };
+    let _server = seed_ranked_chunks(&f, 101).await?;
+    let last = super::hybrid_scored(&f.state, f.kb, f.ws, "apple", page(50, 50), None).await;
+    f.cleanup().await?;
+    let last = last?;
+    assert_eq!((last.results.len(), last.has_more), (50, false));
+    Ok(())
+}
+
+/// A source filter works inside both channels (#1271): a hundred better hits from
+/// elsewhere fill each channel's candidates, so filtering after fusion would leave
+/// nothing, and the six weak hits of the source must still page like any other list.
+#[tokio::test]
+async fn a_source_filter_pages_through_its_six_hits_under_a_hundred_better_ones(
+) -> anyhow::Result<()> {
+    let Some(f) = fixture().await? else {
+        return Ok(());
+    };
+    let _server = seed_ranked_chunks(&f, 100).await?;
+    let (source, doc) = (Uuid::now_v7(), Uuid::now_v7());
+    sqlx::raw_sql(&format!(
+        "INSERT INTO sources(id,kb_id,kind,name) VALUES ('{source}','{kb}','api','ci');
+         INSERT INTO documents(id,kb_id,source_id,external_key,filename,sha256)
+             VALUES ('{doc}','{kb}','{source}','api:weak','weak.md','w')",
+        kb = f.kb
+    ))
+    .execute(&f.pool)
+    .await?;
+    let mut weak = Vec::new();
+    for seq in 0..6 {
+        let id = Uuid::now_v7();
+        let text = format!("apple {}", "pear ".repeat(200 + seq));
+        sqlx::query(
+            "INSERT INTO chunks(id,kb_id,document_id,seq,text,embedding)
+             VALUES($1,$2,$3,$4,$5,$6::text::vector)",
+        )
+        .bind(id)
+        .bind(f.kb)
+        .bind(doc)
+        .bind(seq as i32)
+        .bind(&text)
+        .bind(format!("[{},100,0,0]", seq + 1))
+        .execute(&f.pool)
+        .await?;
+        weak.push((id.to_string(), text));
+    }
+    f.state
+        .search
+        .reindex_document(&f.kb.to_string(), &doc.to_string(), &weak)?;
+    let walk = |offset, top_k| {
+        let opts = super::SearchOpts {
+            filter: Some(super::SourceFilter {
+                source_id: source,
+                key_prefix: None,
+            }),
+            ..page(offset, top_k)
+        };
+        super::hybrid_scored(&f.state, f.kb, f.ws, "apple", opts, None)
+    };
+    let (first, second, whole) = (walk(0, 3).await, walk(3, 3).await, walk(0, 10).await);
+    f.cleanup().await?;
+    let (first, second, whole) = (first?, second?, whole?);
+    let ids =
+        |hits: &[super::ScoredChunk]| hits.iter().map(|h| h.chunk.chunk.id).collect::<Vec<_>>();
+    let mut found: Vec<_> = ids(&whole.results).iter().map(Uuid::to_string).collect();
+    found.sort();
+    let mut expected: Vec<_> = weak.into_iter().map(|(id, _)| id).collect();
+    expected.sort();
+    assert_eq!(found, expected);
+    let channels: Vec<_> = whole
+        .results
+        .iter()
+        .map(|h| (h.bm25_rank.is_some(), h.vector_rank.is_some()))
+        .collect();
+    assert_eq!(channels, [(true, true); 6]);
+    assert_eq!(
+        [ids(&first.results), ids(&second.results)].concat(),
+        ids(&whole.results)
+    );
+    assert_eq!(
+        (first.has_more, second.has_more, whole.has_more),
+        (true, false, false)
     );
     Ok(())
 }

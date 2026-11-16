@@ -91,7 +91,7 @@ pub async fn propose_with(
         tracing::info!(%kb_id, "本体代理已有一份在跑，这次跳过");
         return Ok(());
     }
-    let result = propose_locked(state, kb_id, &settings, &client, full_glossary).await;
+    let result = propose_locked(state, &kb, &settings, &client, full_glossary).await;
     let _ = sqlx::query("SELECT pg_advisory_unlock(hashtext('propose_ontology'), hashtext($1))")
         .bind(kb_id.to_string())
         .execute(&mut *guard)
@@ -116,11 +116,12 @@ struct Merged {
 
 async fn propose_locked(
     state: &AppState,
-    kb_id: Uuid,
+    kb: &utopia_core::models::KnowledgeBase,
     settings: &utopia_core::models::LlmSettings,
     client: &utopia_llm::LlmClient,
     full_glossary: bool,
 ) -> anyhow::Result<()> {
+    let kb_id = kb.id;
     let pool = &state.pool;
     let classes = utopia_store::graph::entity_types(pool, kb_id).await?;
     let props = utopia_store::ontology::relation_type_views(pool, kb_id).await?;
@@ -430,7 +431,13 @@ async fn propose_locked(
         let sig_ids: HashSet<i64> = sig_batch.iter().map(|s| s.id).collect();
         let word_ids: HashSet<i64> = word_batch.iter().map(|w| w.id).collect();
         let glossary = glossary_for(b * SIGNATURES_PER_CALL..(b + 1) * SIGNATURES_PER_CALL);
-        let messages = agent::build_proposal_messages(sig_batch, word_batch, &glossary, &q_items);
+        let messages = agent::build_proposal_messages(
+            sig_batch,
+            word_batch,
+            &glossary,
+            &q_items,
+            &kb.ontology_lang,
+        );
         let reply =
             match chat_retrying_rate_limits_at(state, settings, client, &messages, Some(0.0)).await
             {
@@ -1245,8 +1252,10 @@ async fn finish_adoption(
         }
     }
     for (statement_id, direction) in examples {
-        // Removed examples cannot be checked; never substitute another statement.
-        let live: Option<Uuid> = sqlx::query_scalar("SELECT id FROM facts WHERE kb_id=$1 AND id=$2 AND layer='open' AND invalidated_at IS NULL FOR SHARE")
+        // A negative case observes disagreement; it must not veto adoption or gain an
+        // automatic positive counterpart. Removed examples are skipped too, never replaced.
+        let live: Option<Uuid> = sqlx::query_scalar("SELECT f.id FROM facts f WHERE f.kb_id=$1 AND f.id=$2 AND f.layer='open' AND f.invalidated_at IS NULL
+            AND NOT EXISTS (SELECT 1 FROM ontology_regression_cases c WHERE c.kb_id=f.kb_id AND c.statement_id=f.id AND c.expected_property_id IS NULL) FOR SHARE OF f")
             .bind(kb_id).bind(statement_id).fetch_optional(&mut **tx).await?;
         if live.is_none() {
             continue;
@@ -1256,8 +1265,8 @@ async fn finish_adoption(
             kb_id,
             utopia_store::ontology_regressions::NewCase {
                 statement_id,
-                expected_property_id: property_id,
-                expected_direction: direction,
+                expected_property_id: Some(property_id),
+                expected_direction: Some(direction),
                 created_by: actor,
                 origin: "adoption",
             },

@@ -9,7 +9,7 @@ Records: [0025] (the governor), [0026] (why), [0027] (the impact gate), [0028] (
 
 **Queues, grouped by where an item came from.** Review holds nods (`pending_facts`, placed first),
 duplicates (`resolution_reviews`), conflicts (`fact_conflicts`), unconfirmed (every evidence chunk
-superseded), low-confidence (`confidence < 0.75`), violations (`axiom_violations`), defects
+superseded, and no cited document has a live chunk still waiting to be read, #1477), low-confidence (`confidence < 0.75`), violations (`axiom_violations`), defects
 (`ontology_defects`) and alignment (a phrase signature or a kind word the aligner's two votes
 split on, `phrase_bindings` and `type_bindings` in `undecided`; a person binds it to a property
 with a direction or to a class, or says none fits, and the typed graph recomputes at once; the

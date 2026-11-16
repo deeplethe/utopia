@@ -132,6 +132,20 @@ fn fits_direction(
         via.extend(within(&p.domains, sig.subject_type_id, closure)?);
         return Some(Fit { via });
     }
+    if p.kind == "attribute" {
+        // 宾语是实体的签名也能绑文本属性（0044 修订 2026-10-22）：法定代表人、注册地址的值
+        // 是个名字，抽取把它列成了东西；只认正向，名字就是值。数、日期、真假不是名字。
+        // 没声明定义域的不算（`known_as` 这类）：没声明是「不限」，它会出现在每一条关系签名
+        // 的候选里，同 NVDA 上泛泛的 value 属性吞掉现金流量表每一行的教训
+        if p.datatype.as_deref() != Some("text")
+            || direction != Direction::Forward
+            || p.domains.is_empty()
+        {
+            return None;
+        }
+        via.extend(within(&p.domains, sig.subject_type_id, closure)?);
+        return Some(Fit { via });
+    }
     if p.kind != "relation" {
         return None;
     }
@@ -500,6 +514,9 @@ async fn shortlist(
                     tracing::warn!(%kb_id, sent = batch.len(), got = v.len(), "签名向量数量对不上，这一批不开短名单");
                     continue;
                 }
+                // 欠费不是这一批的事：跳过它，后面每批、下一份对齐都撞同一个 429，而任务
+                // 照样 done、告警不响、马上再排一份（#1360）。带着类型出去，`alerting::hopeless` 才看得见
+                Err(e) if utopia_llm::out_of_credit(&e).is_some() => return Err(e),
                 Err(e) => {
                     tracing::warn!(%kb_id, error = %e, "签名向量没算出来，这一批不开短名单");
                     continue;
@@ -519,12 +536,13 @@ async fn shortlist(
             continue;
         };
         let (fitting, _) = &full[&s.key()];
+        // 字面值的签名只绑属性；宾语是实体的两种都可能（关系，或文本属性），不按类筛
         let near = utopia_store::ontology::nearest_relation_type_ids(
             pool,
             kb_id,
             vector,
             (fitting.len() * 2) as i64,
-            Some(property_kind(s)),
+            s.object_is_value.then_some("attribute"),
         )
         .await?;
         if near.is_empty() {
@@ -600,6 +618,8 @@ async fn shortlist_kind_words(
             let _permit = llm_util::acquire_embed(state, settings).await;
             match client.embed(&texts).await {
                 Ok(v) if v.len() == batch.len() => v,
+                // 同 `shortlist`：欠费停下整轮
+                Err(e) if utopia_llm::out_of_credit(&e).is_some() => return Err(e),
                 Ok(_) | Err(_) => {
                     tracing::warn!(%kb_id, "类别词向量没算出来，这一批看全部候选");
                     continue;
@@ -724,6 +744,27 @@ pub async fn align_phrases_reasking(
     result
 }
 
+/// 对齐收尾：没绑上的形状够多，叫本体代理来看（0061 决定 2）。代理自己跳过提过的，
+/// 所以这里只数不筛；一分钟的去抖让连着几篇文档只叫一次。有属性没属性都从这里过——
+/// 空本体的签名全判「没有」，正是代理该来的时候
+async fn queue_ontology_agent_if_unbound(pool: &sqlx::PgPool, kb_id: Uuid) -> anyhow::Result<()> {
+    let unbound = phrase_bindings::bindings(pool, kb_id)
+        .await?
+        .iter()
+        .filter(|b| matches!(b.status.as_str(), "none" | "undecided"))
+        .count();
+    if unbound >= crate::ontology_agent::TRIGGER_UNBOUND {
+        utopia_store::jobs::enqueue_unless_pending(
+            pool,
+            "propose_ontology",
+            serde_json::json!({ "kb_id": kb_id }),
+            std::time::Duration::from_secs(60),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
 async fn align_phrases_locked(
     state: &AppState,
     kb_id: Uuid,
@@ -800,6 +841,8 @@ async fn align_phrases_locked(
             )
             .await?;
         }
+        // 空本体正是需要本体代理的时候：照样数未绑签名、够了就排它，本体才长得出来
+        queue_ontology_agent_if_unbound(pool, kb_id).await?;
         return Ok(());
     }
 
@@ -937,6 +980,9 @@ async fn align_phrases_locked(
                     .await
                 {
                     Ok(r) => r,
+                    // 欠费：这一批的 future 带着错误返回，下面的 `r?` 让整轮失败一次、告警响起，
+                    // 不按 failed 记——记了只会自己再排一份，撞同一个 429（#1360）
+                    Err(e) if utopia_llm::out_of_credit(&e).is_some() => return Err(e),
                     Err(e) => {
                         tracing::warn!(%kb_id, error = %e, "短语对齐调用失败，这一批留到下次");
                         failed += 1;
@@ -1416,23 +1462,8 @@ async fn align_phrases_locked(
     // 漏答的签名就只能等下一篇文档来排——最后一篇之后没有下一篇，它们就永远没有结论；
     // 而漏答不写任何行，审核队列也看不见（同类别词对齐）
     let unfinished = failed > 0 || unanswered > 0;
-    // 对齐收尾：没绑上的形状够多，叫本体代理来看（0061 决定 2）。代理自己跳过提过的，
-    // 所以这里只数不筛；一分钟的去抖让连着几篇文档只叫一次
     if !changed && !unfinished {
-        let unbound = phrase_bindings::bindings(pool, kb_id)
-            .await?
-            .iter()
-            .filter(|b| matches!(b.status.as_str(), "none" | "undecided"))
-            .count();
-        if unbound >= crate::ontology_agent::TRIGGER_UNBOUND {
-            utopia_store::jobs::enqueue_unless_pending(
-                pool,
-                "propose_ontology",
-                serde_json::json!({ "kb_id": kb_id }),
-                std::time::Duration::from_secs(60),
-            )
-            .await?;
-        }
+        queue_ontology_agent_if_unbound(pool, kb_id).await?;
     }
     if changed {
         utopia_store::jobs::enqueue_unless_queued(

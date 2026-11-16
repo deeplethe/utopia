@@ -1,6 +1,6 @@
 # 0014 · Identity from the person, scope from the token
 
-- **Status**: Implemented · 2026-10-16 · #180, #318, #1243 · open: tokens across workspaces
+- **Status**: Implemented · 2026-10-16 · #180, #318, #1243, #1262, #1271 · open: tokens across workspaces
 - **Written**: 2026-09-01 · condensed into English 2026-09-03
 - **Related**: migration `0014_data_source_grants` gave data sources a grant layer; this is the same question where a machine knocks. [0004](0004-language-and-localization.md) has the server speak English only, MCP error codes included. [0015](0015-recording-a-sentence-is-not-asserting-a-fact.md) removes the main objection to opening `remember` over MCP.
 
@@ -87,18 +87,47 @@ push documents in.
 
 7. **A token reads the graph** (added 2026-10-16, #1262). A service that mirrors into a base reads the
    base back to check what landed, and a session JWT is the wrong credential for a backend
-   (decision 6). Six reads now also take any live token, acting as its owner: searching a base's
+   (decision 6). Eight reads now also take any live token, acting as its owner: searching a base's
    entities (`GET /kbs/{id}/entities`), an entity's detail (`GET /kbs/{id}/entities/{eid}`), its
    record-axis history (`…/history`), a fact's evidence (`GET /kbs/{id}/facts/{fid}/evidence`),
-   the graph overview (`GET /kbs/{id}/graph/overview`) and an entity's neighbourhood
-   (`GET /kbs/{id}/graph/neighborhood`). Search finds the entity by name; the detail gives its
-   facts, names and derivations; the history says when we changed our mind; the evidence ties a
-   fact to its sentence; the overview gives the most connected entities with the base's totals,
-   so a client sees the shape of what it pushed; the neighbourhood gives the entities around one,
-   so it can follow what a statement touches, and one started from another base's entity comes
-   back empty. Read is the lowest scope, so any token qualifies; the owner's role is still the
-   ceiling and Viewer suffices; a token whose `kb_ids` exclude the base gets 404, as for document
-   content (0052). Changing an entity on the same path (`PATCH`) still takes a session.
+   the graph overview (`GET /kbs/{id}/graph/overview`), an entity's neighbourhood
+   (`GET /kbs/{id}/graph/neighborhood`), the ontology (`GET /kbs/{id}/ontology`) and a class's
+   instances (`GET /kbs/{id}/ontology/entity-types/{tid}/entities`). Search finds the entity by
+   name; the detail gives its facts, names and derivations; the history says when we changed our
+   mind; the evidence ties a fact to its sentence; the overview gives the most connected entities
+   with the base's totals, so a client sees the shape of what it pushed; the neighbourhood gives
+   the entities around one, so it can follow what a statement touches, and one started from
+   another base's entity comes back empty; the ontology turns a class key into the type id the
+   instances read takes; the instances list that class's members, or only those lacking a
+   relation, and a class id from another base gives an empty page. Read is the lowest scope, so
+   any token qualifies; the owner's role is still the ceiling and Viewer suffices; a token whose
+   `kb_ids` exclude the base gets 404, as for document content (0052). Changing an entity
+   (`PATCH`) or the ontology on the same paths still takes a session.
+
+   Reading a pushed document back by the `external_id` it was pushed under
+   (`GET /kbs/{id}/sources/{sid}/documents/by-external-id`, added 2026-10-19, #1276) takes a
+   token on the same terms. It is a document-content read (0052), but a client pushing into an
+   `api` or `statements` source names its documents by its own ids and keeps none of ours, so
+   without it the client can check what landed only by searching for its own text. The source's
+   push key is not a credential here, so a leaked key stays push-only.
+
+   A document's extractions (`GET /documents/{id}/extractions`) and the base's RDF export
+   (`GET /kbs/{id}/export`) take a token on the same terms. The extractions show what extraction
+   made of a pushed document; the document's base is resolved first, as for its content, so a
+   token outside `kb_ids` gets the same 404 whether or not the document exists. A read token may
+   export the whole base because, with the reads above open, its owner could already copy
+   everything a Viewer sees out one piece at a time; requiring write scope would only push a
+   mirror to hold a write token for a read-only job. The control is the `kb.exported` audit row,
+   which names the owner and, through `via_token`, the token.
+
+   Chunk search (`POST /kbs/{id}/search`, added 2026-10-24, #1271) takes a token on the same
+   terms, so the service can ask the base about what it mirrored. Each hit carries its score, its
+   BM25 and vector ranks and its source; `offset` pages through one fused list, at most 100 deep.
+   `source_id` narrows the search to one source of the base, and a source outside the base answers
+   404 like a missing one. `external_id_prefix` narrows it further to a push source's documents
+   whose `external_id` starts with the prefix, taken literally; without the `source_id` of an
+   `api` or `statements` source it answers 422 `prefix_needs_push_source`. Both filters apply
+   inside each channel, before fusion, so other documents cannot fill the candidates first.
 
 ## Dead ends
 
@@ -126,7 +155,16 @@ push documents in.
   token now creates `api` sources too.
 - 2026-10-16: decision 7 opens four graph reads to any token; decision 6's "only these routes
   and document content" now also counts them. 2026-10-19: the graph overview and neighbourhood
-  join them.
+  join them, and so does reading a pushed document back by its `external_id` (#1276). The
+  ontology and a class's instances follow (#1265), then a document's extractions and the
+  base's export (#1266). 2026-10-24: chunk search joins them (#1271). 2026-10-25: it can be
+  narrowed to one source and, for a push source, to an `external_id` prefix (#1271).
+- 2026-11-02: a service that sets up a push source also has to keep it tidy, and that still
+  took a session. A write token may now rename, delete, re-extract and clean up the missing
+  documents of a `statements` or `api` source, with the same guards as creating one. Other
+  kinds stay session-only and are refused with `token_source_kind`, since changing a `url`
+  source's address from a leaked token would point the server at any address. The audit rows
+  carry `detail.token_id`.
 
 ## Open questions
 

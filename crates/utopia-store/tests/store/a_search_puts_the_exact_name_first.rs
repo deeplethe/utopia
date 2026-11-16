@@ -105,7 +105,7 @@ async fn a_search_puts_the_exact_name_first() -> anyhow::Result<()> {
             busy(&pool, kb, store, rel, city).await?;
         }
         let (rows, total) =
-            utopia_store::graph::search_entities(&pool, kb, "Apple", 8, 0, None).await?;
+            utopia_store::graph::search_entities(&pool, kb, "Apple", 8, 0, None, false).await?;
         assert_eq!(total, 10);
         assert_eq!(rows.len(), 8);
         assert_eq!(rows[0].id, apple, "the entity named exactly Apple comes first");
@@ -118,6 +118,7 @@ async fn a_search_puts_the_exact_name_first() -> anyhow::Result<()> {
             8,
             0,
             Some(chrono::Utc::now()),
+            false,
         )
         .await?;
         assert_eq!(rows[0].id, apple, "the same holds when replaying a moment");
@@ -130,7 +131,7 @@ async fn a_search_puts_the_exact_name_first() -> anyhow::Result<()> {
             busy(&pool, kb, lab, rel, city).await?;
         }
         let (rows, total) =
-            utopia_store::graph::search_entities(&pool, kb, "ibm", 8, 0, None).await?;
+            utopia_store::graph::search_entities(&pool, kb, "ibm", 8, 0, None, false).await?;
         assert_eq!(total, 10);
         assert_eq!(rows[0].id, ibm, "an entity whose name is exactly IBM comes first");
         anyhow::Ok(())

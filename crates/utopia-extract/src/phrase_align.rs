@@ -165,7 +165,10 @@ phrases may be in any language.\n\
 3. Answer null when no candidate fits; when the sentences show the phrase meaning different \
 things under this signature; when the phrase only reports, introduces or evaluates (\"said\", \
 \"announced\", \"is expected to\") unless a candidate is about that; or when a value is not \
-what the attribute measures (a share count is not revenue, a date is not an amount).\n\
+what the attribute measures (a share count is not revenue, a date is not an amount). A text \
+attribute may be a candidate for an item whose object is a named thing: choose it when the \
+object is named only to carry that attribute's value for the subject (a legal representative's \
+name, a registered address), and the object's name becomes the value.\n\
 4. The direction follows the definition: for \"X —is a subsidiary of→ Y\" subsidiary_of is \
 forward; for \"X —owns→ Y\", if subsidiary_of is the only fitting candidate, it is reverse.\n\
 5. Never invent a key, never answer with a label, never choose for an item a key that is not \

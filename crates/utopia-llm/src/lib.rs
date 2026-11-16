@@ -446,9 +446,15 @@ pub struct LlmClient {
     /// 上限后记在这里，同一个客户端（含它的克隆）此后都按它发，一个进程只吃一次拒绝
     /// （#891，#892 评审）。只降不升
     completion_ceiling: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    /// 端点拒绝过的参数记在客户端上，克隆也共用；下一块不再为同一种请求吃一次 400（#1376）。
+    use_max_completion_tokens: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    suppress_temperature: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// 端点报过的上下文窗口（token），起初是 `u32::MAX`。同一个客户端（含它的克隆）此后
     /// 都按它算历史预算，只降不升；对话客户端按工作区留着，所以下一轮也记得（#964）
     context_window: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    /// 端点说过带工具的请求不收推理强度之后置位（#1353）：此后带工具的请求体都写
+    /// `reasoning_effort: "none"`，别的调用照旧按设置发。同一个客户端（含克隆）只吃一次拒绝
+    tools_without_effort: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// 建连多久算失败。
@@ -580,9 +586,14 @@ impl LlmClient {
             model: model.to_string(),
             reasoning_effort: None,
             context_window: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(u32::MAX)),
+            tools_without_effort: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             completion_ceiling: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(
                 MAX_COMPLETION_TOKENS,
             )),
+            use_max_completion_tokens: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+                false,
+            )),
+            suppress_temperature: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -625,22 +636,39 @@ impl LlmClient {
         messages: &[ChatMessage],
         temperature: Option<f32>,
     ) -> anyhow::Result<String> {
+        use std::sync::atomic::Ordering;
         let mut body =
             self.with_effort(json!({ "model": self.model, "messages": messages, "stream": false }));
-        if let Some(t) = temperature {
+        let mut dropped_temperature = self.suppress_temperature.load(Ordering::Relaxed);
+        if let Some(t) = temperature.filter(|_| !dropped_temperature) {
             body["temperature"] = json!(t);
         }
-        let resp = self
-            .request("/chat/completions")
-            .json(&body)
-            .send()
-            .await
-            .map_err(Unreachable)?;
-        let status = resp.status();
-        let retry_after = retry_after_of(resp.headers());
-        if !status.is_success() {
-            return Err(response_failure("LLM", status, retry_after, resp).await?);
-        }
+        let resp = loop {
+            let resp = self
+                .request("/chat/completions")
+                .json(&body)
+                .send()
+                .await
+                .map_err(Unreachable)?;
+            let status = resp.status();
+            let retry_after = retry_after_of(resp.headers());
+            if status.is_success() {
+                break resp;
+            }
+            let raw = resp.text().await.map_err(Unreachable)?;
+            let parsed = serde_json::from_str(&raw).unwrap_or_default();
+            if status == reqwest::StatusCode::BAD_REQUEST
+                && !dropped_temperature
+                && temperature.is_some()
+                && says_temperature_unsupported(&parsed, &raw)
+            {
+                self.suppress_temperature.store(true, Ordering::Relaxed);
+                body.as_object_mut().unwrap().remove("temperature");
+                dropped_temperature = true;
+                continue;
+            }
+            return Err(failure("LLM", status, retry_after, &parsed, &raw));
+        };
         let body: serde_json::Value = resp.json().await.map_err(Unreachable)?;
         log_usage(&self.model, &call_label(messages), &body);
         body["choices"][0]["message"]["content"]
@@ -666,6 +694,7 @@ impl LlmClient {
         messages: &[ChatMessage],
         temperature: Option<f32>,
     ) -> anyhow::Result<Reply> {
+        use std::sync::atomic::Ordering;
         let body = json!({
             "model": self.model,
             "messages": messages,
@@ -673,11 +702,10 @@ impl LlmClient {
             // 用量随最后一帧回来：比较两次运行的第一件事是看 completion token，
             // 换成流式不能把这个数弄丢
             "stream_options": { "include_usage": true },
-            // 上限归我们，不归端点的默认值（[`MAX_COMPLETION_TOKENS`]）
-            "max_tokens": MAX_COMPLETION_TOKENS,
         });
         let mut body = self.with_effort(body);
-        if let Some(t) = temperature {
+        let mut dropped_temperature = self.suppress_temperature.load(Ordering::Relaxed);
+        if let Some(t) = temperature.filter(|_| !dropped_temperature) {
             body["temperature"] = json!(t);
         }
         // One retry per call, and only downwards: an endpoint that refuses our ceiling has
@@ -685,11 +713,18 @@ impl LlmClient {
         // to the endpoint default this field exists to displace (#760). The lowered
         // ceiling is kept on the client, so the next call starts from it instead of
         // paying the 400 again (extraction calls once per chunk).
-        use std::sync::atomic::Ordering;
         let mut ceiling = self.completion_ceiling.load(Ordering::Relaxed);
         let mut lowered = false;
+        // 每种调整每次调用只试一次：网关可能把我们已删掉的参数重新加回来（#1232）。
+        let mut renamed = self.use_max_completion_tokens.load(Ordering::Relaxed);
         let resp = loop {
-            body["max_tokens"] = json!(ceiling);
+            let limit_key = if renamed {
+                "max_completion_tokens"
+            } else {
+                "max_tokens"
+            };
+            // 上限归我们，不归端点的默认值（[`MAX_COMPLETION_TOKENS`]）；改字段名也不能丢掉它。
+            body[limit_key] = json!(ceiling);
             let resp = self
                 .request("/chat/completions")
                 .json(&body)
@@ -702,7 +737,28 @@ impl LlmClient {
                 break resp;
             }
             let raw = resp.text().await.map_err(Unreachable)?;
-            let parsed = serde_json::from_str(&raw).unwrap_or_default();
+            let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap_or_default();
+            if status == reqwest::StatusCode::BAD_REQUEST
+                && !renamed
+                && parsed["error"]["param"] == "max_tokens"
+                && parsed["error"]["code"] == "unsupported_parameter"
+            {
+                self.use_max_completion_tokens
+                    .store(true, Ordering::Relaxed);
+                body.as_object_mut().unwrap().remove("max_tokens");
+                renamed = true;
+                continue;
+            }
+            if status == reqwest::StatusCode::BAD_REQUEST
+                && !dropped_temperature
+                && temperature.is_some()
+                && says_temperature_unsupported(&parsed, &raw)
+            {
+                self.suppress_temperature.store(true, Ordering::Relaxed);
+                body.as_object_mut().unwrap().remove("temperature");
+                dropped_temperature = true;
+                continue;
+            }
             if status == reqwest::StatusCode::BAD_REQUEST
                 && !lowered
                 && !says_context_too_long(&parsed, &err_detail(&parsed, &raw))
@@ -875,8 +931,66 @@ impl LlmClient {
             if let Some(choice) = tool_choice {
                 body["tool_choice"] = choice.clone();
             }
+            if self
+                .tools_without_effort
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
+                body["reasoning_effort"] = json!("none");
+            }
         }
         body
+    }
+
+    /// 发一个带工具的请求。推理部署上，端点可能整个拒收带工具又带推理强度的请求体
+    /// （Azure：`Function tools with reasoning_effort are not supported`），而部署本身的默认
+    /// 强度就算数，不发这个字段也一样被拒——于是对话退回一步检索，治理的第二眼跑不了（#1353）。
+    /// 吃到这句 400 就记在客户端上，改发 `none` 重试一次；只动带工具的请求，抽取与对齐照旧
+    async fn post_tools(
+        &self,
+        messages: &[serde_json::Value],
+        tools: Option<&serde_json::Value>,
+        tool_choice: Option<&serde_json::Value>,
+        stream: bool,
+    ) -> anyhow::Result<reqwest::Response> {
+        use std::sync::atomic::Ordering;
+        let mut retried = false;
+        loop {
+            let learned = self.tools_without_effort.load(Ordering::Relaxed);
+            let resp = self
+                .request("/chat/completions")
+                .json(&self.tools_body(messages, tools, tool_choice, stream))
+                .send()
+                .await
+                .map_err(Unreachable)?;
+            let status = resp.status();
+            if status.is_success() {
+                return Ok(resp);
+            }
+            let retry_after = retry_after_of(resp.headers());
+            let raw = resp.text().await.map_err(Unreachable)?;
+            let parsed = serde_json::from_str(&raw).unwrap_or_default();
+            if status == reqwest::StatusCode::BAD_REQUEST
+                && tools.is_some()
+                && !learned
+                && says_tools_refuse_effort(&err_detail(&parsed, &raw))
+            {
+                tracing::info!(model = %self.model, "端点不收带工具的推理强度，带工具的请求改发 none 并记住");
+                self.tools_without_effort.store(true, Ordering::Relaxed);
+                retried = true;
+                continue;
+            }
+            // 改发 none 也被拒，且错误还是在说推理强度：这个端点连 none 都不收，记住它只会让以后每一问都带着一个错的值。
+            // 别的 400（上下文超长、工具定义不对）跟 none 无关，记住的值留着
+            if retried
+                && status == reqwest::StatusCode::BAD_REQUEST
+                && err_detail(&parsed, &raw)
+                    .to_lowercase()
+                    .contains("reasoning_effort")
+            {
+                self.tools_without_effort.store(false, Ordering::Relaxed);
+            }
+            return Err(failure("LLM", status, retry_after, &parsed, &raw));
+        }
     }
 
     /// Exact serialized streaming request size, including model and protocol fields.
@@ -894,17 +1008,7 @@ impl LlmClient {
         tools: Option<&serde_json::Value>,
         tool_choice: Option<&serde_json::Value>,
     ) -> anyhow::Result<AssistantTurn> {
-        let resp = self
-            .request("/chat/completions")
-            .json(&self.tools_body(messages, tools, tool_choice, false))
-            .send()
-            .await
-            .map_err(Unreachable)?;
-        let status = resp.status();
-        let retry_after = retry_after_of(resp.headers());
-        if !status.is_success() {
-            return Err(response_failure("LLM", status, retry_after, resp).await?);
-        }
+        let resp = self.post_tools(messages, tools, tool_choice, false).await?;
         let body: serde_json::Value = resp.json().await.map_err(Unreachable)?;
         let msg = &body["choices"][0]["message"];
         if msg.is_null() {
@@ -961,17 +1065,7 @@ impl LlmClient {
         tools: Option<&serde_json::Value>,
         tool_choice: Option<&serde_json::Value>,
     ) -> anyhow::Result<impl Stream<Item = anyhow::Result<ToolStreamItem>> + Send + use<>> {
-        let resp = self
-            .request("/chat/completions")
-            .json(&self.tools_body(messages, tools, tool_choice, true))
-            .send()
-            .await
-            .map_err(Unreachable)?;
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let retry_after = retry_after_of(resp.headers());
-            return Err(response_failure("LLM", status, retry_after, resp).await?);
-        }
+        let resp = self.post_tools(messages, tools, tool_choice, true).await?;
 
         let mut bytes = resp.bytes_stream();
         let stream = async_stream::try_stream! {
@@ -1266,6 +1360,31 @@ fn err_detail(body: &serde_json::Value, raw: &str) -> String {
             (!raw.is_empty()).then(|| raw.chars().take(MAX_ERROR_DETAIL_CHARS).collect())
         })
         .unwrap_or_else(|| "unknown error".to_string())
+}
+
+/// 先认参数名和错误码；Azure 可能只给一段消息。笼统的温度无效不足以丢掉调用方的设置。
+fn says_temperature_unsupported(body: &serde_json::Value, raw: &str) -> bool {
+    if let Some(parameter) = body["error"]["param"].as_str() {
+        if parameter != "temperature" {
+            return false;
+        }
+        if matches!(
+            body["error"]["code"].as_str(),
+            Some("unsupported_parameter" | "unsupported_value")
+        ) {
+            return true;
+        }
+    }
+    let detail = err_detail(body, raw).to_lowercase();
+    detail.contains("temperature")
+        && (detail.contains("not support") || detail.contains("unsupported"))
+}
+
+/// 端点说不说「带工具的请求不收推理强度」。只有措辞可认：Azure 给的 code 是笼统的
+/// `invalid_request_error`。两样都得提到——只说工具或只说推理强度的 400 是别的毛病
+fn says_tools_refuse_effort(detail: &str) -> bool {
+    let d = detail.to_lowercase();
+    d.contains("reasoning_effort") && (d.contains("tool") || d.contains("function"))
 }
 
 /// 响应体说不说这是余额问题。
@@ -1565,6 +1684,182 @@ mod tests {
             assert!(context_too_long(&err).is_none());
             assert!(rejected(&err).is_some());
         }
+    }
+
+    #[test]
+    fn a_400_about_tools_and_reasoning_effort_is_recognised_and_others_are_not() {
+        assert!(super::says_tools_refuse_effort(
+            "Function tools with reasoning_effort are not supported for gpt-x in /v1/chat/completions. Please use /v1/responses instead."
+        ));
+        assert!(!super::says_tools_refuse_effort(
+            "Unsupported value: 'reasoning_effort' does not support 'minimal'"
+        ));
+        assert!(!super::says_tools_refuse_effort(
+            "Invalid 'tools[0].function.name'"
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_tool_request_refused_for_its_reasoning_effort_retries_with_none_and_remembers() {
+        use wiremock::matchers::{body_partial_json, method};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        let ok = serde_json::json!({ "choices": [{ "message": { "role": "assistant", "content": "pong" }, "finish_reason": "stop" }] });
+        Mock::given(method("POST"))
+            .and(body_partial_json(
+                serde_json::json!({ "reasoning_effort": "none" }),
+            ))
+            .respond_with(ResponseTemplate::new(200).set_body_json(ok.clone()))
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(wiremock::matchers::body_string_contains("\"tools\""))
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({ "error": {
+                "message": "Function tools with reasoning_effort are not supported for gpt-x in /v1/chat/completions.",
+                "type": "invalid_request_error" } })))
+            .with_priority(2)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(ok))
+            .with_priority(3)
+            .mount(&server)
+            .await;
+        let client =
+            LlmClient::new(&server.uri(), None, "m").with_reasoning_effort(Some("low".into()));
+        let tool = serde_json::json!([{ "type": "function", "function": { "name": "ping", "parameters": { "type": "object", "properties": {} } } }]);
+        let ask = [serde_json::json!({ "role": "user", "content": "ping" })];
+        assert_eq!(
+            client
+                .chat_tools(&ask, &tool)
+                .await
+                .unwrap()
+                .content
+                .as_deref(),
+            Some("pong")
+        );
+        assert_eq!(
+            client
+                .clone()
+                .chat_tools(&ask, &tool)
+                .await
+                .unwrap()
+                .content
+                .as_deref(),
+            Some("pong")
+        );
+        let plain = [ChatMessage {
+            role: "user".into(),
+            content: "hi".into(),
+        }];
+        client.chat(&plain).await.unwrap();
+        let sent: Vec<serde_json::Value> = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| serde_json::from_slice(&r.body).unwrap())
+            .collect();
+        let efforts: Vec<_> = sent
+            .iter()
+            .map(|b| (b.get("tools").is_some(), b["reasoning_effort"].clone()))
+            .collect();
+        assert_eq!(
+            efforts,
+            [
+                (true, serde_json::json!("low")),  // refused once
+                (true, serde_json::json!("none")), // retried
+                (true, serde_json::json!("none")), // remembered, also by a clone
+                (false, serde_json::json!("low")), // a call without tools keeps the setting
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_deployment_that_refuses_none_too_is_not_sent_none_again() {
+        use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({ "error": {
+                "message": "Function tools with reasoning_effort are not supported for gpt-x." } })))
+            .mount(&server)
+            .await;
+        let client =
+            LlmClient::new(&server.uri(), None, "m").with_reasoning_effort(Some("low".into()));
+        let tool = serde_json::json!([{ "type": "function", "function": { "name": "ping" } }]);
+        let ask = [serde_json::json!({ "role": "user", "content": "x" })];
+        assert!(client.chat_tools(&ask, &tool).await.is_err());
+        let sent: Vec<serde_json::Value> = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| serde_json::from_slice(&r.body).unwrap())
+            .collect();
+        assert_eq!(
+            sent.iter()
+                .map(|b| b["reasoning_effort"].clone())
+                .collect::<Vec<_>>(),
+            ["low", "none"]
+        );
+        assert_eq!(
+            client.tools_body(&ask, Some(&tool), None, false)["reasoning_effort"],
+            "low",
+            "the flag is cleared"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unrelated_400_on_the_retry_keeps_none() {
+        use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({ "error": {
+                "message": "Function tools with reasoning_effort are not supported for gpt-x." } })))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(400).set_body_json(serde_json::json!({ "error": {
+                "message": "This model's maximum context length is 8192 tokens." } })),
+            )
+            .mount(&server)
+            .await;
+        let client =
+            LlmClient::new(&server.uri(), None, "m").with_reasoning_effort(Some("low".into()));
+        let tool = serde_json::json!([{ "type": "function", "function": { "name": "ping" } }]);
+        let ask = [serde_json::json!({ "role": "user", "content": "x" })];
+        assert!(client.chat_tools(&ask, &tool).await.is_err());
+        assert_eq!(server.received_requests().await.unwrap().len(), 2);
+        assert_eq!(
+            client.tools_body(&ask, Some(&tool), None, false)["reasoning_effort"],
+            "none",
+            "the flag is kept"
+        );
+    }
+
+    #[tokio::test]
+    async fn another_400_on_a_tool_request_is_not_retried() {
+        use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(
+                serde_json::json!({ "error": { "message": "Invalid 'tools[0].function.name'" } }),
+            ))
+            .mount(&server)
+            .await;
+        let client = LlmClient::new(&server.uri(), None, "m");
+        let tool = serde_json::json!([{ "type": "function", "function": { "name": "bad name" } }]);
+        assert!(client
+            .chat_tools(
+                &[serde_json::json!({ "role": "user", "content": "x" })],
+                &tool
+            )
+            .await
+            .is_err());
+        assert_eq!(server.received_requests().await.unwrap().len(), 1);
     }
 
     #[test]
@@ -2446,6 +2741,161 @@ data: {\"choices\":[{\"delta\":{\"content\":\"tail\"},\"finish_reason\":\"stop\"
             "the next call starts there"
         );
         assert_eq!(sent_max_tokens(&sent[3]), json!(16_384), "so does a clone");
+    }
+
+    fn complete_chat_response(streaming: bool) -> wiremock::ResponseTemplate {
+        let response = wiremock::ResponseTemplate::new(200);
+        if streaming {
+            response.set_body_raw(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n",
+                "text/event-stream",
+            )
+        } else {
+            response.set_body_json(json!({"choices": [{"message": {"content": "ok"}}]}))
+        }
+    }
+
+    async fn ask_at_zero(client: &LlmClient, streaming: bool) -> anyhow::Result<String> {
+        let messages = [ChatMessage {
+            role: "user".into(),
+            content: "hi".into(),
+        }];
+        if streaming {
+            Ok(client.chat_at_streaming(&messages, Some(0.0)).await?.text)
+        } else {
+            client.chat_at(&messages, Some(0.0)).await
+        }
+    }
+
+    #[tokio::test]
+    async fn refused_parameters_and_a_lower_ceiling_are_learned_and_shared_with_clones() {
+        use wiremock::{matchers::method, Mock, MockServer, Request, ResponseTemplate};
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .respond_with(|request: &Request| {
+                let body: serde_json::Value = request.body_json().unwrap();
+                if body.get("max_tokens").is_some() {
+                    ResponseTemplate::new(400).set_body_json(json!({"error": {
+                        "param": "max_tokens", "code": "unsupported_parameter",
+                        "message": "Use max_completion_tokens instead."
+                    }}))
+                } else if body["max_completion_tokens"] != 16_384 {
+                    ResponseTemplate::new(400).set_body_json(json!({"error": {
+                        "message": "max_completion_tokens must be at most 16384 tokens"
+                    }}))
+                } else if body.get("temperature").is_some() {
+                    ResponseTemplate::new(400).set_body_json(json!({"error": {
+                        "param": "temperature", "code": "unsupported_value",
+                        "message": "Use the default sampling settings."
+                    }}))
+                } else {
+                    complete_chat_response(true)
+                }
+            })
+            .expect(6)
+            .mount(&server)
+            .await;
+        let client = LlmClient::new(&server.uri(), None, "m");
+        let cloned = client.clone();
+        for caller in [&client, &client, &cloned] {
+            assert_eq!(ask_at_zero(caller, true).await.unwrap(), "ok");
+        }
+        let sent: Vec<serde_json::Value> = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| r.body_json().unwrap())
+            .collect();
+        assert_eq!(sent[0]["max_tokens"], MAX_COMPLETION_TOKENS);
+        assert_eq!(sent[1]["max_completion_tokens"], MAX_COMPLETION_TOKENS);
+        for body in &sent[1..] {
+            assert!(body.get("max_tokens").is_none());
+        }
+        for body in &sent[2..] {
+            assert_eq!(body["max_completion_tokens"], 16_384);
+        }
+        assert_eq!(
+            sent.iter()
+                .map(|b| b.get("temperature").is_some())
+                .collect::<Vec<_>>(),
+            [true, true, true, false, false, false]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refused_temperature_is_learned_across_streaming_calls_and_clones() {
+        use wiremock::{matchers::method, Mock, MockServer, Request, ResponseTemplate};
+        for refusal in [
+            json!({"error": {"param": "temperature", "code": "unsupported_value",
+                "message": "Only the default sampling settings are supported."}}),
+            json!({"error": {"param": "temperature", "code": "unsupported_parameter",
+                "message": "Use the default sampling settings."}}),
+            json!({"message": "Unsupported value: 'temperature' does not support 0 with this model. Only the default (1) value is supported."}),
+        ] {
+            for streaming in [false, true] {
+                let server = MockServer::start().await;
+                let refusal = refusal.clone();
+                Mock::given(method("POST"))
+                    .respond_with(move |request: &Request| {
+                        let body: serde_json::Value = request.body_json().unwrap();
+                        if body.get("temperature").is_some() {
+                            ResponseTemplate::new(400).set_body_json(&refusal)
+                        } else {
+                            complete_chat_response(body["stream"] == true)
+                        }
+                    })
+                    .expect(4)
+                    .mount(&server)
+                    .await;
+                let client = LlmClient::new(&server.uri(), None, "m");
+                let cloned = client.clone();
+                assert_eq!(ask_at_zero(&client, streaming).await.unwrap(), "ok");
+                assert_eq!(ask_at_zero(&cloned, !streaming).await.unwrap(), "ok");
+                assert_eq!(ask_at_zero(&client, streaming).await.unwrap(), "ok");
+                let temperatures: Vec<bool> = server
+                    .received_requests()
+                    .await
+                    .unwrap()
+                    .iter()
+                    .map(|r| {
+                        r.body_json::<serde_json::Value>()
+                            .unwrap()
+                            .get("temperature")
+                            .is_some()
+                    })
+                    .collect();
+                assert_eq!(temperatures, [true, false, false, false]);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn each_compatibility_adjustment_is_tried_only_once_per_call() {
+        use wiremock::{matchers::method, Mock, MockServer, ResponseTemplate};
+        for (streaming, parameter) in [
+            (true, "max_tokens"),
+            (true, "temperature"),
+            (false, "temperature"),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .respond_with(ResponseTemplate::new(400).set_body_json(json!({"error": {
+                    "param": parameter, "code": "unsupported_parameter",
+                    "message": "Repeated refusal"
+                }})))
+                // 第三次会拿到 404，让没有次数上限的重试立即暴露。
+                .up_to_n_times(2)
+                .expect(2)
+                .mount(&server)
+                .await;
+            let client = LlmClient::new(&server.uri(), None, "m");
+            let err = ask_at_zero(&client, streaming).await.unwrap_err();
+            let refusal = rejected(&err).unwrap();
+            assert_eq!(refusal.status, 400);
+            assert_eq!(refusal.detail, "Repeated refusal");
+            assert_eq!(server.received_requests().await.unwrap().len(), 2);
+        }
     }
 
     /// Only a number the message calls tokens is a ceiling; the rest of the digits in a

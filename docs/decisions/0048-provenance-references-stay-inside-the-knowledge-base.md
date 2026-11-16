@@ -16,7 +16,7 @@ Every reference an export can resolve must join rows that live in the same knowl
 
 ## The mechanism, per edge
 
-Thirty-nine reference edges are protected. The split is decided by a single question: **does the referencing row carry the kb authority itself?**
+Forty reference edges are protected (thirty-nine at migration 0070; 0121 added `statement_qualifiers.chunk_id`). The split is decided by a single question: **does the referencing row carry the kb authority itself?**
 
 | Source | Edge → target | kb authority | Mechanism |
 |---|---|---|---|
@@ -40,11 +40,11 @@ Thirty-nine reference edges are protected. The split is decided by a single ques
 | `relation_type_qualifiers` | `qualifier_type_id` → `relation_types` | relation's kb | trigger |
 | `attribute_rule_conditions` | `predicate_id` → `relation_types` | owning rule's kb | trigger |
 | `typed_fact_sources` | `statement_id` → `facts` | owning fact's kb | trigger |
-| `statement_qualifiers` | `entity_id` → `entities` | owning fact's kb | trigger |
+| `statement_qualifiers` | `entity_id` → `entities`; `chunk_id` → `chunks` | owning fact's kb | trigger |
 
 **26 edges** are declared as `FOREIGN KEY (kb_id, ref) REFERENCES t (kb_id, id)`, replacing the single-column FK that was already there — one kernel-level lookup now proves existence *and* same-base, where before it proved existence and a second check would have had to prove the rest. Eight `UNIQUE (kb_id, id)` constraints on the referenced tables back those keys (`documents`, `chunks`, `entities`, `entity_types`, `relation_types`, `facts`, `rules`, `attribute_rules`).
 
-**13 edges** cannot be expressed that way: their kb authority is a *parent row's* `kb_id`, and the link row has no `kb_id` column at all. A composite key cannot name `fact.kb_id` from a `fact_evidence` row. These keep row-level `BEFORE` triggers — nine functions, ten triggers — that read the parent's base and compare.
+**14 edges** cannot be expressed that way: their kb authority is a *parent row's* `kb_id`, and the link row has no `kb_id` column at all. A composite key cannot name `fact.kb_id` from a `fact_evidence` row. These keep row-level `BEFORE` triggers — nine functions, ten triggers — that read the parent's base and compare.
 
 **`kb_id` is immutable** on every owned table (one shared function, twelve `BEFORE UPDATE OF kb_id` triggers). Composite keys only guard the rows being pointed *at*; the trigger-covered edges derive their authority from a parent row, and a parent moving base would silently un-anchor every child pointing at it. Making kb reassignment impossible is what lets a point-in-time check stay correct.
 
@@ -54,7 +54,7 @@ Thirty-nine reference edges are protected. The split is decided by a single ques
 
 `pg_restore` loads data with `COPY` and creates constraints after, so any shape that survives the migration survives a restore — and the deferred self-references are what let a same-transaction or intra-statement forward chain restore without ordering games. Two sharper edges were designed for explicitly:
 
-- `pg_restore --disable-triggers` and any `session_replication_role = replica` load suppress *user* triggers wholesale. Declarative foreign keys are internal constraint triggers and are **not** suppressed — so the 26 declarative edges hold even in a replica-mode load, which is a second reason to prefer them wherever the schema can say them. The 13 trigger-covered edges admit the gap and are backstopped by the export-side `provenance_integrity` check and the §0 audit query, which doubles as a post-load audit.
+- `pg_restore --disable-triggers` and any `session_replication_role = replica` load suppress *user* triggers wholesale. Declarative foreign keys are internal constraint triggers and are **not** suppressed — so the 26 declarative edges hold even in a replica-mode load, which is a second reason to prefer them wherever the schema can say them. The 14 trigger-covered edges admit the gap and are backstopped by the export-side `provenance_integrity` check and the §0 audit query, which doubles as a post-load audit.
 - The migration pins `search_path = pg_catalog` in every function body and qualifies every identifier `public.*`, because restore empties the session `search_path` and a hostile first schema must not redirect name resolution. `migration_0070_runs_under_any_search_path` installs the whole migration under a normal, an empty, and a decoy-first `search_path`.
 - The coverage itself is guarded by a catalog-derived regression in the same test file: it enumerates every column-level reference inside the ledger surface from `pg_catalog` and fails when an edge resolves to no declared composite-FK, owner-derived-trigger, or explicit exclusion — so a reference column added later cannot silently slip past the invariant. The same guard also reads the exact preflight scan the export runs (`export_provenance_integrity.sql`) and fails when a protected edge has no scan branch — or a scan branch no longer names a protected edge — so schema protection and export preflight cannot drift apart.
 

@@ -55,17 +55,27 @@ impl FileFilter {
     }
 
     fn eligible(&self, e: &TreeEntry) -> bool {
+        self.path_ok(&e.path, &e.kind, &e.mode) && e.size.is_some_and(|s| self.size_ok(s))
+    }
+
+    /// 只看树条目本身就能判的那一半。GitLab 的树不带大小（#1327），大小要另问一次，
+    /// 所以两半分开
+    pub(crate) fn path_ok(&self, path: &str, kind: &str, mode: &str) -> bool {
         let opts = glob::MatchOptions {
             case_sensitive: true,
             require_literal_separator: true,
             require_literal_leading_dot: false,
         };
         // 子模块是 commit、目录是 tree，符号链接指向别处——都不是文件本体
-        e.kind == "blob"
-            && e.mode != "120000"
-            && e.size.is_some_and(|s| s <= self.max_file_bytes)
-            && self.include.iter().any(|p| p.matches_with(&e.path, opts))
-            && !self.exclude.iter().any(|p| p.matches_with(&e.path, opts))
+        kind == "blob"
+            && mode != "120000"
+            && self.include.iter().any(|p| p.matches_with(path, opts))
+            && !self.exclude.iter().any(|p| p.matches_with(path, opts))
+    }
+
+    /// 空文件成不了文档（`ingest_item` 对空字节什么也不建），收进来就每轮都得重取一遍
+    pub(crate) fn size_ok(&self, size: i64) -> bool {
+        size > 0 && size <= self.max_file_bytes
     }
 }
 
@@ -113,5 +123,18 @@ mod tests {
             assert!(!f.eligible(&entry(path, "100644")), "{path}");
         }
         assert!(!f.eligible(&entry("link.md", "120000")));
+    }
+
+    #[test]
+    fn an_empty_file_is_not_taken() {
+        let f = FileFilter::from_config(&serde_json::json!({})).unwrap();
+        let empty = TreeEntry {
+            path: "notes/empty.md".into(),
+            mode: "100644".into(),
+            kind: "blob".into(),
+            sha: "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391".into(),
+            size: Some(0),
+        };
+        assert!(!f.eligible(&empty));
     }
 }

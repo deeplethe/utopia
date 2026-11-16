@@ -43,6 +43,8 @@ type Vote = Option<String>;
 ///
 /// 检索报错也退回整表，同短语那边：候选算在判定的指纹里，报错这一轮判的词恢复以后
 /// 指纹对不上、再问一轮。不退回的话，嵌入端点一直坏着时新来的词就永远没有类
+///
+/// 例外是余额用完：不退回整表，原样返回这个错，让这一轮失败一次并报警，而不是接着问、接着排队。
 async fn candidates_for(
     state: &AppState,
     kb_id: Uuid,
@@ -63,6 +65,7 @@ async fn candidates_for(
     .await
     {
         Ok(nearest) => nearest,
+        Err(e) if utopia_llm::out_of_credit(&e).is_some() => return Err(e),
         Err(e) => {
             tracing::warn!(%kb_id, error = %e, "类别词对齐检索候选类失败，退回整表");
             Vec::new()
@@ -166,6 +169,13 @@ async fn align_types_locked(
     client: &utopia_llm::LlmClient,
 ) -> anyhow::Result<()> {
     let pool = &state.pool;
+    // 先把已绑上的类补到它的类别词下还没有类的实体上：判定落下时的投影只看得见那一刻
+    // 的实体，之后抽出来的（判定期间还在抽的那几篇）落成没有类的；这里每轮补一次，
+    // 短语对齐排在这之后，签名两端的类才是齐的
+    let caught_up = type_bindings::apply_bound(pool, kb_id).await?;
+    if caught_up > 0 {
+        tracing::info!(%kb_id, entities = caught_up, "已绑上的类补到了后建的实体上");
+    }
     // 调模型之前在一个快照里读齐输入（#795）：类的定义、类的版本与父边、类别词、已有的
     // 判定。分几次读的话，两次读之间提交的编辑会让提示词里的定义和指纹里的版本对不上
     let (classes, snapshot, sigs, existing) = {
@@ -294,6 +304,8 @@ async fn align_types_locked(
                     .await
                 {
                     Ok(r) => r,
+                    // 欠费让整轮失败一次、告警响起，不按 failed 记了再排（同短语对齐，#1360）
+                    Err(e) if utopia_llm::out_of_credit(&e).is_some() => return Err(e),
                     Err(e) => {
                         tracing::warn!(%kb_id, error = %e, "类别词对齐调用失败，这一批留到下次");
                         failed += 1;

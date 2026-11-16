@@ -1,6 +1,6 @@
 # 0054 · A source may push statements in the open contract
 
-- **Status**: Implemented · cut 1 (#884)
+- **Status**: Implemented · cut 1 (#884) · revised 2026-10-23 (#1375)
 - **Written**: 2026-09-23
 - **Related**: [0044](0044-the-ontology-is-a-view-over-what-documents-say.md) owns the contract this reuses and the rule that typed facts come only from alignment; [0001](0001-extraction.md) is why every statement has evidence; [0022](0022-a-fact-has-two-clocks.md) is the two clocks a pushed item lands on; [0036](0036-exploration-aligns-a-schema-to-the-ontology.md) is where structured *state* lives, which this record leaves alone; [0015](0015-recording-a-sentence-is-not-asserting-a-fact.md) is why a person's `remember` needs a nod and a source's document does not; #875 is the case that surfaced it.
 
@@ -95,3 +95,4 @@ Content-Type: application/json
 - 2026-10-15 ([#1242](https://github.com/deeplethe/utopia/issues/1242)): a pushed signature whose phrase equals exactly one declared relation, not a state, that admits both of its ends is bound by the ontology when the document's extraction finishes, and that extraction queues `materialize`, so a base with no chat model types what it is pushed. It binds the signature as [0044](0044-the-ontology-is-a-view-over-what-documents-say.md)'s revision of decision 3 describes, reviewable like any binding; it is not a typed write, decisions 3 and 5 stand, and no other pushed phrase binds before alignment reads it.
 - 2026-10-16 ([#1267](https://github.com/deeplethe/utopia/issues/1267)): decision 7 keeps a re-pushed statement's identity, but its role words stayed first-write-wins, so a re-push with a new qualifier value kept the old one; [0070](0070-a-role-word-speaks-while-its-chunk-is-live.md) proposes that a role word is recorded against its evidence chunk and speaks while that chunk is live.
 - 2026-10-19 ([#1293](https://github.com/deeplethe/utopia/issues/1293)): proposed in [0071](0071-a-source-may-declare-its-names-identities.md): a `statements` source whose config says `{"names": "identity"}` attaches its named entities by exact name and gives their names no vectors. Decision 3's "same path" stands for every other source.
+- 2026-10-23 ([#1375](https://github.com/deeplethe/utopia/issues/1375)): decision 2's intact `statements` chunk is indexed for keyword search but is not embedded, so an embedding model's input limit cannot block its deterministic extraction; vectors already written for statements chunks are left in place.

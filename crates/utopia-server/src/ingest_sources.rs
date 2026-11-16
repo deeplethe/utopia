@@ -1,5 +1,5 @@
 //! 来源同步任务：url（网页抓取）/ rss（订阅，pubDate → doc_time）/
-//! github_issues / jira_issues（工单，更新时刻 → doc_time，正文里带状态变更史）/
+//! github_issues / gitlab_issues / jira_issues（工单，更新时刻 → doc_time，正文里带状态变更史）/
 //! s3（对象存储，LastModified → doc_time）。
 //! 全部走 sha256 去重（重复内容静默跳过），新文档进标准摄入管道（process_document）。
 //! folder 是纯容器（上传入内），api 是推送型——两者无拉取语义。
@@ -7,13 +7,18 @@
 use crate::state::AppState;
 use chrono::{DateTime, Utc};
 use sha2::{Digest, Sha256};
-use utopia_core::models::Source;
 use utopia_core::models::SourceKind;
+use utopia_core::models::{Role, Source};
+use utopia_core::AppError;
 use uuid::Uuid;
 
 #[cfg(test)]
 #[path = "source_checkpoint_tests.rs"]
 mod source_checkpoint_tests;
+
+#[cfg(test)]
+#[path = "timestamp_checkpoint_tests.rs"]
+mod timestamp_checkpoint_tests;
 
 /// 单次同步的新文档上限（防超长 feed/URL 列表拖垮任务）
 const MAX_NEW_PER_SYNC: usize = 200;
@@ -38,6 +43,7 @@ pub struct SyncStats {
     pub discovered: usize,
     pub queued_for_content: usize,
     pub content_terminal: usize,
+    pub checkpoint: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug)]
@@ -64,12 +70,24 @@ impl SyncStats {
     }
 }
 
+/// 工单来源：进度是 `sources.sync_checkpoint` 里的时刻，与本轮的成功一起提交（0072）。
+/// 三处要问这一句，写成一处，加第四个工单来源时不会漏掉其中一处
+fn reads_by_timestamp(kind: SourceKind) -> bool {
+    matches!(
+        kind,
+        SourceKind::GithubIssues | SourceKind::GitlabIssues | SourceKind::JiraIssues
+    )
+}
+
 pub async fn sync_source(state: &AppState, source_id: Uuid) -> anyhow::Result<()> {
     let source = utopia_store::sources::get(&state.pool, source_id).await?;
     let kind = SourceKind::parse(&source.kind);
     let since = match kind {
-        Some(SourceKind::Custom | SourceKind::GithubIssues | SourceKind::JiraIssues) => {
+        Some(SourceKind::Custom) => {
             utopia_store::sources::last_successful_sync_start(&state.pool, source_id).await?
+        }
+        Some(kind) if reads_by_timestamp(kind) => {
+            utopia_store::sources::sync_checkpoint(&state.pool, source_id).await?
         }
         _ => None,
     };
@@ -84,12 +102,15 @@ pub async fn sync_source(state: &AppState, source_id: Uuid) -> anyhow::Result<()
         Some(SourceKind::Custom) => sync_custom(state, &source, since).await,
         Some(SourceKind::GithubIssues) => sync_github_issues(state, &source, since).await,
         Some(SourceKind::GithubRepo) => sync_github_repo(state, &source).await,
+        Some(SourceKind::GitlabRepo) => sync_gitlab_repo(state, &source).await,
+        Some(SourceKind::GitlabIssues) => sync_gitlab_issues(state, &source, since).await,
         Some(SourceKind::JiraIssues) => sync_jira_issues(state, &source, since).await,
         Some(SourceKind::S3 | SourceKind::AzureBlob | SourceKind::Gcs) => {
             sync_object_storage(state, &source).await
         }
         Some(SourceKind::Webdav) => sync_webdav(state, &source).await,
         Some(SourceKind::Notion) => sync_notion(state, &source).await,
+        Some(SourceKind::GoogleDrive) => sync_google_drive(state, &source).await,
         // 被动容器：folder / api / memory / upload 没有拉取语义
         Some(
             SourceKind::Folder
@@ -101,19 +122,43 @@ pub async fn sync_source(state: &AppState, source_id: Uuid) -> anyhow::Result<()
         None => Err(anyhow::anyhow!("unknown source kind `{}`", source.kind)),
     };
 
-    match outcome {
-        Ok(stats) => {
-            utopia_store::sources::finish_run(
+    let outcome = match outcome {
+        Ok(stats) if kind.is_some_and(reads_by_timestamp) => {
+            utopia_store::sources::finish_timestamp_sync(
                 &state.pool,
                 run_id,
                 source_id,
-                None,
+                since,
+                stats.checkpoint,
                 stats.created as i32,
                 stats.updated as i32,
             )
-            .await?;
-            utopia_store::sources::finish_sync(&state.pool, source_id, None, stats.total() as i32)
+            .await
+            .map(|()| stats)
+            .map_err(anyhow::Error::from)
+        }
+        other => other,
+    };
+    match outcome {
+        Ok(stats) => {
+            if !kind.is_some_and(reads_by_timestamp) {
+                utopia_store::sources::finish_run(
+                    &state.pool,
+                    run_id,
+                    source_id,
+                    None,
+                    stats.created as i32,
+                    stats.updated as i32,
+                )
                 .await?;
+                utopia_store::sources::finish_sync(
+                    &state.pool,
+                    source_id,
+                    None,
+                    stats.total() as i32,
+                )
+                .await?;
+            }
             state.emit_source(source.kb_id);
             tracing::info!(
                 %source_id,
@@ -160,11 +205,13 @@ pub enum IngestAction {
 
 /// 身份从哪来。`Path`：来源按位置认文档，同内容出现在新位置就是移动/改名，历史跟着走；
 /// `Declared`：调用方亲口给了 ID，身份就是它，绝不把另一个活着的 ID 的文档改成它；
-/// 只有已被墓碑标记的那篇可以接手（改名）。
+/// 只有已被墓碑标记的那篇可以接手（改名）。`StableId`：来源的 ID 不随移动或改名改变，
+/// 所以新 ID 不能凭文件名或内容接手另一篇，即使旧文件暂时不在同步范围里。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Identity {
     Path,
     Declared,
+    StableId,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -275,7 +322,7 @@ pub async fn ingest_item_with_outcome(
     // 主判定：逻辑身份；兜底：迁移前的历史文档（无 key）按文件名认领并补键
     let mut existing =
         utopia_store::documents::find_by_external_key(&state.pool, source_id, external_key).await?;
-    if existing.is_none() {
+    if existing.is_none() && identity != Identity::StableId {
         if let Some(legacy) =
             utopia_store::documents::find_legacy_by_filename(&state.pool, source_id, filename)
                 .await?
@@ -361,9 +408,14 @@ pub async fn ingest_item_with_outcome(
 
     // 同内容出现在新路径：识别为移动/改名，不重跑管道。声明的 ID 只接手已被墓碑标记的那篇
     // （先墓碑旧 ID、再推新 ID = 改名），活着的绝不改走
-    let moved = utopia_store::documents::find_by_source_sha(&state.pool, source_id, &sha256)
-        .await?
-        .filter(|doc| identity == Identity::Path || doc.missing_since.is_some());
+    let moved = match identity {
+        Identity::StableId => None,
+        Identity::Path | Identity::Declared => {
+            utopia_store::documents::find_by_source_sha(&state.pool, source_id, &sha256)
+                .await?
+                .filter(|doc| identity == Identity::Path || doc.missing_since.is_some())
+        }
+    };
     if let Some(doc) = moved {
         utopia_store::documents::update_location(&state.pool, doc.id, filename, external_key)
             .await?;
@@ -831,20 +883,20 @@ async fn sync_github_issues_with_client(
 
     let base = format!("{api_base}/repos/{repo}");
 
-    // 增量：GitHub 的 since 是"这之后更新过的"
-    let mut issue_q: Vec<(&str, String)> = vec![("state", "all".into())];
-    if let Some(t) = since {
-        issue_q.push(("since", t.to_rfc3339()));
-    }
-
-    let issues: Vec<crate::github_issues::Issue> =
-        crate::github_issues::fetch_all(http, &format!("{base}/issues"), &issue_q, auth).await?;
-    let mut stats = SyncStats::default();
-    for issue in issues
-        .iter()
-        .filter(|i| include_prs || i.pull_request.is_none())
-        .take(MAX_NEW_PER_SYNC)
-    {
+    let window = crate::github_issues::fetch_window(
+        http,
+        &format!("{base}/issues"),
+        since,
+        MAX_NEW_PER_SYNC,
+        include_prs,
+        auth,
+    )
+    .await?;
+    let mut stats = SyncStats {
+        checkpoint: window.checkpoint,
+        ..SyncStats::default()
+    };
+    for issue in &window.issues {
         // 只重建本轮选中的工单，但每张要读完整评论历史。仓库级评论即使
         // 去掉 since，也可能被无关工单和 PR 的评论挤出分页上限。
         let comments = crate::github_issues::fetch_all::<crate::github_issues::Comment>(
@@ -936,10 +988,11 @@ async fn sync_github_repo_with_client(
     let mut stats = SyncStats::default();
     for (entry, key) in chosen.iter().zip(&keys) {
         // 没变的整条跳过：已落库的字节算出同一个 git SHA，就不必再花两次请求
+        // 回收站里的文档要走入库流程，即使上游内容没变也要恢复。
         let old =
             utopia_store::documents::find_by_external_key(&state.pool, source.id, key).await?;
         let unchanged = match old {
-            Some(d) if Some(d.size_bytes) == entry.size => state
+            Some(d) if d.deleted_at.is_none() && Some(d.size_bytes) == entry.size => state
                 .blob
                 .get(&d.sha256)
                 .await
@@ -979,6 +1032,281 @@ async fn sync_github_repo_with_client(
     if truncated {
         // 树不全就不判「谁消失了」——缺席可能只是还没列到
         tracing::warn!(%repo, "GitHub 文件树被截断，本轮只摄入列出的文件，不做不在来源中对账");
+    } else {
+        utopia_store::documents::reconcile_missing(&state.pool, source.id, &keys)
+            .await
+            .map_err(|e| anyhow::anyhow!(e))?;
+    }
+    Ok(stats)
+}
+
+/// GitLab 项目文件（gitlab.com，#1327）：与 [`sync_github_repo`] 同一个形状，一条路径一篇文档，
+/// 按 blob SHA 判「没变」。树要翻页；新出现或变了的文件多一次 `HEAD`，先拿到大小再决定取不取。
+async fn sync_gitlab_repo(state: &AppState, source: &Source) -> anyhow::Result<SyncStats> {
+    let url = reqwest::Url::parse("https://gitlab.com/")?;
+    let http = crate::http_fetch::client_for(
+        &url,
+        crate::http_fetch::Reach::Content,
+        crate::http_fetch::Limits::default(),
+    )
+    .await?;
+    sync_gitlab_repo_with_client(state, source, &http, "https://gitlab.com/api/v4").await
+}
+
+/// 带令牌发一个请求并判状态。GitLab 限流回 429，说清楚是限流，正确的动作是等或配令牌
+pub(crate) async fn gitlab_checked(
+    http: &reqwest::Client,
+    method: reqwest::Method,
+    url: reqwest::Url,
+    auth: Option<&str>,
+) -> anyhow::Result<reqwest::Response> {
+    let mut req = http.request(method, url);
+    if let Some(a) = auth {
+        req = req.header(reqwest::header::AUTHORIZATION, a);
+    }
+    let resp = req.send().await?;
+    let status = resp.status();
+    if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+        anyhow::bail!("GitLab 限流：请求太多，稍后再同步；未认证的配额更低，配一个 read_api 令牌");
+    }
+    if !status.is_success() {
+        anyhow::bail!("HTTP {status} from GitLab");
+    }
+    Ok(resp)
+}
+
+/// `config.project`：gitlab_repo 与 gitlab_issues 认的是同一种项目路径
+fn gitlab_project(source: &Source) -> anyhow::Result<&str> {
+    let project = source.config["project"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "{} source is missing config.project (group/name)",
+                source.kind
+            )
+        })?;
+    // 子组可以有好几层，但每一段都得有字
+    if project.split('/').count() < 2 || project.split('/').any(str::is_empty) {
+        anyhow::bail!(
+            "config.project should look like group/name or group/subgroup/name, got {project:?}"
+        );
+    }
+    Ok(project)
+}
+
+/// GitLab 工单与合并请求（gitlab.com，#1327）：一张一篇文档，正文里带状态、标签、里程碑的
+/// 变更史。列表按更新时刻增量筛选，备注与事件逐工单读到末页，与 [`sync_github_issues`]
+/// 同一个形状。详见 [`crate::gitlab_issues`]。
+async fn sync_gitlab_issues(
+    state: &AppState,
+    source: &Source,
+    since: Option<DateTime<Utc>>,
+) -> anyhow::Result<SyncStats> {
+    let http = crate::http_fetch::client_for(
+        &reqwest::Url::parse("https://gitlab.com/")?,
+        crate::http_fetch::Reach::Content,
+        crate::http_fetch::Limits::default(),
+    )
+    .await?;
+    sync_gitlab_issues_with_client(state, source, since, &http, "https://gitlab.com/api/v4").await
+}
+
+// HTTP 接缝让回归测试走同一条同步与落库路径，生产固定访问 gitlab.com 的 API。
+async fn sync_gitlab_issues_with_client(
+    state: &AppState,
+    source: &Source,
+    since: Option<DateTime<Utc>>,
+    http: &reqwest::Client,
+    api_base: &str,
+) -> anyhow::Result<SyncStats> {
+    use crate::gitlab_issues as gl;
+    use chrono::SubsecRound as _;
+    let project = gitlab_project(source)?;
+    // 备注与事件没有令牌就是 401，公开项目也一样。先说清楚，不去发那个注定失败的请求，
+    // 也不退而求其次只收没有历史的正文：历史是这个来源存在的理由
+    let auth = source.config["auth_header"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "gitlab_issues source needs config.auth_header: GitLab answers 401 for a \
+                 ticket's notes and events without a token, even on a public project"
+            )
+        })?;
+    // 合并请求默认不收，与 GitHub 的 include_pull_requests 同一个理由
+    let kinds: &[gl::Kind] = if source.config["include_merge_requests"]
+        .as_bool()
+        .unwrap_or(false)
+    {
+        &[gl::Kind::Issue, gl::Kind::MergeRequest]
+    } else {
+        &[gl::Kind::Issue]
+    };
+    let mut base = reqwest::Url::parse(api_base)?;
+    // 项目路径是一段：其中的 `/` 得成 `%2F`
+    base.path_segments_mut()
+        .map_err(|_| anyhow::anyhow!("API base cannot take a path"))?
+        .pop_if_empty()
+        .extend(["projects", project]);
+
+    let window = gl::fetch_window(http, &base, kinds, since, MAX_NEW_PER_SYNC, Some(auth)).await?;
+    let mut stats = SyncStats {
+        checkpoint: window.checkpoint,
+        ..SyncStats::default()
+    };
+    for (kind, item) in &window.tickets {
+        let details = gl::fetch_details(http, &base, *kind, item.iid, Some(auth)).await?;
+        let body = gl::render(*kind, item, &details);
+        // 工单与合并请求的 iid 各自从 1 数起，身份和文件名都得分得开
+        let key = format!("gitlab:{project}{}{}", kind.sigil(), item.iid);
+        let prefix = match kind {
+            gl::Kind::Issue => "",
+            gl::Kind::MergeRequest => "mr-",
+        };
+        let filename = format!("{prefix}{}-{}.md", item.iid, slugify(&item.title));
+        let action = ingest_item(
+            state,
+            source.kb_id,
+            source.id,
+            &key,
+            &filename,
+            "text/markdown",
+            body.as_bytes(),
+            // GitLab 的时刻带毫秒，落库前截到秒（0013 决定 6、7）
+            Some(item.updated_at.trunc_subsecs(0)),
+        )
+        .await?;
+        stats.absorb(action);
+    }
+    Ok(stats)
+}
+
+// HTTP 接缝让回归测试走同一条同步与落库路径，生产固定访问 gitlab.com 的 API。
+async fn sync_gitlab_repo_with_client(
+    state: &AppState,
+    source: &Source,
+    http: &reqwest::Client,
+    api_base: &str,
+) -> anyhow::Result<SyncStats> {
+    use crate::{github_repo as gr, gitlab_repo as gl};
+    let project = gitlab_project(source)?;
+    let auth = source.config["auth_header"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let filter = gr::FileFilter::from_config(&source.config)?;
+    let base = reqwest::Url::parse(api_base)?;
+    // 每一段各自编码：项目路径里的 `/` 与文件路径里的 `/` 都得成 `%2F`
+    let at = |segments: &[&str]| -> anyhow::Result<reqwest::Url> {
+        let mut u = base.clone();
+        u.path_segments_mut()
+            .map_err(|_| anyhow::anyhow!("API base cannot take a path"))?
+            .pop_if_empty()
+            .extend(["projects", project, "repository"])
+            .extend(segments);
+        Ok(u)
+    };
+
+    let mut tree_url = at(&["tree"])?;
+    tree_url
+        .query_pairs_mut()
+        .append_pair("recursive", "true")
+        .append_pair("per_page", "100")
+        .append_pair("pagination", "keyset");
+    let (mut entries, mut next, mut pages) = (Vec::<gl::TreeEntry>::new(), Some(tree_url), 0);
+    while let Some(url) = next.take() {
+        if pages == gl::MAX_TREE_PAGES {
+            next = Some(url);
+            break;
+        }
+        let resp = gitlab_checked(http, reqwest::Method::GET, url, auth).await?;
+        let link = resp
+            .headers()
+            .get(reqwest::header::LINK)
+            .and_then(|v| v.to_str().ok())
+            .map(String::from);
+        entries.extend(resp.json::<Vec<gl::TreeEntry>>().await?);
+        next = gl::next_page(link.as_deref(), &base);
+        pages += 1;
+    }
+    let (truncated, chosen) = (next.is_some(), gl::choose(entries, &filter));
+    let keys: Vec<String> = chosen
+        .iter()
+        .map(|e| format!("gitlab:{project}:{}", e.path))
+        .collect();
+    let mut stats = SyncStats::default();
+    for (entry, key) in chosen.iter().zip(&keys) {
+        // 没变的整条跳过：树里没有大小，但已落库的字节算出同一个 git SHA 就够了
+        // 回收站里的文档要走入库流程，即使上游内容没变也要恢复。
+        let old =
+            utopia_store::documents::find_by_external_key(&state.pool, source.id, key).await?;
+        let unchanged = match old {
+            Some(d) if d.deleted_at.is_none() => state
+                .blob
+                .get(&d.sha256)
+                .await
+                .is_ok_and(|b| gr::git_blob_sha(&b) == entry.id),
+            _ => false,
+        };
+        if unchanged {
+            continue;
+        }
+        // 先问大小，大小上限得在下载之前判。超限的文件不落库，于是每一轮都会为它再问一次：
+        // 一次 HEAD，不下载正文。真撞上限流时，再把挡掉的 blob SHA 记下来
+        let mut fu = at(&["files", &entry.path])?;
+        fu.query_pairs_mut().append_pair("ref", "HEAD");
+        let head = gitlab_checked(http, reqwest::Method::HEAD, fu, auth).await?;
+        let size = head
+            .headers()
+            .get("x-gitlab-size")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<i64>().ok());
+        let Some(size) = size else {
+            tracing::warn!(%project, path = %entry.path, "GitLab 没有给出文件大小，跳过这个文件");
+            continue;
+        };
+        if !filter.size_ok(size) {
+            continue;
+        }
+        // 文档日期取最后一次动过这条路径的提交，只在新出现或变了时问
+        let mut cu = at(&["commits"])?;
+        cu.query_pairs_mut()
+            .append_pair("path", &entry.path)
+            .append_pair("per_page", "1");
+        let commits: serde_json::Value = gitlab_checked(http, reqwest::Method::GET, cu, auth)
+            .await?
+            .json()
+            .await?;
+        let doc_time = commits[0]["committed_date"]
+            .as_str()
+            .and_then(gl::commit_time);
+        let bytes = gitlab_checked(
+            http,
+            reqwest::Method::GET,
+            at(&["blobs", &entry.id, "raw"])?,
+            auth,
+        )
+        .await?
+        .bytes()
+        .await?;
+        let action = ingest_item(
+            state,
+            source.kb_id,
+            source.id,
+            key,
+            &entry.path,
+            "text/markdown",
+            &bytes,
+            doc_time,
+        )
+        .await?;
+        stats.absorb(action);
+    }
+    if truncated {
+        tracing::warn!(%project, pages = gl::MAX_TREE_PAGES, "GitLab 文件树没翻完，本轮只摄入列出的文件，不做不在来源中对账");
     } else {
         utopia_store::documents::reconcile_missing(&state.pool, source.id, &keys)
             .await
@@ -1027,21 +1355,22 @@ async fn sync_jira_issues(
     )
     .await?;
 
-    let jql = crate::jira_issues::jql(project, since);
-    let (issues, total) = crate::jira_issues::fetch_all(&http, base_url, &jql, auth).await?;
-    // **截断了就说出来。** 一个跑了多年的项目动辄上万张工单，翻页上限意味着
-    // 这一轮只覆盖了一段；不报的话界面上"同步完成"就是一句误导
-    if total > issues.len() as i64 {
-        tracing::warn!(
-            source_id = %source.id,
-            fetched = issues.len(),
-            total,
-            "Jira 结果被翻页上限截断，本轮只覆盖了一部分；下一轮的 JQL 窗口会接上"
-        );
-    }
-
-    let mut stats = SyncStats::default();
-    for issue in issues.iter().take(MAX_NEW_PER_SYNC) {
+    let cloud = crate::jira_issues::is_jira_cloud(base_url);
+    let window = crate::jira_issues::fetch_window(
+        &http,
+        base_url,
+        cloud,
+        project,
+        since,
+        MAX_NEW_PER_SYNC,
+        auth,
+    )
+    .await?;
+    let mut stats = SyncStats {
+        checkpoint: window.checkpoint,
+        ..SyncStats::default()
+    };
+    for issue in &window.issues {
         let body = crate::jira_issues::render(issue);
         // 逻辑身份带上站点：一个知识库接两个 Jira 时，PROJ-1 不会互相覆盖
         let host = reqwest::Url::parse(base_url)
@@ -1345,6 +1674,183 @@ async fn sync_notion(state: &AppState, source: &Source) -> anyhow::Result<SyncSt
     Ok(stats)
 }
 
+/// Google Drive 同步：走遍选中的文件夹，把读得出来的文件摄进来（0074）。
+///
+/// `doc_time` 取 `modifiedTime`，理由同 Notion：那是内容最后一次改动的时刻。
+/// 标记没变、文档还在的文件连下载都省了，见 `google_drive` 的模块注释。
+///
+/// **对账只在遍历完整时做**：列表到了上限、或有选中的文件夹打不开时，没看见的东西
+/// 不等于没了，只把这一轮看见的摘掉 missing 标记。下载到了上限不影响对账：列表是全的。
+///
+/// 没走完的这一轮（列表到顶、下载到顶、有打不开或读不出的）都报失败并说明缘由，
+/// 不报成功——「同步成功」下面不能藏着没进来的东西
+async fn sync_google_drive(state: &AppState, source: &Source) -> anyhow::Result<SyncStats> {
+    use crate::google_drive;
+
+    let refresh = source.config["refresh_token"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "google_drive source is not connected: connect a Google account in its settings"
+            )
+        })?;
+    // 读的是连上的那个人的 Drive：他离开了这个库、被降成只读、或账号停用了，
+    // 这份授权就不再替库读东西，等库里的人重连
+    let connector = match google_drive::connected_by(&source.config) {
+        Some(id) => utopia_store::accounts::find_user_by_id(&state.pool, id).await?,
+        None => None,
+    };
+    let access = match connector {
+        Some(user) => {
+            utopia_store::access::require_kb(&state.pool, &user, source.kb_id, Role::Editor).await
+        }
+        None => Err(AppError::NotFound),
+    };
+    let still_editor = match access {
+        Ok(_) => true,
+        Err(AppError::NotFound | AppError::Forbidden) => false,
+        Err(e) => return Err(e.into()),
+    };
+    anyhow::ensure!(
+        still_editor,
+        "the person who connected this Google Drive is no longer an editor of this knowledge base: reconnect it in the source settings"
+    );
+    let cfg = google_drive::oauth_config().ok_or_else(|| {
+        anyhow::anyhow!(
+            "Google Drive is not configured on this server (UTOPIA_GOOGLE_DRIVE_CLIENT_ID)"
+        )
+    })?;
+    let folders = google_drive::selected_folders(&source.config);
+    if folders.is_empty() {
+        anyhow::bail!("google_drive source has no folders selected");
+    }
+
+    let drive = google_drive::Drive::connect(&cfg, refresh).await?;
+    sync_google_drive_with_client(state, source, &drive, &folders).await
+}
+
+pub(crate) async fn sync_google_drive_with_client(
+    state: &AppState,
+    source: &Source,
+    drive: &crate::google_drive::Drive,
+    folders: &[String],
+) -> anyhow::Result<SyncStats> {
+    use crate::google_drive;
+
+    let listing = drive.walk(folders).await?;
+    let known = google_drive::markers(&state.pool, source.id).await?;
+    let mut stats = SyncStats::default();
+    let mut seen_keys = Vec::with_capacity(listing.files.len());
+    let mut seen_ids = Vec::with_capacity(listing.files.len());
+    let mut unread: Vec<String> = Vec::new();
+    let mut downloads = 0usize;
+    let mut deferred = 0usize;
+    for f in &listing.files {
+        let key = f.external_key();
+        seen_keys.push(key.clone());
+        seen_ids.push(f.id.clone());
+        let marker = f.marker();
+        if known.get(&f.id) == Some(&marker) {
+            let live = utopia_store::documents::find_by_external_key(&state.pool, source.id, &key)
+                .await?
+                .is_some_and(|d| d.deleted_at.is_none());
+            if live {
+                continue;
+            }
+        }
+        if downloads == google_drive::MAX_DOWNLOADS_PER_SYNC {
+            deferred += 1;
+            continue;
+        }
+        downloads += 1;
+        // 读不出来的文件跳过，库里已有的原样留着，其余照常同步——同 Notion
+        let content = match drive.content(f).await {
+            Ok(c) => c,
+            Err(error) => {
+                tracing::warn!(id = %f.id, error = %format!("{error:#}"), "google drive file could not be read, leaving the stored document as it is");
+                unread.push(format!("{}: {error:#}", f.name));
+                continue;
+            }
+        };
+        let outcome = ingest_item_with_outcome(
+            state,
+            source.kb_id,
+            source.id,
+            &key,
+            Identity::StableId,
+            &content.filename,
+            content.mime,
+            &content.bytes,
+            f.modified,
+        )
+        .await?;
+        google_drive::remember(&state.pool, source.id, &f.id, &marker).await?;
+        stats.absorb(outcome.action);
+    }
+
+    if listing.truncated || !listing.unreachable.is_empty() {
+        utopia_store::documents::clear_missing_keys(&state.pool, source.id, &seen_keys).await?;
+    } else {
+        utopia_store::documents::reconcile_missing(&state.pool, source.id, &seen_keys).await?;
+        google_drive::forget_others(&state.pool, source.id, &seen_ids).await?;
+    }
+
+    let mut gaps: Vec<String> = Vec::new();
+    if !listing.unreachable.is_empty() {
+        gaps.push(format!(
+            "{} selected folder(s) could not be opened (deleted, or no longer shared with the connected account): {}",
+            listing.unreachable.len(),
+            listing.unreachable.join(", ")
+        ));
+    }
+    if !unread.is_empty() {
+        gaps.push(format!(
+            "{} could not be read and keep their stored content: {}",
+            unread.len(),
+            unread
+                .iter()
+                .take(3)
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join("; ")
+        ));
+    }
+    if !listing.broken_shortcuts.is_empty() {
+        gaps.push(format!(
+            "{} shortcut(s) point to files the connected account cannot open: {}",
+            listing.broken_shortcuts.len(),
+            listing
+                .broken_shortcuts
+                .iter()
+                .take(3)
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join("; ")
+        ));
+    }
+    if listing.truncated {
+        gaps.push(
+            "the folders go deeper or hold more files than one walk lists, so the rest were not looked at"
+                .into(),
+        );
+    }
+    if deferred > 0 {
+        gaps.push(format!(
+            "{deferred} more file(s) wait for the next sync (at most {} downloads per run)",
+            google_drive::MAX_DOWNLOADS_PER_SYNC
+        ));
+    }
+    anyhow::ensure!(
+        gaps.is_empty(),
+        "{} file(s) synced; {}",
+        stats.total(),
+        gaps.join("; ")
+    );
+    Ok(stats)
+}
+
 /// 标题无扩展名时按 mime 补一个，接入解析矩阵的分派。
 fn ensure_extension(title: &str, mime: &str) -> String {
     let has_ext = title
@@ -1416,3 +1922,9 @@ mod github_sync_tests;
 #[cfg(test)]
 #[path = "github_repo_sync_tests.rs"]
 mod github_repo_sync_tests;
+#[cfg(test)]
+#[path = "gitlab_issues_sync_tests.rs"]
+mod gitlab_issues_sync_tests;
+#[cfg(test)]
+#[path = "gitlab_repo_sync_tests.rs"]
+mod gitlab_repo_sync_tests;

@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 use pgvector::Vector;
 use serde::Serialize;
 use sqlx::{PgPool, Postgres, Transaction};
-use utopia_core::models::{ChunkView, Document, DocumentPage};
+use utopia_core::models::{ChunkView, Document, DocumentPage, SourcedChunk};
 use utopia_core::{AppError, AppResult};
 use utopia_ingest::ChunkPiece;
 use uuid::Uuid;
@@ -1337,10 +1337,14 @@ async fn restore_tx(
     id: Uuid,
 ) -> AppResult<Document> {
     lock_document_source_tx(tx, id).await?;
-    sqlx::query("SELECT id FROM documents WHERE id = $1 FOR UPDATE")
-        .bind(id)
-        .execute(&mut **tx)
-        .await?;
+    // 文档和这次删除作废的事实共用同一个事务时间，清墓碑前先记住它。
+    let deleted_at = sqlx::query_scalar::<_, Option<DateTime<Utc>>>(
+        "SELECT deleted_at FROM documents WHERE id = $1 FOR UPDATE",
+    )
+    .bind(id)
+    .fetch_optional(&mut **tx)
+    .await?
+    .flatten();
     let row: Option<(Uuid, Vec<Uuid>, Vec<Uuid>)> = sqlx::query_as(
         "SELECT id, invalidated_facts, superseded_chunks FROM document_deletions
           WHERE document_id = $1 AND kb_id = $2 AND reverted_at IS NULL
@@ -1404,12 +1408,13 @@ async fn restore_tx(
     sqlx::query(
         "UPDATE facts SET invalidated_at = NULL
           WHERE invalidated_at IS NOT NULL
-            AND (id = ANY($1) OR (id, invalidated_at) IN
+            AND ((id = ANY($1) AND invalidated_at = $4) OR (id, invalidated_at) IN
                  (SELECT * FROM unnest($2::uuid[], $3::timestamptz[])))",
     )
     .bind(&fact_ids)
     .bind(&shared_ids)
     .bind(&shared_stamps)
+    .bind(deleted_at)
     .execute(&mut **tx)
     .await?;
     let touched: Vec<Uuid> = cited.iter().chain(&restored).copied().collect();
@@ -1670,6 +1675,10 @@ async fn replace_chunks_for_snapshot(
     // 而省掉的是两者里更小的那一半：块的**正文**本来就留着（版本回放要它），
     // 一条 1024 维向量不过几 KB。代价却是历史整段搜不出来——记录轴倒得回去，
     // 检索却只认现在，as-of 检索一开口就是空的。
+    //
+    // 缺省如此。每次同步都整批重推的大库里，3072 维的向量才是大的那一半，部署可以设
+    // `UTOPIA_SUPERSEDED_VECTOR_DAYS`，让 `retention::prune_superseded` 每天清掉被取代
+    // 超过那么多天的向量；行与正文照旧留着（0019 的修订）。
     sqlx::query(
         "UPDATE chunks SET superseded_at = now()
          WHERE document_id = $1 AND superseded_at IS NULL AND NOT (id = ANY($2))",
@@ -1890,12 +1899,16 @@ async fn set_embeddings_for_input(
 /// 次序在外层再排一遍（`vector_index::RESORT`）：`relaxed_order` 下索引给的次序
 /// 只是大致按距离，而距离并列时精确路径和 HNSW 各排各的——同一问两种计划回的
 /// 居首不同（#652）。并列由 id 定
+///
+/// `documents`：只在这些文档的块里找。条件在近邻 CTE 里面，`LIMIT` 数的就只是
+/// 允许的块；放到外层，库里别的块会先占满名额
 pub async fn vector_search(
     pool: &PgPool,
     kb_id: Uuid,
     embedding: &[f32],
     limit: i64,
     as_of: Option<DateTime<Utc>>,
+    documents: Option<&[Uuid]>,
 ) -> AppResult<Vec<Uuid>> {
     let dims = embedding.len();
     if dims == 0 {
@@ -1908,12 +1921,17 @@ pub async fn vector_search(
         "WITH nearest AS MATERIALIZED (
              SELECT id, {distance} AS distance FROM chunks c
              WHERE c.kb_id = $1 AND c.embedding IS NOT NULL AND {live}
-               AND {same_dims}
+               AND {same_dims}{only}
              ORDER BY {distance}
              LIMIT $3
          )
          SELECT id FROM nearest ORDER BY {resort}",
         live = crate::record_axis::chunk_live_at("c", as_of.map(|_| 4)),
+        only = if documents.is_some() {
+            " AND c.document_id = ANY($5)"
+        } else {
+            ""
+        },
         same_dims = crate::vector_index::same_dims("c.embedding", dims),
         distance = crate::vector_index::distance("c.embedding", 2, dims),
         resort = crate::vector_index::RESORT,
@@ -1922,13 +1940,38 @@ pub async fn vector_search(
     .bind(&query_vec)
     .bind(limit)
     .bind(as_of)
+    .bind(documents)
     .fetch_all(&mut *tx)
     .await?;
     tx.commit().await?;
     Ok(rows.into_iter().map(|(id,)| id).collect())
 }
 
-/// 按 id 集合取分块（带文档名），保持传入顺序。
+/// 检索按来源过滤时允许的文档：库里这个来源当时活着的文档，给了 `key_prefix` 就只要
+/// `external_key` 以它开头的。比较用 `starts_with`：路径里的 `_` 和 `%` 进了 LIKE 就是通配符
+pub async fn ids_in_source(
+    pool: &PgPool,
+    kb_id: Uuid,
+    source_id: Uuid,
+    key_prefix: Option<&str>,
+    as_of: Option<DateTime<Utc>>,
+) -> AppResult<Vec<Uuid>> {
+    let rows: Vec<(Uuid,)> = sqlx::query_as(&format!(
+        "SELECT d.id FROM documents d
+         WHERE d.kb_id = $1 AND d.source_id = $2 AND {doc_live}
+           AND ($3::text IS NULL OR starts_with(d.external_key, $3))",
+        doc_live = crate::record_axis::document_live_at("d", as_of.map(|_| 4)),
+    ))
+    .bind(kb_id)
+    .bind(source_id)
+    .bind(key_prefix)
+    .bind(as_of)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
+/// 按 id 集合取分块（带文档名与来源），保持传入顺序。
 ///
 /// `as_of`：记录轴（0019）——那一刻还活着的块、还没被删的文档。文档的删除
 /// 同样是记录轴上的事件（#268 留了墓碑），所以两个条件一起倒。
@@ -1937,10 +1980,12 @@ pub async fn chunks_by_ids(
     kb_id: Uuid,
     ids: &[Uuid],
     as_of: Option<DateTime<Utc>>,
-) -> AppResult<Vec<ChunkView>> {
-    let rows: Vec<ChunkView> = sqlx::query_as(&format!(
-        "SELECT c.id, c.document_id, c.seq, c.text, d.filename
+) -> AppResult<Vec<SourcedChunk>> {
+    let rows: Vec<SourcedChunk> = sqlx::query_as(&format!(
+        "SELECT c.id, c.document_id, c.seq, c.text, d.filename, d.source_id,
+                s.kind AS source_kind, d.external_key
          FROM chunks c JOIN documents d ON d.id = c.document_id
+         LEFT JOIN sources s ON s.id = d.source_id
          WHERE c.kb_id = $1 AND c.id = ANY($2)
            AND {live} AND {doc_live}",
         live = crate::record_axis::chunk_live_at("c", as_of.map(|_| 3)),
@@ -1952,8 +1997,8 @@ pub async fn chunks_by_ids(
     .fetch_all(pool)
     .await?;
     // 恢复 RRF 排名顺序
-    let mut by_id: std::collections::HashMap<Uuid, ChunkView> =
-        rows.into_iter().map(|c| (c.id, c)).collect();
+    let mut by_id: std::collections::HashMap<Uuid, SourcedChunk> =
+        rows.into_iter().map(|c| (c.chunk.id, c)).collect();
     Ok(ids.iter().filter_map(|id| by_id.remove(id)).collect())
 }
 
