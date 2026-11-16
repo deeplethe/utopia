@@ -312,23 +312,9 @@ pub async fn search_chunks(
     let q = args["query"].as_str().unwrap_or_default().to_string();
     // 记录轴（0019 / #347）：只搜那一刻库里有的东西。全文那一路仍是"现在"，
     // 命中不会错但会缺——retrieval.rs 的头上写了
-    let as_of = match args.get("as_of") {
-        None => None,
-        Some(value) => {
-            let Some(at) = value.as_str().and_then(|raw| {
-                super::graph_routes::parse_instant("as_of", Some(raw))
-                    .ok()
-                    .flatten()
-            }) else {
-                return ToolResult::new(
-                    "Invalid `as_of`: expected YYYY-MM-DD or RFC3339. Omit it to search the current knowledge base."
-                        .into(),
-                    Step::new("search", q, "invalid as_of").invalid("as_of").json(),
-                )
-                .error();
-            };
-            Some(at)
-        }
+    let as_of = match parse_when_arg(args, "as_of") {
+        Ok(at) => at,
+        Err(field) => return invalid_when("search", q, field),
     };
     let chunks = match retrieval::hybrid(
         ctx.state,
@@ -1241,8 +1227,10 @@ fn record_stamp(time: chrono::DateTime<chrono::Utc>) -> String {
 /// 严格早于 T，按账本的分辨率（timestamptz 是微秒）：不晚于 T − 1µs。
 /// `recorded_at <= T−1µs` 恰好是 `recorded_at < T`，`invalidated_at > T−1µs` 恰好是
 /// `invalidated_at >= T`——0019 的 held_at 一个字不用改
-pub(super) fn just_before(t: chrono::DateTime<chrono::Utc>) -> chrono::DateTime<chrono::Utc> {
-    t - chrono::Duration::microseconds(1)
+pub(super) fn just_before(
+    t: chrono::DateTime<chrono::Utc>,
+) -> Option<chrono::DateTime<chrono::Utc>> {
+    t.checked_sub_signed(chrono::Duration::microseconds(1))
 }
 
 pub(super) fn entity_facts_detail(
@@ -1265,17 +1253,65 @@ pub(super) fn entity_facts_detail(
     }
 }
 
-/// 时刻参数：`YYYY-MM-DD` 或 RFC3339。`at` 与 `as_of` 共用一个解析——记录轴上的
-/// 时刻常常是一个带时间的戳（"第一波灌完那一刻"），日期粒度装不下它
+/// 时刻参数收 YYYY、YYYY-MM、YYYY-MM-DD 或带时区的钟点，落在所给时段的开头。
 pub(super) fn parse_when(raw: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    use chrono::{DateTime, Utc};
+
     let s = raw.trim();
-    // 完整的 RFC3339 时刻原样收下，小数秒也留着——记录轴上同一秒内可以先录入再更正
-    // （#351），这里截掉一位就把两次认知叠回一起。日期形式（YYYY / YYYY-MM / YYYY-MM-DD，
-    // 或带时区的缩略钟点）才交给抽取端同一个解析，取那一段的开头
-    if let Ok(t) = chrono::DateTime::parse_from_rfc3339(s) {
-        return Some(t.with_timezone(&chrono::Utc));
+    if let Ok(t) = DateTime::parse_from_rfc3339(s) {
+        return Some(t.with_timezone(&Utc));
     }
-    utopia_extract::parse_time(s).map(|(d, _)| d)
+    let Some((date, clock)) = s.split_once(['T', ' ']) else {
+        return utopia_extract::parse_time(s).map(|(d, _)| d);
+    };
+
+    // 抽取允许无时区的钟点退回到当天。历史查询必须有明确时区，交给 RFC3339
+    // 解析器校验补齐后的钟点与偏移，同时保留小时或分钟精度的简写。
+    let (clock, zone) = match clock.strip_suffix(['Z', 'z']) {
+        Some(clock) => (clock, "Z".into()),
+        None => {
+            let (clock, zone) = clock.split_at(clock.rfind(['+', '-'])?);
+            let zone = match zone.as_bytes() {
+                [_, h1, h2] if h1.is_ascii_digit() && h2.is_ascii_digit() => {
+                    format!("{zone}:00")
+                }
+                [_, h1, h2, m1, m2] if [h1, h2, m1, m2].into_iter().all(u8::is_ascii_digit) => {
+                    format!("{}:{}", &zone[..3], &zone[3..])
+                }
+                _ => zone.to_owned(),
+            };
+            (clock, zone)
+        }
+    };
+    let seconds = match clock.len() {
+        2 => ":00:00",
+        5 => ":00",
+        _ => "",
+    };
+    DateTime::parse_from_rfc3339(&format!("{date}T{clock}{seconds}{zone}"))
+        .ok()
+        .map(|t| t.with_timezone(&Utc))
+}
+
+pub(super) fn parse_when_arg(
+    args: &serde_json::Value,
+    field: &'static str,
+) -> Result<Option<chrono::DateTime<chrono::Utc>>, &'static str> {
+    args.get(field)
+        .map(|value| value.as_str().and_then(parse_when).ok_or(field))
+        .transpose()
+}
+
+pub(super) fn invalid_when(
+    kind: &str,
+    label: impl Into<serde_json::Value>,
+    field: &str,
+) -> ToolResult {
+    ToolResult::new(
+        format!("Invalid `{field}`. Expected a string with YYYY, YYYY-MM, YYYY-MM-DD or a time with a time zone."),
+        Step::new(kind, label, format!("invalid {field}")).invalid(field).json(),
+    )
+    .error()
 }
 
 /// 字面值宾语给模型看的样子：`{value, unit}` → "28000 CNY"，布尔 → ✓/✗，
@@ -1452,17 +1488,37 @@ mod tests {
 
     // --- parse_when -------------------------------------------------------------
 
-    /// `at` 与 `as_of` 共用一个解析：日期按当天零点，RFC3339 原样；别的一律 None，
-    /// 不猜——猜出来的时刻会安静地把问题答到另一天上
+    /// 日期从当天零点起算，钟点必须带时区，完整时间戳保留精度。
     #[test]
-    fn a_moment_is_a_date_or_an_rfc3339_stamp_and_nothing_else() {
+    fn moments_accept_calendar_dates_and_zoned_times() {
         assert_eq!(parse_when("2024-08-01"), Some(t("2024-08-01T00:00:00Z")));
         assert_eq!(
             parse_when(" 2026-09-05T02:43:24.197Z "),
             Some(t("2026-09-05T02:43:24.197Z"))
         );
-        assert_eq!(parse_when("August 2024"), None);
-        assert_eq!(parse_when(""), None);
+        assert_eq!(parse_when("2023"), Some(t("2023-01-01T00:00:00Z")));
+        assert_eq!(parse_when("2023-06"), Some(t("2023-06-01T00:00:00Z")));
+        assert_eq!(
+            parse_when("2026-09-05T02Z"),
+            Some(t("2026-09-05T02:00:00Z"))
+        );
+        assert_eq!(
+            parse_when("2026-09-05 04:43+0200"),
+            Some(t("2026-09-05T02:43:00Z"))
+        );
+        for malformed in [
+            "August 2024",
+            "2025-02-30",
+            "2026-09-05T02:43",
+            "2026-09-05 garbage",
+            "2026-09-05T26:43Z",
+            "2026-09-05T02:43+02:99",
+            "2026-09-05T02:43+0x2",
+            "2026-09-05T02:43:24.invalidZ",
+            "",
+        ] {
+            assert_eq!(parse_when(malformed), None, "{malformed}");
+        }
     }
 
     // --- changes_window -----------------------------------------------------
@@ -1545,9 +1601,6 @@ mod tests {
         assert_eq!(period_last_day(d("2024-02-01"), "month"), d("2024-02-29"));
         assert_eq!(period_last_day(d("2023-12-01"), "month"), d("2023-12-31"));
         assert_eq!(period_last_day(d("2023-06-15"), "day"), d("2023-06-15"));
-        // parse_when 与 at 同一种写法
-        assert_eq!(parse_when("2023"), Some(t("2023-01-01T00:00:00Z")));
-        assert_eq!(parse_when("2023-06"), Some(t("2023-06-01T00:00:00Z")));
     }
 
     fn change(kind: &str) -> GraphChange {
@@ -1598,14 +1651,15 @@ mod tests {
     #[test]
     fn before_is_the_microsecond_before_at_the_ledgers_resolution() {
         let t0 = t("2026-09-05T02:43:53.382Z");
-        assert_eq!(just_before(t0), t("2026-09-05T02:43:53.381999Z"));
+        assert_eq!(just_before(chrono::DateTime::<chrono::Utc>::MIN_UTC), None);
+        assert_eq!(just_before(t0), Some(t("2026-09-05T02:43:53.381999Z")));
         assert_eq!(
             just_before(t("2026-09-05T02:43:53Z")),
-            t("2026-09-05T02:43:52.999999Z"),
+            Some(t("2026-09-05T02:43:52.999999Z")),
             "小数为零要向秒借位——正是不该让模型算的那一步"
         );
         assert_eq!(
-            entity_facts_detail(2, None, Some(just_before(t0)), Some(t0)),
+            entity_facts_detail(2, None, just_before(t0), Some(t0)),
             "2 facts as recorded before 2026-09-05T02:43:53.382Z"
         );
     }

@@ -12,8 +12,8 @@
 //! 写在结果最上面，模型不同意就拿 id 再来一次。
 
 use super::tools::{
-    entity_facts_detail, fact_line, just_before, literal_text, page_offset, parse_when, Step,
-    ToolCtx, ToolResult, ToolSink,
+    entity_facts_detail, fact_line, invalid_when, just_before, literal_text, page_offset,
+    parse_when_arg, Step, ToolCtx, ToolResult, ToolSink,
 };
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -180,14 +180,15 @@ struct Moments {
     before: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-fn moments(args: &Value) -> Moments {
-    let at = args["at"].as_str().and_then(parse_when);
-    let before = args["before"].as_str().and_then(parse_when);
+fn moments(args: &Value) -> Result<Moments, &'static str> {
+    let at = parse_when_arg(args, "at")?;
+    let before = parse_when_arg(args, "before")?;
+    let as_of = parse_when_arg(args, "as_of")?;
     let as_of = match before {
-        Some(t) => Some(just_before(t)),
-        None => args["as_of"].as_str().and_then(parse_when),
+        Some(t) => Some(just_before(t).ok_or("before")?),
+        None => as_of,
     };
-    Moments { at, as_of, before }
+    Ok(Moments { at, as_of, before })
 }
 
 fn limit_of(args: &Value, default: usize) -> usize {
@@ -634,15 +635,15 @@ struct FactFilter<'a> {
 }
 
 impl FactFilter<'_> {
-    fn from_args(args: &Value) -> FactFilter<'_> {
-        FactFilter {
+    fn from_args(args: &Value) -> Result<FactFilter<'_>, &'static str> {
+        Ok(FactFilter {
             predicate: args["predicate"].as_str().filter(|s| !s.trim().is_empty()),
             object_type: args["object_type"]
                 .as_str()
                 .filter(|s| !s.trim().is_empty()),
-            since: args["since"].as_str().and_then(parse_when),
-            until: args["until"].as_str().and_then(parse_when),
-        }
+            since: parse_when_arg(args, "since")?,
+            until: parse_when_arg(args, "until")?,
+        })
     }
 
     fn narrows(&self) -> bool {
@@ -680,6 +681,10 @@ impl FactFilter<'_> {
     }
 }
 
+fn fact_query_options(args: &Value) -> Result<(Moments, FactFilter<'_>), &'static str> {
+    Ok((moments(args)?, FactFilter::from_args(args)?))
+}
+
 pub async fn entity_facts(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) -> ToolResult {
     let offset = match page_offset(args, "facts") {
         Ok(offset) => offset,
@@ -689,6 +694,10 @@ pub async fn entity_facts(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) 
         .as_str()
         .or_else(|| args["entity"].as_str())
         .unwrap_or("");
+    let (m, filter) = match fact_query_options(args) {
+        Ok(options) => options,
+        Err(field) => return invalid_when("facts", "?", field),
+    };
     let who = match resolve(ctx, sink, raw).await {
         Ok(r) => r,
         Err(ResolveError::ReadFailed) => {
@@ -710,8 +719,6 @@ pub async fn entity_facts(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) 
             .error()
         }
     };
-    let m = moments(args);
-    let filter = FactFilter::from_args(args);
     let limit = limit_of(args, FACTS_DEFAULT);
     let (node, facts) =
         match utopia_store::graph::entity_detail(&ctx.state.pool, ctx.kb_id, who.id, m.at, m.as_of)
@@ -904,6 +911,10 @@ pub async fn neighbors(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) -> 
         .as_str()
         .or_else(|| args["entity_id"].as_str())
         .unwrap_or("");
+    let (m, filter) = match fact_query_options(args) {
+        Ok(options) => options,
+        Err(field) => return invalid_when("neighbors", "?", field),
+    };
     let who = match resolve(ctx, sink, raw).await {
         Ok(r) => r,
         Err(ResolveError::ReadFailed) => {
@@ -924,8 +935,6 @@ pub async fn neighbors(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) -> 
             )
         }
     };
-    let m = moments(args);
-    let filter = FactFilter::from_args(args);
     let limit = limit_of(args, NEIGHBORS_DEFAULT);
     let (node, facts) =
         match utopia_store::graph::entity_detail(&ctx.state.pool, ctx.kb_id, who.id, m.at, m.as_of)
@@ -1046,6 +1055,10 @@ pub async fn timeline(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) -> T
         .as_str()
         .or_else(|| args["entity_id"].as_str())
         .unwrap_or("");
+    let (m, filter) = match fact_query_options(args) {
+        Ok(options) => options,
+        Err(field) => return invalid_when("timeline", "?", field),
+    };
     let who = match resolve(ctx, sink, raw).await {
         Ok(r) => r,
         Err(ResolveError::ReadFailed) => {
@@ -1064,8 +1077,6 @@ pub async fn timeline(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) -> T
             )
         }
     };
-    let m = moments(args);
-    let filter = FactFilter::from_args(args);
     let limit = limit_of(args, TIMELINE_DEFAULT);
     let (node, facts) =
         match utopia_store::graph::entity_detail(&ctx.state.pool, ctx.kb_id, who.id, None, m.as_of)
@@ -1229,6 +1240,10 @@ fn name_on_path(p: &Path, id: Uuid) -> Option<&str> {
 }
 
 pub async fn paths_between(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) -> ToolResult {
+    let m = match moments(args) {
+        Ok(m) => m,
+        Err(field) => return invalid_when("path", "?", field),
+    };
     let mut notes = Vec::new();
     let mut ends = Vec::new();
     for key in ["from", "to"] {
@@ -1256,7 +1271,6 @@ pub async fn paths_between(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value)
             }
         }
     }
-    let m = moments(args);
     let max_hops = args["max_hops"]
         .as_u64()
         .map(|n| n as usize)
