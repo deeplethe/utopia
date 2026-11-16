@@ -22,8 +22,8 @@ carries its history as dated declarative sentences and a `## History` list; GitH
 per ticket; timestamps are written to the second [0013]. A GitLab ticket (gitlab.com; self-managed
 is not verified) is an issue or, when switched on, a merge request: its history comes from
 resource events and not from system notes, a token is required because notes and events answer 401
-without one, and the two lists share one checkpoint, which stops where the earlier of them stopped
-[0013, #1327]. A GitHub repository file is one document
+without one, confidential issues are skipped because a base's every viewer would read them, and the
+two lists share one checkpoint, which stops where the earlier of them stopped [0013, #1327]. A GitHub repository file is one document
 keyed by its path and dated by the last commit that touched it; a file whose blob SHA has not
 changed is not fetched again, and identical files at several paths go in once [#1303]. A GitLab project file
 (gitlab.com; self-managed is not verified) takes the same shape; its tree is paged, so a tree that

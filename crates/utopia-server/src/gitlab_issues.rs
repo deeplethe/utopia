@@ -18,6 +18,10 @@
 //! - **备注与事件没有令牌就是 401**，公开项目也一样（2026-10-22 与 2026-11-14 在
 //!   gitlab.com 上核对过）。所以这个来源要令牌，没有就直说，不去发那个注定失败的请求。
 //!
+//! - **机密工单不收。** 令牌够权限时，列表也会给出 `confidential` 的工单，公开项目里也有；
+//!   收进来就成了库里每个读者都能看的文档。所以列表照读（checkpoint 与复读核对不变），
+//!   机密的那几张不写、也不去读它的评论与事件。
+//!
 //! 自建 GitLab 没有验证过。
 
 use chrono::{DateTime, Utc};
@@ -73,6 +77,9 @@ pub struct Item {
     #[serde(default)]
     pub assignees: Vec<User>,
     pub author: Option<User>,
+    /// 只有工单有；合并请求没有这个字段，读作 false
+    #[serde(default)]
+    pub confidential: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -324,7 +331,7 @@ pub async fn fetch_window(
         tickets.extend(
             pass.items
                 .into_iter()
-                .filter(|item| within(item.updated_at))
+                .filter(|item| within(item.updated_at) && !item.confidential)
                 .map(|item| (*kind, item)),
         );
     }
@@ -581,6 +588,22 @@ mod tests {
         let third = window(&server, Some("2026-01-02T03:00:00Z"), 200).await?;
         assert!(third.tickets.is_empty());
         assert_eq!(third.checkpoint, second.checkpoint);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_confidential_issue_is_not_written_but_the_checkpoint_moves_past_it(
+    ) -> anyhow::Result<()> {
+        let mut secret = row(2, "2026-01-02T02:00:00Z");
+        secret["confidential"] = json!(true);
+        let server = server(
+            vec![row(1, "2026-01-02T01:00:00Z"), secret],
+            vec![row(1, "2026-01-02T00:30:00Z")],
+        )
+        .await;
+        let w = window(&server, None, 200).await?;
+        assert_eq!(listed(&w), ["#1", "!1"]);
+        assert_eq!(w.checkpoint, Some("2026-01-02T02:00:00Z".parse().unwrap()));
         Ok(())
     }
 
