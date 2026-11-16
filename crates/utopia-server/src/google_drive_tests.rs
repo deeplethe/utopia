@@ -50,6 +50,142 @@ async fn mount_children(server: &MockServer, parent: &str, files: serde_json::Va
         .await;
 }
 
+#[tokio::test]
+async fn a_drive_copy_keeps_the_original_files_document_identity() -> anyhow::Result<()> {
+    use crate::{ingest_sources::sync_google_drive_with_client, state::AppState};
+    use std::sync::Arc;
+    use utopia_store::documents;
+    use uuid::Uuid;
+
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = sqlx::PgPool::connect(&url).await?;
+    let (org, ws, kb, source_id) = (
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+    );
+    let result = async {
+        sqlx::raw_sql(&format!(
+            "INSERT INTO organizations(id,name) VALUES ('{org}','drive-copy-test');
+             INSERT INTO workspaces(id,org_id,name) VALUES ('{ws}','{org}','drive-copy-test');
+             INSERT INTO knowledge_bases(id,workspace_id,name) VALUES ('{kb}','{ws}','drive-copy-test');
+             INSERT INTO sources(id,kb_id,kind,name) VALUES ('{source_id}','{kb}','google_drive','Drive');"
+        ))
+        .execute(&pool)
+        .await?;
+        let source = utopia_store::sources::get(&pool, source_id).await?;
+        let dir = tempfile::tempdir()?;
+        let config = utopia_core::config::AppConfig {
+            data_dir: dir.path().to_string_lossy().into_owned(),
+            ..Default::default()
+        };
+        let search = Arc::new(utopia_search::SearchIndex::open(&dir.path().join("search"))?);
+        let state = AppState::new(pool.clone(), &config, search, "test-only".into());
+
+        const ORIGINAL: &str = "first content";
+        const EDITED: &str = "changed copy";
+        const ORIGINAL_MD5: &str = "129a8c30e1c3ad89d2635f8abdfdb50b";
+        const EDITED_MD5: &str = "7ddb98a79fa72c7232cd690ea1201dd5";
+        let file = |id: &str, name: &str, content: &str, checksum: &str| {
+            json!({"id": id, "name": name, "mimeType": "text/plain",
+                   "size": content.len().to_string(), "md5Checksum": checksum})
+        };
+        let server = MockServer::start().await;
+        let drive = drive(&server);
+        let folders = ["chosen".into()];
+        let round = |files: Vec<(serde_json::Value, &'static str)>| {
+            let server = &server;
+            async move {
+                server.reset().await;
+                mount_folder(server, "chosen", false).await;
+                let metadata: Vec<_> = files.iter().map(|(item, _)| item).collect();
+                mount_children(server, "chosen", json!(metadata)).await;
+                for (item, content) in files {
+                    Mock::given(method("GET"))
+                        .and(path(format!("/files/{}", item["id"].as_str().unwrap())))
+                        .and(query_param("alt", "media"))
+                        .respond_with(ResponseTemplate::new(200).set_body_string(content))
+                        .mount(server)
+                        .await;
+                }
+            }
+        };
+        let a = || (file("a", "a.txt", ORIGINAL, ORIGINAL_MD5), ORIGINAL);
+        let b = || (file("b", "b.txt", EDITED, EDITED_MD5), EDITED);
+        let sync = || sync_google_drive_with_client(&state, &source, &drive, &folders);
+
+        round(vec![a()]).await;
+        sync().await?;
+        let original = documents::find_by_external_key(&pool, source_id, "gdrive://a")
+            .await?
+            .context("the first sync did not store a.txt")?;
+        let versions = || async {
+            Ok::<_, utopia_core::AppError>(documents::versions(&pool, original.id)
+                .await?
+                .into_iter()
+                .map(|v| (v.version, v.sha256, v.size_bytes, v.ingested_at))
+                .collect::<Vec<_>>())
+        };
+        let original_versions = versions().await?;
+        anyhow::ensure!(original_versions.len() == 1);
+
+        let original_stays = async |missing: bool| {
+            let kept = documents::find_in_kb(&pool, kb, original.id)
+                .await?
+                .context("the original document disappeared")?;
+            anyhow::ensure!(
+                kept.external_key.as_deref() == Some("gdrive://a") && kept.filename == "a.txt",
+                "copy took the original document: key {:?}, filename {:?}",
+                kept.external_key,
+                kept.filename
+            );
+            anyhow::ensure!(kept.sha256 == original.sha256 && versions().await? == original_versions);
+            anyhow::ensure!(kept.missing_since.is_some() == missing);
+            anyhow::Ok(())
+        };
+
+        // Listing A first keeps this a reproduction of the unchanged-file fast path.
+        round(vec![a(), (file("b", "b.txt", ORIGINAL, ORIGINAL_MD5), ORIGINAL)]).await;
+        sync().await?;
+        original_stays(false).await?;
+        anyhow::ensure!(documents::find_by_external_key(&pool, source_id, "gdrive://b").await?.is_none());
+
+        round(vec![a(), b()]).await;
+        sync().await?;
+        let copy = documents::find_by_external_key(&pool, source_id, "gdrive://b")
+            .await?
+            .context("the edited copy should now be its own document")?;
+        anyhow::ensure!(copy.id != original.id && copy.filename == "b.txt");
+        anyhow::ensure!(state.blob.get(&copy.sha256).await? == EDITED.as_bytes());
+        original_stays(false).await?;
+
+        // Absence in a complete walk is not permission to reuse a different Drive file ID.
+        round(vec![b()]).await;
+        sync().await?;
+        original_stays(true).await?;
+
+        round(vec![b(), (file("c", "c.txt", ORIGINAL, ORIGINAL_MD5), ORIGINAL)]).await;
+        sync().await?;
+        original_stays(true).await?;
+        anyhow::ensure!(documents::find_by_external_key(&pool, source_id, "gdrive://c").await?.is_none());
+        anyhow::Ok(())
+    }
+    .await;
+
+    sqlx::query("DELETE FROM knowledge_bases WHERE id = $1")
+        .bind(kb)
+        .execute(&pool)
+        .await?;
+    sqlx::query("DELETE FROM organizations WHERE id = $1")
+        .bind(org)
+        .execute(&pool)
+        .await?;
+    result
+}
+
 /// Google 签的 ID token 一小时后过期；没写 `exp` 的按刚签发算
 fn id_token(mut claims: serde_json::Value) -> String {
     if claims.get("exp").is_none() {
