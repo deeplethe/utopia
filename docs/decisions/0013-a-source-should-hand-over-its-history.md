@@ -41,6 +41,16 @@ Wikipedia; there revisions have to be sampled, an issue tracker hands the events
    omit `comment` and no comments come back; list nothing and one response runs to hundreds
    of KB. `expand=changelog` returns the field-level history in one call.
 
+   *Revised 2026-11-16 (#1484):* that bound was written from the UTC checkpoint, but a quoted
+   JQL time has no zone, and Jira reads it in the time zone of the account running the search
+   (an anonymous search in the site's default zone), not UTC: a UTC-5 account skipped five
+   hours of updates. The bound is now epoch milliseconds, `updated >= 1788093296789`, which
+   Jira reads as an instant whoever searches, to the millisecond. Checked anonymously against
+   `hibernate.atlassian.net` (Cloud, which reads quoted times at -0800 while `serverInfo`
+   reports `Etc/UTC`, so that is no guide to the zone) and `jira.mongodb.org` (Server). A
+   relative `-Nm` bound avoids the zone too but moves on every page, which breaks the re-read
+   check (#1415).
+
 4. **Fixtures come from real responses.** Hand-written JSON only proves that the shape I
    imagined parses. Both fixtures come from publicly readable instances (`deeplethe/utopia`,
    `issues.apache.org`), trimmed to the declared fields — the trimming itself shows that

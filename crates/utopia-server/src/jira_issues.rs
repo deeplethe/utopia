@@ -27,9 +27,9 @@
 //!
 //! ## 增量靠 JQL，不靠 since 参数
 //!
-//! Jira 没有 `since`，但 JQL 能表达：`updated >= "2026-08-30 12:00"`。
-//! 时间格式必须是 Jira 认的那种（不是 RFC3339），且**要带引号**——
-//! 这两点写错的症状都是 400，而不是"查不到"。
+//! Jira 没有 `since`，但 JQL 能表达：`updated >= 1788093296789`。
+//! 下界写成 epoch 毫秒，不写 `"yyyy-MM-dd HH:mm"`：那种钟点不带时区，
+//! Jira 按发起搜索的账户的时区读它（见 [`jql`]）。
 //!
 //! ## Server/DC 与 Cloud 的差别
 //!
@@ -259,15 +259,17 @@ pub fn render(issue: &Issue) -> String {
     })
 }
 
-/// 增量用的 JQL。**时间格式是 Jira 自己的**（`yyyy-MM-dd HH:mm`），不是 RFC3339，
-/// 而且要带引号——两点写错的症状都是 400，不是"查不到"。
+/// 增量用的 JQL。下界写成 **epoch 毫秒**，不写 Jira 的钟点格式 `"yyyy-MM-dd HH:mm"`。
+///
+/// 钟点不带时区，Jira 按**发起搜索的账户**的时区读它（匿名按站点的默认时区），
+/// 不是 UTC：UTC-5 的账户把 UTC 的 12:34 读成当地 12:34，即 UTC 17:34，中间五小时的
+/// 更新再也读不到（#1484）。整数 Jira 读成一个时刻，与谁在搜无关，也到毫秒，
+/// 不必再按分钟取整。相对时间（`-90m`）也绕得开时区，但每翻一页都按 Jira 的此刻
+/// 重算，下界在动，[`fetch_window`] 的复读校验就过不了（#1415）。
 pub fn jql(project: &str, since: Option<DateTime<Utc>>) -> String {
     let mut q = format!("project = {project}");
     if let Some(t) = since {
-        q.push_str(&format!(
-            " AND updated >= \"{}\"",
-            t.format("%Y-%m-%d %H:%M")
-        ));
+        q.push_str(&format!(" AND updated >= {}", t.timestamp_millis()));
     }
     q.push_str(" ORDER BY updated ASC, key ASC");
     q
@@ -398,7 +400,7 @@ async fn fetch_window_pass(
             if stop_after.is_some_and(|boundary| updated > boundary) {
                 return Ok((window, positions));
             }
-            // 分钟取整返回的旧记录也可能改变 offset，复读时不能只比较新记录。
+            // 与检查点同一毫秒的旧记录也会返回，也可能改变 offset，复读时不能只比较新记录。
             anyhow::ensure!(
                 positions.insert(issue.key.clone(), updated).is_none(),
                 "Jira issue repeated during pagination; retry the previous checkpoint"
@@ -679,12 +681,13 @@ mod tests {
             assert_eq!(next.issues[0].key, format!("X-{}", group_size + 1));
             assert_eq!(next.checkpoint, Some(later_time.parse().unwrap()));
             let requests = server.received_requests().await.unwrap();
+            // group_time 2026-01-02T12:34:56Z 的毫秒
             assert!(requests.iter().any(|request| {
                 requested_offset(request) == 10 * page_size
                     && request.url.query_pairs().any(|(key, value)| {
                         key == "jql"
                     && value
-                        == "project = X AND updated >= \"2026-01-02 12:34\" ORDER BY updated ASC, key ASC"
+                        == "project = X AND updated >= 1767357296000 ORDER BY updated ASC, key ASC"
                     })
             }));
         }
@@ -887,15 +890,15 @@ mod tests {
         assert_eq!(t2.0.format("%Y-%m-%d").to_string(), "2026-08-24");
     }
 
-    /// JQL 的时间格式与引号：两点写错都报 400，而不是"查不到"。
+    /// 下界是 epoch 毫秒：钟点不带时区，Jira 按账户时区读，UTC-5 的账户会跳过五小时的更新。
     #[test]
-    fn the_incremental_jql_uses_jiras_own_time_format() {
-        let t = DateTime::parse_from_rfc3339("2026-08-30T12:34:56Z")
+    fn the_incremental_jql_bounds_by_epoch_milliseconds() {
+        let t = DateTime::parse_from_rfc3339("2026-08-30T12:34:56.789Z")
             .unwrap()
             .with_timezone(&Utc);
         assert_eq!(
             jql("KAFKA", Some(t)),
-            "project = KAFKA AND updated >= \"2026-08-30 12:34\" ORDER BY updated ASC, key ASC"
+            "project = KAFKA AND updated >= 1788093296789 ORDER BY updated ASC, key ASC"
         );
         assert_eq!(
             jql("KAFKA", None),

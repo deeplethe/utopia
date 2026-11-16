@@ -254,10 +254,10 @@ async fn large_group_progress(provider: Provider, group_size: usize) -> anyhow::
                 && (time(&value) == time(FIRST)
                     || time(&value) == time(FIRST) + chrono::Duration::seconds(1))
         }),
-        Provider::Jira => request
-            .url
-            .query_pairs()
-            .any(|(key, value)| key == "jql" && value.contains("2026-01-02 12:34")),
+        Provider::Jira => request.url.query_pairs().any(|(key, value)| {
+            key == "jql"
+                && value.contains(&format!("updated >= {}", time(FIRST).timestamp_millis()))
+        }),
     });
     assert!(
         incremental,
@@ -272,7 +272,7 @@ async fn github_imports_1001_equal_time_items_then_skips_the_old_prefix() -> any
 }
 
 #[tokio::test]
-async fn jira_imports_501_equal_time_items_then_skips_the_rounded_prefix() -> anyhow::Result<()> {
+async fn jira_imports_501_equal_time_items_then_skips_the_old_prefix() -> anyhow::Result<()> {
     large_group_progress(Provider::Jira, 501).await
 }
 
