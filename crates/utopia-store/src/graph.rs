@@ -1261,19 +1261,21 @@ pub async fn add_evidence_located(
     let mut tx = pool.begin().await?;
     let mut target = fact_id;
     loop {
-        let live: Option<bool> =
-            sqlx::query_scalar("SELECT invalidated_at IS NULL FROM facts WHERE id = $1 FOR SHARE")
-                .bind(target)
-                .fetch_optional(&mut *tx)
-                .await?;
-        if live != Some(false) {
+        let Some((kb_id, false)) = sqlx::query_as::<_, (Uuid, bool)>(
+            "SELECT kb_id, invalidated_at IS NULL FROM facts WHERE id = $1 FOR SHARE",
+        )
+        .bind(target)
+        .fetch_optional(&mut *tx)
+        .await?
+        else {
             break;
-        }
+        };
         let next: Option<Uuid> = sqlx::query_scalar(
-            "SELECT id FROM facts WHERE supersedes = $1
+            "SELECT id FROM facts WHERE supersedes = $1 AND kb_id = $2
               ORDER BY invalidated_at IS NULL DESC, recorded_at DESC LIMIT 1",
         )
         .bind(target)
+        .bind(kb_id)
         .fetch_optional(&mut *tx)
         .await?;
         match next {

@@ -2467,17 +2467,19 @@ struct MergeRow {
 /// 搬过的事实，连同从它们改写出来的每一行（顺着 supersedes 往下走到底，作废的也算）
 async fn with_rewrites(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    kb_id: Uuid,
     roots: &[Uuid],
 ) -> AppResult<Vec<Uuid>> {
     Ok(sqlx::query_scalar(
         "WITH RECURSIVE chain(id) AS (
              SELECT unnest($1::uuid[])
              UNION
-             SELECT f.id FROM facts f JOIN chain c ON f.supersedes = c.id
+             SELECT f.id FROM facts f JOIN chain c ON f.supersedes = c.id AND f.kb_id = $2
          )
          SELECT id FROM chain",
     )
     .bind(roots)
+    .bind(kb_id)
     .fetch_all(&mut **tx)
     .await?)
 }
@@ -2525,10 +2527,10 @@ pub async fn revert_merge(pool: &PgPool, kb_id: Uuid, merge_id: Uuid) -> AppResu
     .bind(m.target_id)
     .fetch_all(&mut *tx)
     .await?;
-    let touched: Vec<Uuid> = with_rewrites(&mut tx, &m.moved_subject_facts)
+    let touched: Vec<Uuid> = with_rewrites(&mut tx, kb_id, &m.moved_subject_facts)
         .await?
         .into_iter()
-        .chain(with_rewrites(&mut tx, &m.moved_object_facts).await?)
+        .chain(with_rewrites(&mut tx, kb_id, &m.moved_object_facts).await?)
         .chain(m.invalidated_facts.iter().copied())
         .collect();
     let timelines =
@@ -2536,8 +2538,8 @@ pub async fn revert_merge(pool: &PgPool, kb_id: Uuid, merge_id: Uuid) -> AppResu
             .await?;
     crate::temporal::lock_timelines(&mut tx, kb_id, &timelines).await?;
     // 锁上之后再走一遍：等锁的时候，引擎可能刚从它们改写出新的一行
-    let subject_rows = with_rewrites(&mut tx, &m.moved_subject_facts).await?;
-    let object_rows = with_rewrites(&mut tx, &m.moved_object_facts).await?;
+    let subject_rows = with_rewrites(&mut tx, kb_id, &m.moved_subject_facts).await?;
+    let object_rows = with_rewrites(&mut tx, kb_id, &m.moved_object_facts).await?;
 
     sqlx::query("UPDATE facts SET subject_id = $1 WHERE id = ANY($2) AND subject_id = ANY($3)")
         .bind(m.source_id)
@@ -2582,13 +2584,14 @@ pub async fn revert_merge(pool: &PgPool, kb_id: Uuid, merge_id: Uuid) -> AppResu
         "WITH RECURSIVE chain(fact_id, chunk_id) AS (
              SELECT * FROM unnest($1::uuid[], $2::uuid[])
              UNION
-             SELECT f.id, c.chunk_id FROM facts f JOIN chain c ON f.supersedes = c.fact_id
+             SELECT f.id, c.chunk_id FROM facts f JOIN chain c ON f.supersedes = c.fact_id AND f.kb_id = $3
          )
          DELETE FROM fact_evidence fe USING chain c
           WHERE fe.fact_id = c.fact_id AND fe.chunk_id = c.chunk_id",
     )
     .bind(&m.copied_evidence_facts)
     .bind(&m.copied_evidence_chunks)
+    .bind(kb_id)
     .execute(&mut *tx)
     .await?;
     sqlx::query("UPDATE facts SET invalidated_at = NULL WHERE id = ANY($1)")
