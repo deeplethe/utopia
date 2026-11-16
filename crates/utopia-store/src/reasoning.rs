@@ -798,8 +798,9 @@ pub async fn open_violations(
     limit: i64,
     offset: i64,
 ) -> AppResult<Vec<AxiomViolation>> {
+    // 让路径按事实 ID 查三元组，避免每条路径都扫描物化后的全库三元组。
     Ok(sqlx::query_as(&format!(
-        "WITH triple AS (
+        "WITH triple AS NOT MATERIALIZED (
              SELECT f.id,
                     s.canonical_name || ' · '
                       || COALESCE(r.label, fact_surface_predicate(f.id), '?') || ' · '
