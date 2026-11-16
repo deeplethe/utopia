@@ -893,6 +893,9 @@ export const en = {
     button: "Search",
     searching: "Searching…",
     noResults: "No results found",
+    previousPage: "Previous page",
+    nextPage: "Next page",
+    retry: "Retry search",
     chunkOf: (filename: string, seq: number) => `${filename} · section ${seq}`,
   },
   ask: {
@@ -1413,6 +1416,8 @@ export const en = {
     save: "Save",
     saving: "Saving…",
     saved: "Saved",
+    savedRefreshFailed: "Saved, but the latest settings could not be loaded.",
+    reloadSettings: "Reload settings",
     test: "Test connection",
     testing: "Testing…",
     chatLabel: "Chat",
@@ -2537,6 +2542,8 @@ export const en = {
     auditUntil: "Up to this date",
     auditClear: "Clear filters",
     auditTotal: (n: number) => `${n} events`,
+    activityLoadError: "Could not load the activity log.",
+    activityRetry: "Retry",
     activityEmpty: "Nothing recorded yet.",
     deletedUser: "a removed user",
     // actor_id 为空的两种引擎动作：审阅队列里的自动裁决，和其余后台工作

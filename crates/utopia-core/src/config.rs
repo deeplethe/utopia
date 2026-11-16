@@ -46,6 +46,10 @@ pub struct AppConfig {
     /// `UTOPIA_OIDC_ALLOWED_DOMAINS` 自动开户）；打开就是身份提供方出事时的后门。
     /// `UTOPIA_PASSWORD_LOGIN`
     pub password_login: bool,
+    /// 被取代的分块把向量留几天。缺省不设：向量一直留着（0019 开放问题②），as-of 的
+    /// 向量检索倒回多久都找得到。设了之后每天清一次，行与正文不动。取值收在 1 到 3650
+    /// 之间（`retention::window`）。`UTOPIA_SUPERSEDED_VECTOR_DAYS`
+    pub superseded_vector_days: Option<i64>,
 }
 
 impl Default for AppConfig {
@@ -64,6 +68,7 @@ impl Default for AppConfig {
             cookie_secure: false,
             open_registration: true,
             password_login: true,
+            superseded_vector_days: None,
         }
     }
 }
@@ -184,9 +189,11 @@ mod tests {
         Jail::expect_with(|jail| {
             jail.set_env("UTOPIA_DB_MAX_CONNECTIONS", "");
             jail.set_env("UTOPIA_COOKIE_SECURE", "");
+            jail.set_env("UTOPIA_SUPERSEDED_VECTOR_DAYS", "");
             let cfg = AppConfig::load().unwrap();
             assert_eq!(cfg.db_max_connections, None);
             assert!(!cfg.cookie_secure);
+            assert_eq!(cfg.superseded_vector_days, None);
             Ok(())
         });
     }
@@ -197,9 +204,11 @@ mod tests {
         Jail::expect_with(|jail| {
             jail.set_env("UTOPIA_DB_MAX_CONNECTIONS", "8");
             jail.set_env("UTOPIA_COOKIE_SECURE", "true");
+            jail.set_env("UTOPIA_SUPERSEDED_VECTOR_DAYS", "30");
             let cfg = AppConfig::load().unwrap();
             assert_eq!(cfg.db_max_connections, Some(8));
             assert!(cfg.cookie_secure);
+            assert_eq!(cfg.superseded_vector_days, Some(30));
             Ok(())
         });
     }
