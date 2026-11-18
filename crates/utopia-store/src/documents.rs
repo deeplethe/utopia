@@ -1337,10 +1337,14 @@ async fn restore_tx(
     id: Uuid,
 ) -> AppResult<Document> {
     lock_document_source_tx(tx, id).await?;
-    sqlx::query("SELECT id FROM documents WHERE id = $1 FOR UPDATE")
-        .bind(id)
-        .execute(&mut **tx)
-        .await?;
+    // 文档和这次删除作废的事实共用同一个事务时间，清墓碑前先记住它。
+    let deleted_at = sqlx::query_scalar::<_, Option<DateTime<Utc>>>(
+        "SELECT deleted_at FROM documents WHERE id = $1 FOR UPDATE",
+    )
+    .bind(id)
+    .fetch_optional(&mut **tx)
+    .await?
+    .flatten();
     let row: Option<(Uuid, Vec<Uuid>, Vec<Uuid>)> = sqlx::query_as(
         "SELECT id, invalidated_facts, superseded_chunks FROM document_deletions
           WHERE document_id = $1 AND kb_id = $2 AND reverted_at IS NULL
@@ -1404,12 +1408,13 @@ async fn restore_tx(
     sqlx::query(
         "UPDATE facts SET invalidated_at = NULL
           WHERE invalidated_at IS NOT NULL
-            AND (id = ANY($1) OR (id, invalidated_at) IN
+            AND ((id = ANY($1) AND invalidated_at = $4) OR (id, invalidated_at) IN
                  (SELECT * FROM unnest($2::uuid[], $3::timestamptz[])))",
     )
     .bind(&fact_ids)
     .bind(&shared_ids)
     .bind(&shared_stamps)
+    .bind(deleted_at)
     .execute(&mut **tx)
     .await?;
     let touched: Vec<Uuid> = cited.iter().chain(&restored).copied().collect();
@@ -1670,6 +1675,10 @@ async fn replace_chunks_for_snapshot(
     // 而省掉的是两者里更小的那一半：块的**正文**本来就留着（版本回放要它），
     // 一条 1024 维向量不过几 KB。代价却是历史整段搜不出来——记录轴倒得回去，
     // 检索却只认现在，as-of 检索一开口就是空的。
+    //
+    // 缺省如此。每次同步都整批重推的大库里，3072 维的向量才是大的那一半，部署可以设
+    // `UTOPIA_SUPERSEDED_VECTOR_DAYS`，让 `retention::prune_superseded` 每天清掉被取代
+    // 超过那么多天的向量；行与正文照旧留着（0019 的修订）。
     sqlx::query(
         "UPDATE chunks SET superseded_at = now()
          WHERE document_id = $1 AND superseded_at IS NULL AND NOT (id = ANY($2))",

@@ -594,6 +594,7 @@ export const zh: Strings = {
       github_issues: "GitHub 工单",
       github_repo: "GitHub 仓库文件",
       gitlab_repo: "GitLab 项目文件",
+      gitlab_issues: "GitLab 工单",
       jira_issues: "Jira 工单",
       s3: "S3 / MinIO",
       azure_blob: "Azure Blob",
@@ -619,6 +620,11 @@ export const zh: Strings = {
       gitlab_repo:
         "读取一个 gitlab.com 项目默认分支上的 markdown 文件，做法与 GitHub 仓库文件相同。" +
         "私有项目要一个带 read_api 的令牌。自建 GitLab 没有验证过。",
+      gitlab_issues:
+        "同步一个 gitlab.com 项目的工单，打开开关后连同合并请求。" +
+        "**每张连同它的状态、标签、里程碑变更史**成为一篇文档，都带着日期。" +
+        "**必须配一个带 read_api 的令牌**：没有令牌 GitLab 不给备注和事件，公开项目也一样。" +
+        "自建 GitLab 没有验证过。",
       s3:
         "从 S3 桶里读文档，或者任何说同一套协议的东西（MinIO、Ceph、R2）。" +
         "**端点留空就是 AWS**，填了就是自建。每个对象成为一篇文档，" +
@@ -750,6 +756,8 @@ export const zh: Strings = {
     tokenField: "GitHub 令牌（可选，不再显示）",
     gitlabTokenField: "带 read_api 的 GitLab 令牌（可选，不再显示）",
     includePullRequests: "把 PR 也当工单收进来",
+    gitlabIssuesTokenField: "带 read_api 的 GitLab 令牌（读备注与事件要用，不再显示）",
+    includeMergeRequests: "把合并请求也当工单收进来",
     includeGlobsField: "包含的 glob（逗号分隔，可选；填了就替换默认值）",
     excludeGlobsField: "排除的 glob（逗号分隔，可选；填了就替换默认值）",
     interval: "同步计划",
@@ -811,6 +819,9 @@ export const zh: Strings = {
     button: "检索",
     searching: "检索中…",
     noResults: "没有结果",
+    previousPage: "上一页",
+    nextPage: "下一页",
+    retry: "重试搜索",
     chunkOf: (filename: string, seq: number) => `${filename} · 第 ${seq} 段`,
   },
   ask: {
@@ -1245,6 +1256,8 @@ export const zh: Strings = {
     save: "保存",
     saving: "保存中…",
     saved: "已保存",
+    savedRefreshFailed: "已保存，但未能加载最新设置。",
+    reloadSettings: "重新加载设置",
     test: "测试连接",
     testing: "测试中…",
     chatLabel: "对话",
@@ -2210,6 +2223,8 @@ export const zh: Strings = {
     auditUntil: "截止日期",
     auditClear: "清除筛选",
     auditTotal: (n: number) => `共 ${n} 条`,
+    activityLoadError: "无法加载活动日志。",
+    activityRetry: "重试",
     activityEmpty: "还没有记录。",
     deletedUser: "一位已移除的用户",
     adjudicator: "AI 裁决器",

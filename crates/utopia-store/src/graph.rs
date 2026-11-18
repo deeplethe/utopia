@@ -1645,42 +1645,73 @@ pub async fn search_entities(
     // 记录轴（0019）：给了就按**当时**回放——列出当时可见的实体（合并之前的被并者
     // 还在，之后才建的不在），度数按当时谁持有事实来数，与回放中的画布一致
     as_of: Option<chrono::DateTime<chrono::Utc>>,
+    // 只要名字完全相同的（规范名或现行别名），不做子串扫描
+    exact: bool,
 ) -> AppResult<(Vec<GraphNode>, i64)> {
     let pattern = format!("%{}%", text.trim());
     let named = crate::names::has_name_like("e", 2);
     // 同名的键与召回同一种写法（`resolution` 里 `has_name_in` 的用法）：规整之后小写
-    let exact = vec![crate::resolution::normalize_name(text).to_lowercase()];
+    let folded_name = vec![crate::resolution::normalize_name(text).to_lowercase()];
     // 不回放时 SQL 里没有时刻参数，与从前逐字相同；回放时才多绑一个
     let visible = |param: usize| crate::record_axis::entity_visible_at("e", as_of.map(|_| param));
     let rewind = as_of.map(|_| 6);
+    let same_name = crate::names::has_name_in("e", 1, 5);
+    // 精确时把规范名与别名写成一个 id 集合，各走各的索引（`entities_kb_name_idx`、
+    // `facts_value_text_idx`）。写成 `OR` 的话一边是子查询，规划器只能把库里的实体扫一遍。
+    // 规范名那个索引只收没被合并的实体：不回放时这与 `visible` 是一回事，带上它；回放时
+    // 被并者当时还在，不能带，那一支退回按库扫。`$2` 绑着不用，参数位不挪
+    let exactly_named = |names: usize| {
+        format!(
+            "e.id IN (SELECT x.id FROM entities x
+                       WHERE x.kb_id = $1 AND lower(x.canonical_name) = ANY(${names}){unmerged}
+                      UNION ALL {aliases})",
+            unmerged = if as_of.is_none() {
+                " AND x.merged_into IS NULL"
+            } else {
+                ""
+            },
+            aliases = crate::names::named_ids(1, names),
+        )
+    };
+    let matches = if exact {
+        exactly_named(5)
+    } else {
+        format!("(e.canonical_name ILIKE $2 OR {named})")
+    };
     let sql = format!(
         "{} WHERE e.kb_id = $1 AND {visible}
-         AND (e.canonical_name ILIKE $2 OR {named})
+         AND {matches}
          ORDER BY (lower(e.canonical_name) = ANY($5) OR {same_name}) DESC,
                   degree DESC, e.canonical_name, e.id LIMIT $3 OFFSET $4",
         node_sql(rewind, rewind),
         visible = visible(6),
-        same_name = crate::names::has_name_in("e", 1, 5),
     );
     let mut nodes_query = sqlx::query_as::<_, GraphNode>(&sql)
         .bind(kb_id)
         .bind(&pattern)
         .bind(limit)
         .bind(offset)
-        .bind(&exact);
+        .bind(&folded_name);
     if let Some(t) = as_of {
         nodes_query = nodes_query.bind(t);
     }
     let nodes: Vec<GraphNode> = nodes_query.fetch_all(pool).await?;
+    // 数量那条的名字列表在 `$3`，时刻挪到 `$4`
+    let count_matches = if exact {
+        exactly_named(3)
+    } else {
+        format!("(e.canonical_name ILIKE $2 OR {named})")
+    };
     let count_sql = format!(
         "SELECT count(*) FROM entities e
           WHERE e.kb_id = $1 AND {visible}
-            AND (e.canonical_name ILIKE $2 OR {named})",
-        visible = visible(3),
+            AND {count_matches}",
+        visible = visible(4),
     );
     let mut count_query = sqlx::query_as::<_, (i64,)>(&count_sql)
         .bind(kb_id)
-        .bind(&pattern);
+        .bind(&pattern)
+        .bind(&folded_name);
     if let Some(t) = as_of {
         count_query = count_query.bind(t);
     }
@@ -1812,6 +1843,7 @@ pub async fn entity_detail(
                  AND NOT EXISTS (SELECT 1 FROM fact_evidence fe
                                  JOIN chunks c ON c.id = fe.chunk_id
                                  WHERE fe.fact_id = f.id AND {chunk_live})
+                 AND NOT {awaits}
                 ) AS stale,
                 (f.supersedes IS NOT NULL) AS corrected,
                 f.end_derived, f.end_after_period, {corrected_ends} AS corrected_ends,
@@ -1868,6 +1900,10 @@ pub async fn entity_detail(
         holds_to = crate::world_axis::facts_holds_to("f"),
         subject = crate::record_axis::owner_at("f", "subject_id", as_of.map(|_| 3), false),
         object = crate::record_axis::owner_at("f", "object_id", as_of.map(|_| 3), true),
+        awaits = match as_of {
+            Some(_) => "false",
+            None => crate::review::awaits_a_new_version(),
+        },
         chunk_live = crate::record_axis::chunk_live_at("c", as_of.map(|_| 3)),
         violation_open = crate::record_axis::violation_open_at("v", as_of.map(|_| 3)),
         conflict_open = crate::record_axis::conflict_open_at("c", as_of.map(|_| 3)),
@@ -2069,14 +2105,14 @@ pub async fn low_confidence_facts(
 ///
 /// **「现行」这一条不能少。** 闭合是作废+改写，修正行带着原证据（`temporal::close_superseded`），
 /// 只看证据存活性的话，刚闭合的行立刻回到这一档——那个出路等于不存在。
-/// WHERE 与 `review::UNCONFIRMED_FACT` 同一套（0022：「结束不知哪天」不是开放）。
+/// WHERE 与 `review::unconfirmed_fact` 同一套（0022：「结束不知哪天」不是开放）。
 pub async fn stale_facts(
     pool: &PgPool,
     kb_id: Uuid,
     limit: i64,
     offset: i64,
 ) -> AppResult<Vec<FactReviewItem>> {
-    let rows: Vec<FactReviewItem> = sqlx::query_as(
+    let rows: Vec<FactReviewItem> = sqlx::query_as(&format!(
         "SELECT f.id, s.canonical_name AS subject_name, COALESCE(r.label, fact_surface_predicate(f.id)) AS predicate_label,
                 COALESCE(o.canonical_name, f.object_value->>'summary') AS object_name,
                 f.valid_from, f.valid_to, f.confidence,
@@ -2093,9 +2129,11 @@ pub async fn stale_facts(
            AND NOT EXISTS (SELECT 1 FROM fact_evidence fe
                            JOIN chunks c ON c.id = fe.chunk_id
                            WHERE fe.fact_id = f.id AND c.superseded_at IS NULL)
+           AND NOT {awaits}
          ORDER BY f.recorded_at DESC, f.id DESC
          LIMIT $2 OFFSET $3",
-    )
+        awaits = crate::review::awaits_a_new_version(),
+    ))
     .bind(kb_id)
     .bind(limit)
     .bind(offset)
@@ -2126,11 +2164,20 @@ pub async fn confirm_fact(pool: &PgPool, kb_id: Uuid, fact_id: Uuid) -> AppResul
 /// 否决的是开放陈述时，随后排一次类型化重算（#1366）：它物化出的类型化行要等重算才退
 /// （`materialize` 的第 1、2 步按 `typed_fact_sources` 看每一个支撑者，还有别的活陈述撑着的
 /// 行照旧留着），而否决本身只写 `invalidated_at`，不排的话这一行一直要等到下一次对齐。
-/// 先作废、后排：反过来的话重算可能在作废提交之前跑完，读到的陈述还活着。排着就不重复
+/// 先作废、后排：反过来的话重算可能在作废提交之前跑完，读到的陈述还活着。排着就不重复。
+/// 排失败只记日志：作废已经提交，报错的话重试这次否决只会拿到 404，而下一次对齐照样会重算
 pub async fn reject_fact(pool: &PgPool, kb_id: Uuid, fact_id: Uuid) -> AppResult<()> {
     if !crate::temporal::retract(pool, kb_id, fact_id).await? {
         return Err(AppError::NotFound);
     }
+    if let Err(e) = queue_typed_recompute(pool, kb_id, fact_id).await {
+        tracing::warn!(%kb_id, %fact_id, error = %e, "否决后的类型化重算没能入队");
+    }
+    Ok(())
+}
+
+/// 否决的是开放陈述时排一次类型化重算；类型化行或已不存在的事实不排
+async fn queue_typed_recompute(pool: &PgPool, kb_id: Uuid, fact_id: Uuid) -> AppResult<()> {
     let open: Option<bool> = sqlx::query_scalar("SELECT layer = 'open' FROM facts WHERE id = $1")
         .bind(fact_id)
         .fetch_optional(pool)
@@ -2352,7 +2399,7 @@ pub async fn entity_history(
                         THEN 'merged' ELSE 'rejected' END AS kind
             FROM ef
             WHERE ef.invalidated_at IS NOT NULL
-              AND NOT EXISTS (SELECT 1 FROM facts s WHERE s.supersedes = ef.id)
+              AND NOT EXISTS (SELECT 1 FROM facts s WHERE s.kb_id = $1 AND s.supersedes = ef.id)
         ),
         -- 改类不是事实：没有谓词、没有对方、没有方向。它来自 entity_retypes，
         -- 一行最多产出两个事件——改动本身，以及撤销。
@@ -2550,7 +2597,7 @@ pub async fn graph_changes(
                         THEN 'merged' ELSE 'rejected' END AS kind
             FROM facts f
             WHERE f.kb_id = $1 AND f.invalidated_at >= $2 AND f.invalidated_at < $3
-              AND NOT EXISTS (SELECT 1 FROM facts s WHERE s.supersedes = f.id)
+              AND NOT EXISTS (SELECT 1 FROM facts s WHERE s.kb_id = $1 AND s.supersedes = f.id)
               AND ($4::uuid IS NULL OR f.subject_id = $4 OR f.object_id = $4)
         )";
     Ok(sqlx::query_as(&format!(

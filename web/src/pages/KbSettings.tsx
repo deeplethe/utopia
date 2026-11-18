@@ -544,7 +544,7 @@ export function auditBounds(since: string, until: string) {
   };
 }
 
-function KbActivity({ kbId }: { kbId: string }) {
+export function KbActivity({ kbId }: { kbId: string }) {
   // 筛选按真实查法来：查一类动作、查一个人、查一段时间。
   // 动作前缀匹配——`entity.` 就能把 retyped / renamed 一族一起捞出来
   const [action, setAction] = useState("");
@@ -562,10 +562,9 @@ function KbActivity({ kbId }: { kbId: string }) {
       }),
     placeholderData: (prev) => prev,
   });
-  const events = audit.data?.events ?? [];
-  const total = audit.data?.total ?? 0;
+  const result = audit.isSuccess && !audit.isPlaceholderData ? audit.data : undefined;
   // 下拉按这个库实际发生过的动作填，不是硬编码清单
-  const actions = audit.data?.actions ?? [];
+  const actions = audit.data?.actions ?? (action ? [action] : []);
   const filtered = !!(action || since || until);
 
   const reset = (fn: () => void) => {
@@ -616,49 +615,68 @@ function KbActivity({ kbId }: { kbId: string }) {
             {S.kbset.auditClear}
           </Button>
         )}
-        <span className="ml-auto u-num text-fine text-ink-2">
-          {S.kbset.auditTotal(total)}
-        </span>
+        {result && (
+          <span className="ml-auto u-num text-fine text-ink-2">
+            {S.kbset.auditTotal(result.total)}
+          </span>
+        )}
       </div>
       <SettingsCard title={S.kbset.activity} hint={S.kbset.activityHint}>
-      {audit.isPending ? (
-        <p className="text-small text-ink-2">{S.nav.loading}</p>
-      ) : events.length === 0 ? (
-        <p className="text-small text-ink-2">{S.kbset.activityEmpty}</p>
-      ) : (
-        <div className="divide-y divide-line">
-          {events.map((e) => (
-            <div
-              key={e.id}
-              className="flex items-baseline gap-3 py-2 text-body first:pt-0"
-            >
-              <span className="u-num shrink-0 text-fine text-ink-2">
-                {localDateTime(e.created_at)}
-              </span>
-              <span className="min-w-0 truncate">
-                <span className="text-ink">
-                  {e.actor_name ??
-                    (e.actor_id
-                      ? S.kbset.deletedUser
-                      : e.action.startsWith("review.")
-                        ? S.kbset.adjudicator
-                        : S.kbset.engine)}
-                </span>{" "}
-                <span className="text-ink-2">
-                  {S.kbset.auditActions[e.action] ?? e.action}
-                </span>
-                {auditDetailName(e) && (
-                  <span className="text-ink-2">
-                    {" "}
-                    “{auditDetailName(e)}”
-                  </span>
-                )}
-              </span>
+        {audit.isError ? (
+          <div className="space-y-2">
+            <div role="alert" className="text-small text-danger">
+              <p>{S.kbset.activityLoadError}</p>
+              {audit.error.message && <p>{audit.error.message}</p>}
             </div>
-          ))}
-        </div>
-      )}
-      <Pager total={total} pageSize={AUDIT_PAGE} page={page} onPage={setPage} />
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={audit.isFetching}
+              onClick={() => { void audit.refetch(); }}
+            >
+              {S.kbset.activityRetry}
+            </Button>
+          </div>
+        ) : !result ? (
+          <p role="status" className="text-small text-ink-2">{S.nav.loading}</p>
+        ) : result.events.length === 0 ? (
+          <p className="text-small text-ink-2">{S.kbset.activityEmpty}</p>
+        ) : (
+          <div className="divide-y divide-line">
+            {result.events.map((e) => (
+              <div
+                key={e.id}
+                className="flex items-baseline gap-3 py-2 text-body first:pt-0"
+              >
+                <span className="u-num shrink-0 text-fine text-ink-2">
+                  {localDateTime(e.created_at)}
+                </span>
+                <span className="min-w-0 truncate">
+                  <span className="text-ink">
+                    {e.actor_name ??
+                      (e.actor_id
+                        ? S.kbset.deletedUser
+                        : e.action.startsWith("review.")
+                          ? S.kbset.adjudicator
+                          : S.kbset.engine)}
+                  </span>{" "}
+                  <span className="text-ink-2">
+                    {S.kbset.auditActions[e.action] ?? e.action}
+                  </span>
+                  {auditDetailName(e) && (
+                    <span className="text-ink-2">
+                      {" "}
+                      “{auditDetailName(e)}”
+                    </span>
+                  )}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+        {result && (
+          <Pager total={result.total} pageSize={AUDIT_PAGE} page={page} onPage={setPage} />
+        )}
       </SettingsCard>
     </div>
   );

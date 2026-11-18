@@ -14,12 +14,16 @@ source, upload_time, none) is the document's own date; upload time is recorded t
 document date, so an upload-dated document counts as undated for attestation and ordering
 [0022, 0045, #714].
 
-**Connectors.** GitHub issues, Jira, Notion, Google Drive, RSS, WebDAV, S3 / Azure / GCS, and custom push with an
+**Connectors.** GitHub issues, GitLab issues, Jira, Notion, Google Drive, RSS, WebDAV, S3 / Azure / GCS, and custom push with an
 `ingest_token`; the kinds come from one `SourceKind` enum that the allowlist, the dispatcher and the
 web list derive from; credentials never leave the server (`SOURCE_SECRET_KEYS`) and a blank field
 keeps the stored value; a truncated round says so [0013]. A ticket is one document whose body
 carries its history as dated declarative sentences and a `## History` list; GitHub fetches events
-per ticket; timestamps are written to the second [0013]. A GitHub repository file is one document
+per ticket; timestamps are written to the second [0013]. A GitLab ticket (gitlab.com; self-managed
+is not verified) is an issue or, when switched on, a merge request: its history comes from
+resource events and not from system notes, a token is required because notes and events answer 401
+without one, confidential issues are skipped because a base's every viewer would read them, and the
+two lists share one checkpoint, which stops where the earlier of them stopped [0013, #1327]. A GitHub repository file is one document
 keyed by its path and dated by the last commit that touched it; a file whose blob SHA has not
 changed is not fetched again, and identical files at several paths go in once [#1303]. A GitLab project file
 (gitlab.com; self-managed is not verified) takes the same shape; its tree is paged, so a tree that
@@ -28,7 +32,7 @@ from a `HEAD` on the file before anything is downloaded [#1327].
 
 **Google Drive.** A person connects it with OAuth and it reads Drive as them; the refresh token is a sealed source secret and the browser never holds a Google token; the flow is bound to the session that started it; only the person who connected picks folders, subfolders come along, and a sync stops once that person is no longer an editor; a run downloads at most 2000 files and says so when it stops there; Docs, Sheets and Slides are exported to DOCX, XLSX and PPTX; change is Drive's marker (`md5Checksum`, or `modifiedTime` for Google formats) because an export's bytes differ every time; "not in source" only after a complete walk [0074].
 
-**Ticket checkpoints.** GitHub/Jira read by ascending update time and stop only after
+**Ticket checkpoints.** GitHub/GitLab/Jira read by ascending update time and stop only after
 a whole timestamp group, even when that exceeds 200 items or ten listing pages.
 Already consumed timestamps use neither budget. Their private source checkpoint is
 committed with the successful run, independent of retained audit history; empty or

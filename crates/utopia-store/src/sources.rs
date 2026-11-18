@@ -10,7 +10,7 @@ use uuid::Uuid;
 /// 本机目录监听（watch_folder）已否决——自部署用户看不到服务器磁盘；
 /// 对象存储 / WebDAV / Notion 是它的替代形态（0013）。
 /// custom = 自定义拉取器：任何实现 Utopia ingest 接口的 URL（返回 items JSON）即可定时摄取。
-/// github_issues / jira_issues = 工单：一张工单连同它的状态变更史成为一篇文档。
+/// github_issues / gitlab_issues / jira_issues = 工单：一张工单连同它的状态变更史成为一篇文档。
 ///
 /// 种类的清单**不在这里写**：`SourceKind`（utopia-core）一个枚举出全部——创建的白名单、
 /// 同步的分派、前端的下拉框（有测试对表）。从前这里有一张手写的 `KINDS`，五种连接器
@@ -329,13 +329,22 @@ pub async fn update(
         && old_full
         && new_full
         && rss_feed_url(&previous.config) != rss_feed_url(&next_config);
+    // gitlab_issues 换了项目、或打开了合并请求：checkpoint 之前的那些工单从没读过，而增量只问
+    // 它之后的。清掉它，下一轮从头读；没变的工单靠去重不记新版本（0072）。关掉合并请求不用重读
+    let merge_requests =
+        |config: &serde_json::Value| config["include_merge_requests"].as_bool().unwrap_or(false);
+    let reread = previous.kind == "gitlab_issues"
+        && (previous.config["project"].as_str().map(str::trim)
+            != next_config["project"].as_str().map(str::trim)
+            || (!merge_requests(&previous.config) && merge_requests(&next_config)));
     let source: Source = sqlx::query_as(
         "UPDATE sources SET
             name = COALESCE($2, name),
             config = COALESCE($3, config),
             icon = COALESCE($4, icon),
             sync_interval_minutes = CASE WHEN $5 THEN $6 ELSE sync_interval_minutes END,
-            sync_cron = CASE WHEN $5 THEN $7 ELSE sync_cron END
+            sync_cron = CASE WHEN $5 THEN $7 ELSE sync_cron END,
+            sync_checkpoint = CASE WHEN $8 THEN NULL ELSE sync_checkpoint END
          WHERE id = $1 RETURNING *",
     )
     .bind(id)
@@ -345,8 +354,22 @@ pub async fn update(
     .bind(schedule.is_some())
     .bind(schedule.as_ref().and_then(|(i, _)| *i))
     .bind(schedule.as_ref().and_then(|(_, c)| c.clone()))
+    .bind(reread)
     .fetch_one(&mut *tx)
     .await?;
+    if reread {
+        // 正在跑的那一轮是按旧配置列的，它要写下的 checkpoint 不作数。checkpoint 本来就空着时
+        // （第一轮），上面的清空挡不住它：空对空，`finish_timestamp_sync` 照样提交。把那一轮
+        // 记成失败，它只认 running 的轮次，于是 checkpoint 跟着一起回滚
+        sqlx::query(
+            "UPDATE source_sync_runs SET finished_at = now(), status = 'failed', error = $2
+             WHERE source_id = $1 AND status = 'running'",
+        )
+        .bind(id)
+        .bind("Source configuration changed during sync")
+        .execute(&mut *tx)
+        .await?;
+    }
 
     if (!old_full && new_full) || feed_url_changed {
         crate::rss_full_content::enable_source(&mut tx, id).await?;
@@ -600,7 +623,7 @@ pub async fn finish_timestamp_sync(
     let source = sqlx::query(
         "UPDATE sources SET sync_checkpoint = $3, last_sync_status = 'ok',
                 last_sync_error = NULL, last_sync_added = $4, last_sync_at = now()
-         WHERE id = $1 AND kind IN ('github_issues', 'jira_issues', 'custom')
+         WHERE id = $1 AND kind IN ('github_issues', 'gitlab_issues', 'jira_issues', 'custom')
            AND sync_checkpoint IS NOT DISTINCT FROM $2::timestamptz",
     )
     .bind(source_id)

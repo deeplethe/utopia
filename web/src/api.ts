@@ -239,12 +239,14 @@ export interface SourceView {
     repo?: string;
     /** github_issues：PR 在 GitHub 模型里也是工单，默认不收 */
     include_pull_requests?: boolean;
+    /** gitlab_issues：合并请求默认不收，与 GitHub 的 PR 同一个理由 */
+    include_merge_requests?: boolean;
     /** github_repo / gitlab_repo：给了就整列替换默认的 glob（markdown；隐藏目录、node_modules、vendor） */
     include?: string[];
     exclude?: string[];
     /** jira_issues：站点地址，如 https://issues.apache.org/jira */
     base_url?: string;
-    /** jira_issues：项目 key，如 KAFKA；gitlab_repo：项目路径，如 group/subgroup/name */
+    /** jira_issues：项目 key，如 KAFKA；gitlab_repo / gitlab_issues：项目路径，如 group/subgroup/name */
     project?: string;
     /** google_drive：选中的文件夹（名字只给界面看，同步只认 id） */
     folders?: { id: string; name: string }[];
@@ -2098,10 +2100,11 @@ export const api = {
       { method: "POST" },
     ),
 
-  search: (kbId: string, q: string) =>
-    request<{ results: SearchResult[] }>(`/api/v1/kbs/${kbId}/search`, {
+  search: (kbId: string, q: string, offset: number, topK: number, signal?: AbortSignal) =>
+    request<{ results: SearchResult[]; has_more: boolean }>(`/api/v1/kbs/${kbId}/search`, {
       method: "POST",
-      body: JSON.stringify({ q }),
+      body: JSON.stringify({ q, offset, top_k: topK }),
+      signal,
     }),
 
   settings: (workspaceId: string) =>
