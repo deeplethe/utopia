@@ -16,6 +16,32 @@ afterEach(() => {
 });
 
 describe("live answer generation ownership", () => {
+  it("detaches a session's SSE reader without stopping its server generation", async () => {
+    const cancel = vi.fn();
+    const body = new ReadableStream<Uint8Array>({ cancel });
+    const fetch = vi.fn().mockResolvedValue(new Response(body));
+    vi.stubGlobal("fetch", fetch);
+    const handle = begin("kb", "conversation", turns(), () => {});
+    const onError = vi.fn();
+    handle.setAbort(streamChat("kb", { conversation_id: "conversation", message: "question" }, {
+      onConversation: (id) => handle.identify(id),
+      onSources: () => {},
+      onStep: () => {},
+      onDelta: (text) => handle.patchLast((turn) => ({ ...turn, content: text })),
+      onDone: () => handle.finish(),
+      onError,
+    }));
+    await vi.waitFor(() => expect(body.locked).toBe(true));
+
+    liveAnswer.clear();
+    await vi.waitFor(() => expect(body.locked).toBe(false));
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(fetch.mock.calls[0][1].signal.aborted).toBe(true);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(onError).not.toHaveBeenCalled();
+    expect(liveAnswer.get()).toEqual([]);
+  });
+
   it("keeps a follow-up streaming when the previous SSE cleanup finishes", async () => {
     let wire!: ReadableStreamDefaultController<Uint8Array>;
     let finishCleanup!: () => void;

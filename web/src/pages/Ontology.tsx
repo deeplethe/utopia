@@ -2197,8 +2197,10 @@ function MissesPanel({
   const adopt = useMutation({
     mutationFn: ({ section, key }: { section: Section; key: string }) =>
       api.adoptProposal(kbId, section, key),
-    onSuccess: (_d, v) => {
-      toast.success(v.section === "map_to" ? S.toast.saved : S.toast.added);
+    onSuccess: (d, v) => {
+      // 复用时有人在代理读过之后另定了的，照人的留着没写：说一声，不然卡片一走像是全写了
+      if (d.skipped.length > 0) toast.info(S.ontology.adoptKept(d.skipped.length));
+      else toast.success(v.section === "map_to" ? S.toast.saved : S.toast.added);
       drop(v.section, v.key);
       onChanged();
     },

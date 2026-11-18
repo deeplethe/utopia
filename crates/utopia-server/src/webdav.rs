@@ -241,7 +241,7 @@ pub async fn fetch(
             let path = document_path(&e.href, &base);
             let request_path = normalize(&strip_base(&e.href, &base));
             // 服务端会把被查询的目录自己也列进来，跳过它否则会无限打转
-            if path == dir {
+            if path == dir || request_path == request_dir {
                 continue;
             }
             if e.is_dir {
@@ -331,16 +331,28 @@ fn document_path(href: &str, base: &str) -> String {
 
 /// href 可能是绝对 URL 也可能只是路径——两种都合法，服务端各写各的。
 fn strip_base(href: &str, base: &str) -> String {
-    if let Some(rest) = href.strip_prefix(base) {
+    if let Some(rest) = href
+        .strip_prefix(base)
+        .filter(|rest| rest.is_empty() || rest.starts_with('/'))
+    {
         return rest.to_string();
     }
-    // 绝对但换了主机名（反代改写过）：退回取它的 path
-    if href.starts_with("http://") || href.starts_with("https://") {
-        if let Ok(u) = reqwest::Url::parse(href) {
-            return u.path().to_string();
+    let path = reqwest::Url::parse(href)
+        .ok()
+        .filter(|url| matches!(url.scheme(), "http" | "https"))
+        .map(|url| url.path().to_string())
+        .unwrap_or_else(|| href.to_string());
+    // Nextcloud returns origin-relative hrefs that already include the base's
+    // path. Strip whole path segments before fetch appends the configured base.
+    if let Ok(url) = reqwest::Url::parse(base) {
+        if let Some(rest) = path
+            .strip_prefix(url.path().trim_end_matches('/'))
+            .filter(|rest| rest.is_empty() || rest.starts_with('/'))
+        {
+            return rest.to_string();
         }
     }
-    href.to_string()
+    path
 }
 
 #[cfg(test)]
@@ -539,51 +551,81 @@ mod tests {
         };
         use std::sync::{Arc, Mutex};
 
+        const PREFIX: &str = "/remote.php/dav/files/alice";
         const DIR: &str = "/docs/folder%23%3F%2520";
         const FILE: &str = "/docs/folder%23%3F%2520/note%23one.txt";
-        let collection = format!(
-            "<response><href>{DIR}/</href><propstat><prop><resourcetype><collection/></resourcetype></prop></propstat></response>"
-        );
-        let root = format!("<multistatus xmlns=\"DAV:\">{collection}</multistatus>");
-        let nested = format!(
-            "<multistatus xmlns=\"DAV:\">{collection}<response><href>{FILE}</href><propstat><prop><getcontentlength>5</getcontentlength></prop></propstat></response></multistatus>"
-        );
-        let requests = Arc::new(Mutex::new(Vec::new()));
-        let seen = requests.clone();
-        let app = Router::new().fallback(move |method: Method, uri: Uri| {
-            let (root, nested, seen) = (root.clone(), nested.clone(), seen.clone());
-            async move {
-                seen.lock().unwrap().push(format!("{method} {uri}"));
-                match (method.as_str(), uri.path_and_query().unwrap().as_str()) {
-                    ("PROPFIND", "/docs") => (StatusCode::MULTI_STATUS, root),
-                    ("PROPFIND", DIR) => (StatusCode::MULTI_STATUS, nested),
-                    ("GET", FILE) => (StatusCode::OK, "hello".to_string()),
-                    _ => (StatusCode::NOT_FOUND, String::new()),
+        for (href_kind, prefix) in [
+            ("origin-root", ""),
+            ("path", PREFIX),
+            ("absolute", PREFIX),
+            ("proxy", PREFIX),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let origin = format!("http://{}", listener.local_addr().unwrap());
+            let href_origin = match href_kind {
+                "absolute" => origin.as_str(),
+                "proxy" => "https://cloud.example.com",
+                _ => "",
+            };
+            let collection = |dir: &str| {
+                format!(
+                "<response><href>{href_origin}{prefix}{dir}/</href><propstat><prop><resourcetype><collection/></resourcetype></prop></propstat></response>"
+            )
+            };
+            let root = format!(
+                "<multistatus xmlns=\"DAV:\">{}{}</multistatus>",
+                collection("/docs"),
+                collection(DIR)
+            );
+            let nested = format!(
+                "<multistatus xmlns=\"DAV:\">{}<response><href>{href_origin}{prefix}{FILE}</href><propstat><prop><getcontentlength>5</getcontentlength></prop></propstat></response></multistatus>", collection(DIR)
+            );
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let seen = requests.clone();
+            let app = Router::new().fallback(move |method: Method, uri: Uri| {
+                let (root, nested, seen) = (root.clone(), nested.clone(), seen.clone());
+                async move {
+                    seen.lock().unwrap().push(format!("{method} {uri}"));
+                    let path = uri.path_and_query().unwrap().as_str();
+                    match (method.as_str(), path.strip_prefix(prefix).unwrap_or("")) {
+                        ("PROPFIND", "/docs") => (StatusCode::MULTI_STATUS, root),
+                        ("PROPFIND", DIR) => (StatusCode::MULTI_STATUS, nested),
+                        ("GET", FILE) => (StatusCode::OK, "hello".to_string()),
+                        _ => (StatusCode::NOT_FOUND, String::new()),
+                    }
                 }
-            }
-        });
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base = format!("http://{}", listener.local_addr().unwrap());
-        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        let result = fetch(&reqwest::Client::new(), &base, "/docs", None).await;
-        server.abort();
-        let (files, truncated) = result.unwrap();
-        assert!(!truncated);
-        assert_eq!(files.len(), 1);
-        assert_eq!(files[0].bytes, b"hello");
-        assert_eq!(files[0].filename, "note#one.txt");
-        assert_eq!(
-            files[0].external_key,
-            "webdav://127.0.0.1/docs/folder#?%20/note#one.txt"
-        );
-        assert_eq!(
-            *requests.lock().unwrap(),
-            [
-                "PROPFIND /docs".to_string(),
-                format!("PROPFIND {DIR}"),
-                format!("GET {FILE}"),
-            ]
-        );
+            });
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let base = format!("{origin}{prefix}");
+            let result = fetch(&reqwest::Client::new(), &base, "/docs", None).await;
+            server.abort();
+            let (files, truncated) = result.unwrap_or_else(|err| panic!("{href_kind}: {err:#}"));
+            assert!(!truncated);
+            assert_eq!(files.len(), 1, "{href_kind}");
+            assert_eq!(files[0].bytes, b"hello");
+            let (filename, key) = if href_kind == "proxy" {
+                (
+                    "note%23one.txt",
+                    format!("webdav://127.0.0.1{prefix}{FILE}"),
+                )
+            } else {
+                (
+                    "note#one.txt",
+                    "webdav://127.0.0.1/docs/folder#?%20/note#one.txt".to_string(),
+                )
+            };
+            assert_eq!(files[0].filename, filename);
+            assert_eq!(files[0].external_key, key);
+            assert_eq!(
+                *requests.lock().unwrap(),
+                [
+                    format!("PROPFIND {prefix}/docs"),
+                    format!("PROPFIND {prefix}{DIR}"),
+                    format!("GET {prefix}{FILE}")
+                ],
+                "{href_kind}"
+            );
+        }
     }
 
     /// **命名空间前缀是任意的。** 同一份响应换个前缀必须解出同样的东西，
@@ -647,6 +689,22 @@ mod tests {
             ("", "/"),
         ] {
             assert_eq!(normalize(raw), want, "{raw}");
+        }
+    }
+
+    #[test]
+    fn a_base_path_is_stripped_only_at_a_segment_boundary() {
+        let base = "https://cloud.example.com/dav/alice";
+        for (href, want) in [
+            ("/dav/alice", ""),
+            ("/dav/alice/docs/a.txt", "/docs/a.txt"),
+            ("/dav/alice2/a.txt", "/dav/alice2/a.txt"),
+            (
+                "https://cloud.example.com/dav/alice2/a.txt",
+                "/dav/alice2/a.txt",
+            ),
+        ] {
+            assert_eq!(strip_base(href, base), want, "{href}");
         }
     }
 

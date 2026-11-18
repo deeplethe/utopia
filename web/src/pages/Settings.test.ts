@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { modelCardStatus } from "./Settings";
+import { S } from "../i18n";
+import { cardsOf, chatTestMessage, modelCardStatus } from "./Settings";
 
 describe("model card status", () => {
   it("prefers a fresh test result over a stale save confirmation", () => {
@@ -66,5 +67,53 @@ describe("model card status", () => {
     expect(
       modelCardStatus(null, null, { error: null, saved: false, dirty: false }),
     ).toEqual({ kind: "idle" });
+  });
+});
+
+describe("chat test message", () => {
+  it("gives each request shape its own line and names what refused it", () => {
+    const text = chatTestMessage({
+      ok: false,
+      reply: "OK",
+      error: "plain ok; tools: HTTP 400",
+      checks: { plain: { ok: true }, streaming: { ok: true }, tools: { ok: false, error: "tools are not supported" } },
+    });
+    const lines = text.split("\n");
+    expect(lines).toHaveLength(3);
+    expect(lines[2]).toContain("tools are not supported");
+    expect(lines[0]).not.toContain("refused");
+  });
+
+  it("says a shape timed out rather than that it was refused", () => {
+    const text = chatTestMessage({
+      ok: false,
+      checks: {
+        plain: { ok: true },
+        streaming: { ok: false, timed_out: true, error: "no answer within 45 s" },
+        tools: { ok: false, error: "HTTP 400" },
+      },
+    });
+    const [, streaming, tools] = text.split("\n");
+    expect(streaming).toContain(S.settings.chatShapeTimedOut("no answer within 45 s"));
+    expect(tools).toContain(S.settings.chatShapeRefused("HTTP 400"));
+  });
+
+  it("falls back to one sentence when the server sends no checks", () => {
+    expect(chatTestMessage({ ok: false, error: "Not configured" })).toBe("Not configured");
+  });
+});
+
+describe("cards an edit touches", () => {
+  it("is only the card whose field changed", () => {
+    // #1424：改读扫描件那张卡，对话卡刚测出的结论还作数
+    expect(cardsOf(["ocr_base_url"])).toEqual(["ocr"]);
+    expect(cardsOf(["transcribe_api_key"])).toEqual(["transcribe"]);
+  });
+
+  it("is chat and embed for a preset", () => {
+    expect(cardsOf(["chat_base_url", "chat_model", "embed_base_url", "embed_model"])).toEqual([
+      "chat",
+      "embed",
+    ]);
   });
 });

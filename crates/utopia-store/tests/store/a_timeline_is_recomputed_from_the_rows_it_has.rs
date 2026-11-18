@@ -120,6 +120,7 @@ async fn observe(pool: &PgPool, f: &Fixture, x: Seen<'_>) -> anyhow::Result<Uuid
         to_precision: x.to.map(|_| "day"),
         attested_at: None,
         from_grade: x.grade,
+        ..Default::default()
     };
     let mut chunk = None;
     if let Some(doc_time) = x.doc {
@@ -621,6 +622,7 @@ async fn a_revert_keeps_the_interval_a_person_corrected() -> anyhow::Result<()> 
             to_precision: Some("day"),
             attested_at: None,
             from_grade: None,
+            ..Default::default()
         },
     )
     .await?

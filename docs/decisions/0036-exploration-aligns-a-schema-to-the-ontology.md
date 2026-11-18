@@ -172,8 +172,12 @@ numeric constant into a valid number. The additional shapes are:
 
 Case results have one scalar type, and at most 32 arms. The existing four-edge
 `MAX_EXPR_DEPTH` bound applies to every expression. Dates accept an ISO calendar
-date or an RFC 3339 timestamp with an offset; timestamp offsets are converted to
-UTC before truncation. The result is an ISO calendar date, such as `2024-02-01`.
+date, an RFC 3339 timestamp with an offset, or a coarser stored value: a month
+(`2024-03`) or a four-digit year (`2024`), the forms a month- or year-precision
+attribute is stored in. Timestamp offsets are converted to UTC before truncation.
+A month or a year cannot be truncated to a finer part than it states, so
+`date_trunc('day', '2024-03')` has no value. The result is an ISO calendar date,
+such as `2024-02-01`.
 Naive timestamps, arbitrary cast types, decimal precision/scale, searched cases,
 aggregates and other SQL functions are outside this cut.
 

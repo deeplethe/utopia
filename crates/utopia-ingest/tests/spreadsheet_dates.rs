@@ -11,7 +11,7 @@ use std::io::{Cursor, Write};
 // 3 date and time (22), 4 time of day (20), 5 elapsed time (46), 6 "#,##0.00" (4).
 const STYLES: &str = r#"<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><numFmts count="1"><numFmt numFmtId="176" formatCode="yyyy&quot;年&quot;m&quot;月&quot;d&quot;日&quot;"/></numFmts><cellXfs count="7"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="14" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="176" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="22" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="20" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="46" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/><xf numFmtId="4" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/></cellXfs></styleSheet>"#;
 
-fn workbook(rows: &[Vec<String>], date1904: bool) -> Vec<u8> {
+fn workbook(rows: &[Vec<String>], date1904: bool, styles: &str) -> Vec<u8> {
     let sheet_data: String = rows
         .iter()
         .enumerate()
@@ -28,7 +28,7 @@ fn workbook(rows: &[Vec<String>], date1904: bool) -> Vec<u8> {
         ("_rels/.rels", r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>"#.to_string()),
         ("xl/workbook.xml", format!(r#"<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">{workbook_pr}<sheets><sheet name="Ledger" sheetId="1" r:id="rId1"/></sheets></workbook>"#)),
         ("xl/_rels/workbook.xml.rels", r#"<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>"#.to_string()),
-        ("xl/styles.xml", STYLES.to_string()),
+        ("xl/styles.xml", styles.to_string()),
         ("xl/worksheets/sheet1.xml", format!(r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>{sheet_data}</sheetData></worksheet>"#)),
     ] {
         zip.start_file(part, zip::write::SimpleFileOptions::default()).unwrap();
@@ -38,7 +38,7 @@ fn workbook(rows: &[Vec<String>], date1904: bool) -> Vec<u8> {
 }
 
 fn read(rows: &[Vec<String>], date1904: bool) -> String {
-    utopia_ingest::parse("ledger.xlsx", &workbook(rows, date1904))
+    utopia_ingest::parse("ledger.xlsx", &workbook(rows, date1904, STYLES))
         .unwrap()
         .text
 }
@@ -140,4 +140,95 @@ fn a_workbook_counting_from_1904_reads_the_same_date() {
         text.contains("| Short date | 2024-01-15 | 1200 |"),
         "{text}"
     );
+}
+
+fn read_format(format_id: u16, value: &str, date1904: bool, format_code: Option<&str>) -> String {
+    let custom = format_code.map_or_else(String::new, |code| {
+        let code = quick_xml::escape::escape(code);
+        format!(
+            r#"<numFmts count="1"><numFmt numFmtId="{format_id}" formatCode="{code}"/></numFmts>"#
+        )
+    });
+    let styles = format!(
+        r#"<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">{custom}<cellXfs count="1"><xf numFmtId="{format_id}" applyNumberFormat="1"/></cellXfs></styleSheet>"#
+    );
+    let rows = [
+        header(1),
+        vec![
+            words("A2", "Value"),
+            number("B2", 0, value),
+            words("C2", "ok"),
+        ],
+    ];
+    utopia_ingest::parse("ledger.xlsx", &workbook(&rows, date1904, &styles))
+        .unwrap()
+        .text
+}
+
+#[test]
+fn east_asian_builtin_dates_need_no_custom_format_definition() {
+    for format_id in [27, 31, 50, 58] {
+        for (date1904, serial) in [(false, "45306"), (true, "43844")] {
+            let text = read_format(format_id, serial, date1904, None);
+            assert!(
+                text.contains("| Value | 2024-01-15 | ok |"),
+                "format {format_id}: {text}"
+            );
+        }
+    }
+}
+
+#[test]
+fn east_asian_fractional_clock_times_and_explicit_formats_are_preserved() {
+    // calamine does not retain clock-only metadata; a serial >= 1 still gains a date.
+    for format_id in [32, 33] {
+        let text = read_format(format_id, "0.5", false, None);
+        assert!(
+            text.contains("| Value | 12:00 | ok |"),
+            "format {format_id}: {text}"
+        );
+    }
+    for (format_id, code, serial, expected) in [
+        (27, "0.00", "45306", "45306"),
+        (32, "yyyy-mm-dd", "45306", "2024-01-15"),
+        (27, "[h]:mm:ss", "1.5104166666666667", "36:15:00"),
+    ] {
+        let text = read_format(format_id, serial, false, Some(code));
+        assert!(
+            text.contains(&format!("| Value | {expected} | ok |")),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn east_asian_builtin_formats_are_normalized_in_xls() {
+    // Fixture from calamine PR #734, commit d93c5a463399a5554d287ebda0ed1d2a43377ec2,
+    // tests/date_east_asian.xls (MIT; license alongside). Rows 0..19 are IDs 27..36/50..58;
+    // each row stores 45306, 0.5, 45306.123456789 with no explicit format definition.
+    let text = utopia_ingest::parse(
+        "ledger.xls",
+        include_bytes!("fixtures/calamine/date_east_asian.xls"),
+    )
+    .unwrap()
+    .text;
+    let rows: Vec<_> = text
+        .lines()
+        .filter(|line| line.starts_with("| ") && !line.starts_with("| ---"))
+        .collect();
+    assert_eq!(rows.len(), 28, "{text}");
+    for row in [0, 4, 10, 18] {
+        // formats 27, 31, 50, 58
+        assert!(rows[row].starts_with("| 2024-01-15 |"), "row {row}: {text}");
+    }
+    for row in [5, 6] {
+        // formats 32, 33
+        assert_eq!(
+            rows[row].split('|').nth(2).unwrap().trim(),
+            "12:00",
+            "{text}"
+        );
+    }
+    assert!(rows[19].starts_with("| 45306 | 0.5 |"), "{text}"); // General
+    assert!(rows[24].starts_with("| 2024-01-15 |"), "{text}"); // Chinese custom date
 }

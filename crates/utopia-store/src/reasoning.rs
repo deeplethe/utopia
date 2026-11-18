@@ -798,8 +798,9 @@ pub async fn open_violations(
     limit: i64,
     offset: i64,
 ) -> AppResult<Vec<AxiomViolation>> {
+    // 让路径按事实 ID 查三元组，避免每条路径都扫描物化后的全库三元组。
     Ok(sqlx::query_as(&format!(
-        "WITH triple AS (
+        "WITH triple AS NOT MATERIALIZED (
              SELECT f.id,
                     s.canonical_name || ' · '
                       || COALESCE(r.label, fact_surface_predicate(f.id), '?') || ' · '
@@ -1448,19 +1449,7 @@ fn coarsest(a: Option<&str>, b: Option<&str>) -> Option<String> {
     }
 }
 
-/// 按本体公理重编译规则，返回 `(谓词, 种类) → 规则 id`。
-///
-/// **幂等**：身份取 `(kb, 谓词, 种类)`，重编译认得出「还是那条规则」——否则每跑
-/// 一次 `derived_facts.rule_id` 就指向一个新 id，历史全断。
-///
-/// **公理撤了的规则不删。** 已失效的派生行仍指着它，解释「当时是靠哪条规则推的」
-/// 需要它还在；而它不再出现在返回值里，据它推出来的事实由下面的对账作废。
-/// 规则一个库也就几条，留着不占地方。
-async fn compile_rules(
-    conn: &mut PgConnection,
-    kb_id: Uuid,
-    ax: &HashMap<Uuid, Axioms>,
-) -> AppResult<HashMap<(Uuid, RuleKind), Uuid>> {
+fn axiom_rule_keys(ax: &HashMap<Uuid, Axioms>) -> Vec<(Uuid, RuleKind)> {
     let mut want: Vec<(Uuid, RuleKind)> = Vec::new();
     for (&pred, a) in ax {
         if a.transitive {
@@ -1480,8 +1469,24 @@ async fn compile_rules(
         }
     }
     want.sort();
+    want
+}
+
+/// 按本体公理重编译规则，返回 `(谓词, 种类) → 规则 id`。
+///
+/// **幂等**：身份取 `(kb, 谓词, 种类)`，重编译认得出「还是那条规则」——否则每跑
+/// 一次 `derived_facts.rule_id` 就指向一个新 id，历史全断。
+///
+/// **公理撤了的规则不删。** 已失效的派生行仍指着它，解释「当时是靠哪条规则推的」
+/// 需要它还在；而它不再出现在返回值里，据它推出来的事实由下面的对账作废。
+/// 规则一个库也就几条，留着不占地方。
+async fn compile_rules(
+    conn: &mut PgConnection,
+    kb_id: Uuid,
+    ax: &HashMap<Uuid, Axioms>,
+) -> AppResult<HashMap<(Uuid, RuleKind), Uuid>> {
     let mut out = HashMap::new();
-    for (pred, kind) in want {
+    for (pred, kind) in axiom_rule_keys(ax) {
         sqlx::query(
             "INSERT INTO rules (id, kb_id, predicate_id, kind) VALUES ($1, $2, $3, $4)
              ON CONFLICT (kb_id, predicate_id, kind) DO NOTHING",
@@ -1503,6 +1508,45 @@ async fn compile_rules(
         out.insert((pred, kind), id);
     }
     Ok(out)
+}
+
+pub struct AxiomRule {
+    pub kind: &'static str,
+    pub predicate: String,
+    pub target: String,
+}
+
+/// 读编译器采用的声明，包含补齐的逆关系对。
+/// 已存规则还保留撤销的声明，新声明则可能尚未编译；列出它们不能物化或写规则。
+pub async fn active_axiom_rules(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<AxiomRule>> {
+    let mut conn = pool.acquire().await?;
+    let ax = axioms(&mut conn, kb_id).await?;
+    let names: HashMap<Uuid, String> =
+        sqlx::query_as("SELECT id, key FROM relation_types WHERE kb_id=$1")
+            .bind(kb_id)
+            .fetch_all(&mut *conn)
+            .await?
+            .into_iter()
+            .collect();
+    let mut rules = Vec::new();
+    for (predicate, kind) in axiom_rule_keys(&ax) {
+        let target = match kind {
+            "inverse" => ax[&predicate].inverse_of,
+            "sub_property" => ax[&predicate].sub_property_of,
+            _ => Some(predicate),
+        };
+        if let (Some(predicate), Some(target)) =
+            (names.get(&predicate), target.and_then(|id| names.get(&id)))
+        {
+            rules.push(AxiomRule {
+                kind,
+                predicate: predicate.clone(),
+                target: target.clone(),
+            });
+        }
+    }
+    rules.sort_by(|a, b| a.predicate.cmp(&b.predicate).then(a.kind.cmp(b.kind)));
+    Ok(rules)
 }
 
 /// 取边时一并拿回来的随行信息（精度与置信度，落库要用）。
@@ -2783,6 +2827,26 @@ pub async fn due_for_inference(pool: &PgPool) -> AppResult<Vec<Uuid>> {
     .await?)
 }
 
+/// 定时扫描的一拍：到期的库各排一份推理任务，已经排着一份的不再排。
+///
+/// 只跳过排着的就够（#1304）：处理器先 `mark_inference_ran` 再推，任务一开始跑这个库就
+/// 不再到期；还到期的只有任务排着、`last_inference_at` 还没动的那段，而那段正是这里挡住的。
+/// 一个库排不进去不拦着别的库
+pub async fn queue_due_inferences(pool: &PgPool) -> AppResult<()> {
+    for kb_id in due_for_inference(pool).await? {
+        if let Err(e) = crate::jobs::enqueue_unless_queued(
+            pool,
+            "materialize_inferences",
+            json!({ "kb_id": kb_id }),
+        )
+        .await
+        {
+            tracing::warn!(kb_id = %kb_id, error = %e, "推理任务入队失败");
+        }
+    }
+    Ok(())
+}
+
 /// 记下这一轮推完的时间。
 ///
 /// **推完就记，哪怕什么都没变**：这一列答的是「上次看过没有」，不是「上次改过
@@ -2811,7 +2875,7 @@ pub async fn proof(
     let Some(derived) = derived_one(pool, kb_id, derived_id).await? else {
         return Ok(None);
     };
-    let steps = premise_steps(pool, derived_id, 0).await?;
+    let steps = premise_steps(pool, kb_id, derived_id, 0).await?;
     Ok(Some(utopia_core::models::Proof { derived, steps }))
 }
 
@@ -2821,6 +2885,7 @@ pub async fn proof(
 /// 到底了就停在那一步上——它自己的三元组还是列出来的，只是不再往下问。
 fn premise_steps<'a>(
     pool: &'a PgPool,
+    kb_id: Uuid,
     derived_id: Uuid,
     depth: usize,
 ) -> std::pin::Pin<
@@ -2840,11 +2905,12 @@ fn premise_steps<'a>(
         .await?;
         // 断言那几步一次取完（每一步还要各取一次证据），派生那几步逐条问
         let asserted: Vec<Uuid> = rows.iter().filter_map(|(_, f, _)| *f).collect();
-        let mut by_fact: HashMap<Uuid, utopia_core::models::ProofStep> = steps_for(pool, &asserted)
-            .await?
-            .into_iter()
-            .map(|s| (s.fact_id, s))
-            .collect();
+        let mut by_fact: HashMap<Uuid, utopia_core::models::ProofStep> =
+            steps_for(pool, kb_id, &asserted)
+                .await?
+                .into_iter()
+                .map(|s| (s.fact_id, s))
+                .collect();
 
         let mut steps = Vec::with_capacity(rows.len());
         for (seq, fact, derived) in rows {
@@ -2860,7 +2926,7 @@ fn premise_steps<'a>(
                 };
                 step.seq = seq;
                 if depth + 1 < utopia_reason::MAX_DEPTH {
-                    step.premises = premise_steps(pool, d, depth + 1).await?;
+                    step.premises = premise_steps(pool, kb_id, d, depth + 1).await?;
                 }
                 steps.push(step);
             }
@@ -2948,6 +3014,7 @@ async fn derived_step(
 /// 走——前提是同一种东西，证明链没有理由长两个样
 async fn steps_for(
     pool: &PgPool,
+    kb_id: Uuid,
     premises: &[Uuid],
 ) -> AppResult<Vec<utopia_core::models::ProofStep>> {
     #[allow(clippy::type_complexity)]
@@ -2996,7 +3063,7 @@ async fn steps_for(
     ) in rows
     {
         // 一条链最多 MAX_DEPTH 步，逐条取证据是可数的几次往返
-        let evidence = crate::graph::fact_evidence(pool, fact_id).await?;
+        let evidence = crate::graph::fact_evidence(pool, kb_id, fact_id).await?;
         steps.push(utopia_core::models::ProofStep {
             seq: seq as i32,
             fact_id,
@@ -3082,11 +3149,12 @@ pub async fn blocked_proof(
     .await?;
     match path {
         None => Ok(None),
-        Some((p,)) => Ok(Some(steps_for(pool, &p).await?)),
+        Some((p,)) => Ok(Some(steps_for(pool, kb_id, &p).await?)),
     }
 }
 
 /// 按 id 取一条派生（失效的也取：证明要能回看）。
+/// 公理名字取声明它的谓词，不取结论谓词；撤销的公理也仍要能解释历史事实。
 async fn derived_one(
     pool: &PgPool,
     kb_id: Uuid,
@@ -3103,7 +3171,7 @@ async fn derived_one(
                          d.object_value #>> '{}') AS object,
                 r.label AS predicate,
                 COALESCE(ru.kind, 'business') AS rule,
-                ar.name AS rule_name,
+                COALESCE(ar.name, ru.kind || ' of ' || rp.key) AS rule_name,
                 v.seq AS rule_version, v.definition AS rule_definition,
                 d.valid_from, d.valid_to, d.confidence, d.derived_at,
                 COALESCE(
@@ -3127,6 +3195,8 @@ async fn derived_one(
            LEFT JOIN entities o ON o.id = d.object_id
            JOIN relation_types r ON r.id = d.predicate_id
            LEFT JOIN rules ru ON ru.id = d.rule_id
+           LEFT JOIN relation_types rp ON rp.id = ru.predicate_id
+                AND rp.kb_id = d.kb_id AND ru.kb_id = d.kb_id
            LEFT JOIN attribute_rules ar ON ar.id = d.attribute_rule_id
            LEFT JOIN attribute_rule_versions v ON v.id = d.attribute_rule_version_id
            LEFT JOIN entity_types ct ON ct.id = ar.conclude_type_id
@@ -3170,7 +3240,7 @@ pub async fn derived_for_entity(
                          d.object_value #>> '{{}}') AS object,
                 r.label AS predicate,
                 COALESCE(ru.kind, 'business') AS rule,
-                ar.name AS rule_name,
+                COALESCE(ar.name, ru.kind || ' of ' || rp.key) AS rule_name,
                 v.seq AS rule_version, v.definition AS rule_definition,
                 d.valid_from, d.valid_to, d.confidence, d.derived_at,
                 COALESCE(
@@ -3194,6 +3264,8 @@ pub async fn derived_for_entity(
            LEFT JOIN entities o ON o.id = d.object_id
            JOIN relation_types r ON r.id = d.predicate_id
            LEFT JOIN rules ru ON ru.id = d.rule_id
+           LEFT JOIN relation_types rp ON rp.id = ru.predicate_id
+                AND rp.kb_id = d.kb_id AND ru.kb_id = d.kb_id
            LEFT JOIN attribute_rules ar ON ar.id = d.attribute_rule_id
            LEFT JOIN attribute_rule_versions v ON v.id = d.attribute_rule_version_id
            LEFT JOIN entity_types ct ON ct.id = ar.conclude_type_id

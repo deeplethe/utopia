@@ -16,7 +16,20 @@ SHA-256 hash, `scope` read or write, `kb_ids` or every base, `expires_at` with 9
 default, `last_used_at`, `revoked_at` as a trace); effective permission is the person's role
 intersected with the token's scope; every MCP call re-runs authentication, scope and role in SQL and
 writes an audit row `mcp.tool_called`; the tokens page shows the plaintext once beside a client
-snippet [0014]. `ingest_token` on a source is a different kind: plaintext, push-only [0014].
+snippet [0014]. A `write` token also sets up a base as its owner: creating a base and a `statements` or `api` source,
+reading the source's push key, importing an ontology and deciding a kind word, with the owner's
+role unchanged as the ceiling; any token lists a workspace's bases; a token limited by `kb_ids`
+creates no base. These routes, document content, eight graph reads (entity search, detail,
+history, fact evidence, overview, neighbourhood, ontology, a class's instances; Viewer suffices,
+`kb_ids` answers 404), a document's extractions, the base's export (its `kb.exported` row
+names the token) and chunk search take `SessionOrToken`; apart from MCP, every other route is session-only [0014 d6, d7]. `ingest_token` on a source is a different kind: plaintext, push-only [0014].
+
+**A client reads a pushed document back by its `external_id`.**
+`GET /kbs/{id}/sources/{sid}/documents/by-external-id?external_id=…` finds an `api` or `statements`
+source's document by the id it was pushed under and returns its metadata, current text and version
+list. It is document content: Viewer, a session or any token whose `kb_ids` reach the base, and not
+the source's push key, so a leaked key stays push-only; a document in the trash, a tombstoned id
+and one never pushed are all 404 [0014 d7, 0052].
 
 **Another app can trade its user's fresh ID token for a session.** `POST /auth/oidc/exchange`
 accepts an ID token from the configured issuer whose audience is in
@@ -80,5 +93,3 @@ removed or renamed only with a record [0020 revised].
 
 - What evidence an external agent's fact carries and how its SQL runs are audited [0014].
 - Whether an exchanged session should be narrower and shorter than a login's [0066].
-- Whether 0014's status line still holds: it says `can_write` is hard-coded false, while #735
-  exercises `remember` over MCP with a write token; check the code before relying on either.

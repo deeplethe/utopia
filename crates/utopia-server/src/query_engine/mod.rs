@@ -219,7 +219,7 @@ pub(crate) fn coerce(type_name: &str, raw: &serde_json::Value) -> serde_json::Va
         if let Ok(n) = s.parse::<i64>() {
             return n.into();
         }
-        if let Ok(f) = s.parse::<f64>() {
+        if let Some(f) = s.parse::<f64>().ok().filter(|_| fits_f64(&ty, s)) {
             if let Some(n) = serde_json::Number::from_f64(f) {
                 return serde_json::Value::Number(n);
             }
@@ -233,6 +233,20 @@ pub(crate) fn coerce(type_name: &str, raw: &serde_json::Value) -> serde_json::Va
         }
     }
     raw.clone()
+}
+
+/// 定点数（DECIMAL / NUMERIC / NUMBER / FIXED）有效数字超过 15 位时 f64 装不下，
+/// 转成数就改了值：`12345678901234567.89` 会变成 `12345678901234568`。那样留字符串
+fn fits_f64(ty: &str, s: &str) -> bool {
+    if !["DECIMAL", "NUMERIC", "NUMBER", "FIXED"]
+        .iter()
+        .any(|k| ty.contains(k))
+    {
+        return true;
+    }
+    let mantissa = s.split(['e', 'E']).next().unwrap_or_default();
+    let digits: String = mantissa.chars().filter(char::is_ascii_digit).collect();
+    digits.trim_start_matches('0').trim_end_matches('0').len() <= 15
 }
 
 /// 单引号字面量的转义：schema 名进 information_schema 的 WHERE 子句
@@ -413,5 +427,26 @@ mod tests {
         assert_eq!(coerce("STRING", &json!("42")), json!("42"));
         assert_eq!(coerce("INTERVAL", &json!("1 day")), json!("1 day"));
         assert_eq!(coerce("DOUBLE", &json!(null)), json!(null));
+    }
+
+    #[test]
+    fn an_exact_decimal_longer_than_a_double_stays_exact() {
+        assert_eq!(
+            coerce("DECIMAL(20,2)", &json!("12345678901234567.89")),
+            json!("12345678901234567.89")
+        );
+        assert_eq!(
+            coerce("fixed", &json!("12345678901234567890")),
+            json!("12345678901234567890")
+        );
+        assert_eq!(coerce("DECIMAL", &json!("1234.50")), json!(1234.5));
+        assert_eq!(
+            coerce("fixed", &json!("100000000000000000000")),
+            json!(1e20)
+        );
+        assert_eq!(
+            coerce("DOUBLE", &json!("0.30000000000000004")),
+            json!(0.30000000000000004)
+        );
     }
 }

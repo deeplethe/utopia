@@ -132,6 +132,20 @@ fn fits_direction(
         via.extend(within(&p.domains, sig.subject_type_id, closure)?);
         return Some(Fit { via });
     }
+    if p.kind == "attribute" {
+        // 宾语是实体的签名也能绑文本属性（0044 修订 2026-10-22）：法定代表人、注册地址的值
+        // 是个名字，抽取把它列成了东西；只认正向，名字就是值。数、日期、真假不是名字。
+        // 没声明定义域的不算（`known_as` 这类）：没声明是「不限」，它会出现在每一条关系签名
+        // 的候选里，同 NVDA 上泛泛的 value 属性吞掉现金流量表每一行的教训
+        if p.datatype.as_deref() != Some("text")
+            || direction != Direction::Forward
+            || p.domains.is_empty()
+        {
+            return None;
+        }
+        via.extend(within(&p.domains, sig.subject_type_id, closure)?);
+        return Some(Fit { via });
+    }
     if p.kind != "relation" {
         return None;
     }
@@ -163,8 +177,145 @@ fn invalid_agent_direction(
             })
 }
 
+/// 这条关系叫这个短语：键或标签归一后与它相等（同类别词的归一）。像不算——
+/// 「validated by tests」不是 validated_by，那是模型的题
+fn named_by(p: &RelationTypeView, phrase: &str) -> bool {
+    phrase_bindings::normalize(&p.key) == phrase || phrase_bindings::normalize(&p.label) == phrase
+}
+
+/// 签名的短语正好是一条声明了的关系（#1242）：它叫这个短语，主语的类落在声明的域里、
+/// 宾语的类落在值域里（经继承也算），只认正向。域或值域没声明的不算——没声明是「不限」，
+/// 不是「就是它」；一端没有类的也不算。状态关系不算：绑上它还得说只带一个日期的陈述那个
+/// 日期标哪一端（`marks`，#966），本体答不了，留给对齐器——它绑上、顺带问这一格，问不到的
+/// 进队列等人。叫这个短语、两端也都对得上的不止一条，谁也不认：两条关系叫得一样，该由人
+/// 或模型来挑
+fn declared<'a>(
+    sig: &PhraseSignature,
+    props: &'a [RelationTypeView],
+    closure: &Closure,
+) -> Option<&'a RelationTypeView> {
+    if sig.object_is_value {
+        return None;
+    }
+    let mut fitting = props.iter().filter(|p| {
+        p.kind == "relation"
+            && p.temporal != "state"
+            && !p.domains.is_empty()
+            && !p.ranges.is_empty()
+            && named_by(p, &sig.phrase)
+            && fits_direction(p, sig, closure, Direction::Forward).is_some()
+    });
+    let only = fitting.next()?;
+    fitting.next().is_none().then_some(only)
+}
+
+/// 对齐器不再判的判定：人的；本体判的、此刻仍是它声明的那条关系的。本体判的行没有指纹，
+/// 按指纹比永远「过期」——不先放过它，每轮都会把它送去问模型、收尾时又以为变了再排一份
+fn settled(
+    b: &phrase_bindings::Binding,
+    sig: &PhraseSignature,
+    props: &[RelationTypeView],
+    closure: &Closure,
+) -> bool {
+    b.decided_by == "person"
+        || (b.decided_by == "ontology"
+            && b.relation_type_id.is_some()
+            && declared(sig, props, closure).map(|p| p.id) == b.relation_type_id)
+}
+
+/// 推送来的文档抽完（0054）：它的陈述落在的签名里，短语正好是一条声明了的关系的，由本体
+/// 直接绑上，记成本体判的（#1242）。不问模型，没配对话模型也照判；别的签名照旧留给对齐器。
+/// 判定照旧是签名上的一行（0044 决定 3），人看得见、改得了；人的判定不动（`decide_on`
+/// 的规矩），已经由本体按同一条关系判过的不重写——判定时刻和回归记录不该随每次推送翻新。
+/// 返回写下的判定数
+pub(crate) async fn bind_declared(
+    pool: &sqlx::PgPool,
+    kb_id: Uuid,
+    document_id: Uuid,
+) -> anyhow::Result<usize> {
+    let props = utopia_store::ontology::relation_type_views(pool, kb_id).await?;
+    let keys: HashSet<SignatureKey> =
+        phrase_bindings::signature_keys_of_document(pool, kb_id, document_id)
+            .await?
+            .into_iter()
+            .filter(|(phrase, ..)| props.iter().any(|p| named_by(p, phrase)))
+            .collect();
+    // 多数推送没有一个短语叫得出关系的名字：库级的签名就不必数了
+    if keys.is_empty() {
+        return Ok(0);
+    }
+    let classes = utopia_store::graph::entity_types(pool, kb_id).await?;
+    let closure = closures(classes.iter().map(|c| (c.id, c.parents.as_slice())));
+    let existing: HashMap<_, _> = phrase_bindings::bindings(pool, kb_id)
+        .await?
+        .into_iter()
+        .map(|b| (b.key(), b))
+        .collect();
+    // 判过的先剔掉：库级的签名是整库分组，每次推送都数一遍太贵（#1296）
+    let keys: HashSet<SignatureKey> = keys
+        .into_iter()
+        .filter(|k| {
+            !existing
+                .get(k)
+                .is_some_and(|b| settled(b, &keyed(k), &props, &closure))
+        })
+        .collect();
+    if keys.is_empty() {
+        return Ok(0);
+    }
+    let mut written = 0;
+    for s in phrase_bindings::signatures(pool, kb_id)
+        .await?
+        .iter()
+        .filter(|s| keys.contains(&s.key()))
+    {
+        let Some(p) = declared(s, &props, &closure) else {
+            continue;
+        };
+        if phrase_bindings::decide(
+            pool,
+            kb_id,
+            s,
+            Decision {
+                relation_type_id: Some(p.id),
+                direction: Some(Direction::Forward.as_str()),
+                status: "bound",
+                votes: &serde_json::json!({ "reason": "declared_relation" }),
+                decided_by: "ontology",
+                basis: None,
+                marks: None,
+                marks_asked: false,
+            },
+        )
+        .await?
+        {
+            written += 1;
+        }
+    }
+    Ok(written)
+}
+
 /// 签名的键：短语 + 两端的类 + 宾语是不是字面值（与 `PhraseSignature::key` 同形）
 type SignatureKey = (String, Option<Uuid>, Option<Uuid>, bool);
+
+/// 只有键的签名：`settled` 只看键上的这几格，不必为它把库里的签名数一遍
+fn keyed(
+    (phrase, subject_type_id, object_type_id, object_is_value): &SignatureKey,
+) -> PhraseSignature {
+    PhraseSignature {
+        phrase: phrase.clone(),
+        subject_type_id: *subject_type_id,
+        subject_type_key: None,
+        object_type_id: *object_type_id,
+        object_type_key: None,
+        object_is_value: *object_is_value,
+        count: 0,
+        examples: Vec::new(),
+        quotes: Vec::new(),
+        example_statement_ids: Vec::new(),
+    }
+}
+
 /// 每条签名此刻的候选与指纹
 type Considered<'a> = HashMap<SignatureKey, (Vec<&'a RelationTypeView>, String)>;
 
@@ -363,6 +514,9 @@ async fn shortlist(
                     tracing::warn!(%kb_id, sent = batch.len(), got = v.len(), "签名向量数量对不上，这一批不开短名单");
                     continue;
                 }
+                // 欠费不是这一批的事：跳过它，后面每批、下一份对齐都撞同一个 429，而任务
+                // 照样 done、告警不响、马上再排一份（#1360）。带着类型出去，`alerting::hopeless` 才看得见
+                Err(e) if utopia_llm::out_of_credit(&e).is_some() => return Err(e),
                 Err(e) => {
                     tracing::warn!(%kb_id, error = %e, "签名向量没算出来，这一批不开短名单");
                     continue;
@@ -382,12 +536,13 @@ async fn shortlist(
             continue;
         };
         let (fitting, _) = &full[&s.key()];
+        // 字面值的签名只绑属性；宾语是实体的两种都可能（关系，或文本属性），不按类筛
         let near = utopia_store::ontology::nearest_relation_type_ids(
             pool,
             kb_id,
             vector,
             (fitting.len() * 2) as i64,
-            Some(property_kind(s)),
+            s.object_is_value.then_some("attribute"),
         )
         .await?;
         if near.is_empty() {
@@ -463,6 +618,8 @@ async fn shortlist_kind_words(
             let _permit = llm_util::acquire_embed(state, settings).await;
             match client.embed(&texts).await {
                 Ok(v) if v.len() == batch.len() => v,
+                // 同 `shortlist`：欠费停下整轮
+                Err(e) if utopia_llm::out_of_credit(&e).is_some() => return Err(e),
                 Ok(_) | Err(_) => {
                     tracing::warn!(%kb_id, "类别词向量没算出来，这一批看全部候选");
                     continue;
@@ -587,6 +744,27 @@ pub async fn align_phrases_reasking(
     result
 }
 
+/// 对齐收尾：没绑上的形状够多，叫本体代理来看（0061 决定 2）。代理自己跳过提过的，
+/// 所以这里只数不筛；一分钟的去抖让连着几篇文档只叫一次。有属性没属性都从这里过——
+/// 空本体的签名全判「没有」，正是代理该来的时候
+async fn queue_ontology_agent_if_unbound(pool: &sqlx::PgPool, kb_id: Uuid) -> anyhow::Result<()> {
+    let unbound = phrase_bindings::bindings(pool, kb_id)
+        .await?
+        .iter()
+        .filter(|b| matches!(b.status.as_str(), "none" | "undecided"))
+        .count();
+    if unbound >= crate::ontology_agent::TRIGGER_UNBOUND {
+        utopia_store::jobs::enqueue_unless_pending(
+            pool,
+            "propose_ontology",
+            serde_json::json!({ "kb_id": kb_id }),
+            std::time::Duration::from_secs(60),
+        )
+        .await?;
+    }
+    Ok(())
+}
+
 async fn align_phrases_locked(
     state: &AppState,
     kb_id: Uuid,
@@ -614,14 +792,14 @@ async fn align_phrases_locked(
     let short = shortlist(state, settings, kb_id, &sigs, &full).await?;
     let considered = consider(&sigs, &props, &closure, &versions, Some(&short));
     // 过期 = 存下的指纹和此刻的不一样（没有指纹的是这一列出现前判的，各重判一次）。
-    // 不再按时间戳：父边的增删、请求途中的编辑（#795）时间戳看不见。人的判定不重判。
-    // 绑到状态属性、从没问过一刻标哪一端的代理判定也问（`awaits_marks`，#966）
+    // 不再按时间戳：父边的增删、请求途中的编辑（#795）时间戳看不见。人的判定、本体仍认的
+    // 判定（`settled`）不重判。绑到状态属性、从没问过一刻标哪一端的代理判定也问（`awaits_marks`，#966）
     let todo: Vec<&PhraseSignature> = sigs
         .iter()
         .filter(|s| match existing.get(&s.key()) {
             None => true,
             Some(b) => {
-                b.decided_by != "person"
+                !settled(b, s, &props, &closure)
                     && (b.basis.as_deref() != Some(considered[&s.key()].1.as_str())
                         || awaits_marks(b, &props)
                         || invalid_agent_direction(b, s, &props, &closure))
@@ -663,6 +841,8 @@ async fn align_phrases_locked(
             )
             .await?;
         }
+        // 空本体正是需要本体代理的时候：照样数未绑签名、够了就排它，本体才长得出来
+        queue_ontology_agent_if_unbound(pool, kb_id).await?;
         return Ok(());
     }
 
@@ -800,6 +980,9 @@ async fn align_phrases_locked(
                     .await
                 {
                     Ok(r) => r,
+                    // 欠费：这一批的 future 带着错误返回，下面的 `r?` 让整轮失败一次、告警响起，
+                    // 不按 failed 记——记了只会自己再排一份，撞同一个 429（#1360）
+                    Err(e) if utopia_llm::out_of_credit(&e).is_some() => return Err(e),
                     Err(e) => {
                         tracing::warn!(%kb_id, error = %e, "短语对齐调用失败，这一批留到下次");
                         failed += 1;
@@ -824,8 +1007,10 @@ async fn align_phrases_locked(
                     %kb_id,
                     pass,
                     items = items.len(),
+                    item_ids = ?items.iter().map(|item| item.id).collect::<Vec<_>>(),
                     malformed,
                     finish_reason = ?reply.finish_reason,
+                    repeating = reply.repeating,
                     chars = reply.text.chars().count(),
                     reply = %snippet(&reply.text),
                     "短语对齐回复读不出一条，这一批留到下次"
@@ -1267,7 +1452,7 @@ async fn align_phrases_locked(
         sigs.iter().any(|s| match now.get(&s.key()) {
             None => !attempted.contains(&s.key()),
             Some(b) => {
-                b.decided_by != "person"
+                !settled(b, s, &props, &closure)
                     && b.basis.as_deref() != Some(now_considered[&s.key()].1.as_str())
             }
         })
@@ -1277,23 +1462,8 @@ async fn align_phrases_locked(
     // 漏答的签名就只能等下一篇文档来排——最后一篇之后没有下一篇，它们就永远没有结论；
     // 而漏答不写任何行，审核队列也看不见（同类别词对齐）
     let unfinished = failed > 0 || unanswered > 0;
-    // 对齐收尾：没绑上的形状够多，叫本体代理来看（0061 决定 2）。代理自己跳过提过的，
-    // 所以这里只数不筛；一分钟的去抖让连着几篇文档只叫一次
     if !changed && !unfinished {
-        let unbound = phrase_bindings::bindings(pool, kb_id)
-            .await?
-            .iter()
-            .filter(|b| matches!(b.status.as_str(), "none" | "undecided"))
-            .count();
-        if unbound >= crate::ontology_agent::TRIGGER_UNBOUND {
-            utopia_store::jobs::enqueue_unless_pending(
-                pool,
-                "propose_ontology",
-                serde_json::json!({ "kb_id": kb_id }),
-                std::time::Duration::from_secs(60),
-            )
-            .await?;
-        }
+        queue_ontology_agent_if_unbound(pool, kb_id).await?;
     }
     if changed {
         utopia_store::jobs::enqueue_unless_queued(
@@ -1321,6 +1491,10 @@ async fn align_phrases_locked(
 #[cfg(test)]
 #[path = "phrase_alignment_tests.rs"]
 mod lifecycle_tests;
+
+#[cfg(test)]
+#[path = "phrase_alignment_declared_tests.rs"]
+mod declared_tests;
 
 #[cfg(test)]
 mod tests {

@@ -5,6 +5,11 @@ function makeStore(key: string) {
   const listeners = new Set<() => void>();
   return {
     get: () => current,
+    clear: () => {
+      current = null;
+      localStorage.removeItem(key);
+      listeners.forEach((l) => l());
+    },
     set: (id: string) => {
       current = id;
       localStorage.setItem(key, id);

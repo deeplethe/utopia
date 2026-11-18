@@ -257,6 +257,7 @@ async fn an_end_that_was_never_there_can_be_taken_back() -> anyhow::Result<()> {
                 to_precision: Some("year"),
                 attested_at: None,
                 from_grade: None,
+                ..Default::default()
             },
         )
         .await?

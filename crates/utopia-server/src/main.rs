@@ -10,6 +10,10 @@ mod error;
 mod extraction;
 mod extraction_open;
 mod github_issues;
+mod github_repo;
+mod gitlab_issues;
+mod gitlab_repo;
+mod google_drive;
 mod governance;
 mod http_fetch;
 mod implication;
@@ -30,12 +34,18 @@ mod owl_import;
 mod pack_alignment;
 mod phrase_alignment;
 mod pipeline;
+mod pushed_keys;
 mod query_engine;
 mod rdf;
 mod readers;
 mod retrieval;
 mod rss_full_content;
+mod scenario_packs;
+mod search_recovery;
 mod state;
+mod ticket;
+#[cfg(test)]
+mod ticket_golden_tests;
 mod time_resolution;
 mod time_text;
 mod type_alignment;
@@ -139,7 +149,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let index_dir = std::path::Path::new(&cfg.data_dir).join("index");
-    let search = Arc::new(SearchIndex::open(&index_dir)?);
+    let search = Arc::new(search_recovery::open(&index_dir)?);
     tracing::info!("全文索引就绪: {}", index_dir.display());
 
     // **索引落空就自己重建，不给按钮。**
@@ -150,7 +160,7 @@ async fn main() -> anyhow::Result<()> {
     //
     // 判据是「库里有分块而索引空着」，不是「数目对不对得上」：后者在正常运行中
     // 也会短暂不等（一篇文档正在索引），拿它当判据会让每次启动都重建一遍。
-    reindex_if_empty(&pool, &search).await;
+    reindex_if_empty(&pool, &search, &index_dir).await;
 
     // JWT 密钥：环境变量优先（轮换、多实例显式对齐走这条），否则用库里那条；
     // 库里也没有就现生成一条存进去。生成放在这里而不是 store 里，是因为
@@ -169,6 +179,8 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let state = AppState::new(pool.clone(), &cfg, search, jwt_secret);
+    api::oidc_routes::warn_about_password_login(&state);
+    api::oidc_routes::warn_about_scopes();
 
     // worker 并发数：系统设置持久化，启动时装载；运行中经同一 AtomicUsize 热调
     let n = utopia_store::access::worker_concurrency(&pool)
@@ -222,20 +234,10 @@ async fn main() -> anyhow::Result<()> {
             match utopia_store::sources::due_sources(&sched_state.pool).await {
                 Ok(due) => {
                     for s in due {
-                        match utopia_store::sources::mark_queued(&sched_state.pool, s.id).await {
-                            Ok(true) => {
-                                if let Err(e) = utopia_store::jobs::enqueue(
-                                    &sched_state.pool,
-                                    "sync_source",
-                                    serde_json::json!({ "source_id": s.id }),
-                                )
-                                .await
-                                {
-                                    tracing::warn!(source_id = %s.id, error = %e, "同步任务入队失败");
-                                }
-                            }
-                            Ok(false) => {}
-                            Err(e) => tracing::warn!(source_id = %s.id, error = %e, "标记入队失败"),
+                        if let Err(e) =
+                            utopia_store::sources::enqueue_sync(&sched_state.pool, s.id).await
+                        {
+                            tracing::warn!(source_id = %s.id, error = %e, "同步任务入队失败");
                         }
                     }
                 }
@@ -258,21 +260,8 @@ async fn main() -> anyhow::Result<()> {
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             tick.tick().await;
-            match utopia_store::reasoning::due_for_inference(&infer_state.pool).await {
-                Ok(due) => {
-                    for kb_id in due {
-                        if let Err(e) = utopia_store::jobs::enqueue(
-                            &infer_state.pool,
-                            "materialize_inferences",
-                            serde_json::json!({ "kb_id": kb_id }),
-                        )
-                        .await
-                        {
-                            tracing::warn!(kb_id = %kb_id, error = %e, "推理任务入队失败");
-                        }
-                    }
-                }
-                Err(e) => tracing::warn!(error = %e, "扫描到期推理失败"),
+            if let Err(e) = utopia_store::reasoning::queue_due_inferences(&infer_state.pool).await {
+                tracing::warn!(error = %e, "扫描到期推理失败");
             }
         }
     });
@@ -304,6 +293,36 @@ async fn main() -> anyhow::Result<()> {
             }
         }
     });
+
+    // 被取代的分块留不留向量由部署决定：不设 `UTOPIA_SUPERSEDED_VECTOR_DAYS` 就什么都不排
+    if let Some(days) = cfg.superseded_vector_days {
+        let prune_state = state.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(86_400));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tick.tick().await;
+                let bases = match utopia_store::retention::bases(&prune_state.pool).await {
+                    Ok(bases) => bases,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "列出要清理的库失败");
+                        continue;
+                    }
+                };
+                for kb_id in bases {
+                    if let Err(e) = utopia_store::jobs::enqueue_unless_queued(
+                        &prune_state.pool,
+                        utopia_store::retention::JOB_KIND,
+                        serde_json::json!({ "kb_id": kb_id, "days": days }),
+                    )
+                    .await
+                    {
+                        tracing::warn!(kb_id = %kb_id, error = %e, "清理任务入队失败");
+                    }
+                }
+            }
+        });
+    }
 
     let app = api::router(state, &cfg);
     let listener = tokio::net::TcpListener::bind(&cfg.bind_addr).await?;
@@ -339,21 +358,10 @@ async fn main() -> anyhow::Result<()> {
 ///
 /// 失败只告警不阻断启动：检索退化成「暂时搜不到」，而整个服务起不来是更坏的
 /// 结果。日志里那一行说清了发生什么，下次重启还会再试。
-async fn reindex_if_empty(pool: &sqlx::PgPool, search: &SearchIndex) {
+async fn reindex_if_empty(pool: &sqlx::PgPool, search: &SearchIndex, index_dir: &std::path::Path) {
     if !search.is_empty() {
         return;
     }
-    let total = match utopia_store::documents::live_chunk_count(pool).await {
-        Ok(n) => n,
-        Err(e) => {
-            tracing::warn!(error = %e, "数不出分块数，跳过索引重建");
-            return;
-        }
-    };
-    if total == 0 {
-        return;
-    }
-    tracing::info!(chunks = total, "全文索引是空的，从库里重建");
     let rows = match utopia_store::documents::all_chunks_for_index(pool).await {
         Ok(r) => r,
         Err(e) => {
@@ -361,30 +369,17 @@ async fn reindex_if_empty(pool: &sqlx::PgPool, search: &SearchIndex) {
             return;
         }
     };
-    // 按文档攒批再写：`reindex_document` 一次替换一篇文档的全部分块，
-    // 逐条调会把前一条刚写的删掉
-    let mut current: Option<(uuid::Uuid, uuid::Uuid)> = None;
-    let mut batch: Vec<(String, String)> = Vec::new();
-    let mut done = 0usize;
-    let flush = |key: Option<(uuid::Uuid, uuid::Uuid)>, batch: &mut Vec<(String, String)>| {
-        if let Some((kb, doc)) = key {
-            if let Err(e) = search.reindex_document(&kb.to_string(), &doc.to_string(), batch) {
-                tracing::warn!(error = %e, document = %doc, "重建索引时有一篇没写进去");
-            }
-        }
-        batch.clear();
-    };
-    for (kb_id, doc_id, chunk_id, text) in rows {
-        if current != Some((kb_id, doc_id)) {
-            flush(current, &mut batch);
-            current = Some((kb_id, doc_id));
-        }
-        batch.push((chunk_id.to_string(), text));
-        done += 1;
+    let total = rows.len();
+    if total > 0 {
+        tracing::info!(chunks = total, "全文索引是空的，从库里重建");
     }
-    // `reindex_document` 自己 commit，所以这里不必再提交一次
-    flush(current, &mut batch);
-    tracing::info!(chunks = done, "全文索引重建完成");
+    // Even an empty database completes an interrupted rebuild: otherwise the
+    // marker would make every subsequent startup discard an empty generation.
+    match search_recovery::rebuild(index_dir, search, rows) {
+        Ok(()) if total > 0 => tracing::info!(chunks = total, "全文索引重建完成"),
+        Ok(()) => {}
+        Err(e) => tracing::warn!(error = %e, "全文索引未重建完，下次启动重试"),
+    }
 }
 ///
 /// 任务分发：新任务类型在这里注册。
@@ -623,6 +618,28 @@ async fn dispatch(st: &state::AppState, job: &utopia_store::jobs::Job) -> anyhow
                 .and_then(|s| s.parse().ok())
                 .ok_or_else(|| anyhow::anyhow!("payload 缺少 kb_id"))?;
             adjudication::adjudicate_entities(st, kb_id).await
+        }
+        utopia_store::retention::JOB_KIND => {
+            let kb_id: Uuid = job
+                .payload
+                .get("kb_id")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse().ok())
+                .ok_or_else(|| anyhow::anyhow!("payload 缺少 kb_id"))?;
+            let days = job
+                .payload
+                .get("days")
+                .and_then(|v| v.as_i64())
+                .ok_or_else(|| anyhow::anyhow!("payload 缺少 days"))?;
+            let vectors_cleared =
+                utopia_store::retention::prune_superseded(&st.pool, kb_id, days).await?;
+            tracing::info!(
+                %kb_id,
+                days,
+                vectors_cleared,
+                "被取代的分块清理完成"
+            );
+            Ok(())
         }
         "govern" => {
             let kb_id: Uuid = job

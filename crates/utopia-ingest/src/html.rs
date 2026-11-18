@@ -47,6 +47,22 @@ mod table_tests {
         assert!(md.contains("b"), "有内容的列不能砍: {md}");
     }
 
+    /// 页面标题「Pricing」又出现在表名「Pricing tiers」里：那是表的名字，不是正文里的标题
+    #[test]
+    fn a_caption_that_repeats_the_page_title_keeps_the_title_heading() {
+        let page = "<html><head><title>Pricing</title></head><body><article>\
+            <p>Every plan includes unlimited projects, daily backups and email support. Teams that \
+            pay for a year are charged for ten months, and the discount applies again at each \
+            renewal. Amounts are in US dollars before tax; invoices list the tax of the country \
+            the account is billed in. A plan can be changed at any time, prorated to the day.</p>\
+            <table><caption>Pricing tiers</caption><tr><th>Plan</th><th>Monthly</th></tr>\
+            <tr><td>Basic</td><td>10</td></tr><tr><td>Team</td><td>25</td></tr></table>\
+            </article></body></html>";
+        let md = super::page_to_markdown(page, Some("https://example.com/pricing")).unwrap();
+        assert!(md.starts_with("# Pricing\n\n"), "{md}");
+        assert!(md.contains("Pricing tiers\n\n| Plan | Monthly |"), "{md}");
+    }
+
     #[test]
     fn a_table_that_already_has_headers_is_untouched() {
         let html = "<table><thead><tr><th>a</th></tr></thead><tr><td>1</td></tr></table>";
@@ -167,9 +183,11 @@ pub fn page_to_markdown(html: &str, base_url: Option<&str>) -> Result<String, Ht
             {
                 return markdown_from_html(html);
             }
-            let markdown = markdown_from_html(&article.content)?;
+            let (markdown, prose) = markdown_and_prose(&article.content)?;
             let title = article.title.trim();
-            if title.is_empty() || markdown.contains(title) {
+            // 只在 htmd 写的正文里找标题，不看换回来的表：表前的说明句（<caption>、标题行）
+            // 常常重复页面标题，算进去就不补 `# 标题`，每一块的面包屑里也就没有它
+            if title.is_empty() || prose.contains(title) {
                 Ok(markdown)
             } else {
                 Ok(sanitize_markdown_links(&format!("# {title}\n\n{markdown}")))
@@ -488,6 +506,11 @@ fn prune_empty_table_columns(markdown: &str) -> String {
 }
 
 fn markdown_from_html(html: &str) -> Result<String, HtmlError> {
+    markdown_and_prose(html).map(|(markdown, _)| markdown)
+}
+
+/// 转出的 Markdown，和表换回去之前 htmd 写出的那份（表还是占位段落）
+fn markdown_and_prose(html: &str) -> Result<(String, String), HtmlError> {
     // 最外层的表先从 DOM 渲染成带真表头的 Markdown（见 `table`），htmd 只看到占位段落；
     // 套着的表还走老路，所以第一行提表头的补丁留着给它们
     let (html, tables) = crate::table::lift_tables(html);
@@ -508,8 +531,11 @@ fn markdown_from_html(html: &str) -> Result<String, HtmlError> {
     {
         return Err(HtmlError::Interstitial);
     }
-    let markdown = crate::table::restore_tables(&markdown, &tables);
-    normalize_markdown(&prune_empty_table_columns(&markdown))
+    let restored = crate::table::restore_tables(&markdown, &tables);
+    Ok((
+        normalize_markdown(&prune_empty_table_columns(&restored))?,
+        markdown,
+    ))
 }
 
 /// Normalize direct Markdown with the same link policy as HTML conversion.

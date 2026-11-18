@@ -67,7 +67,10 @@ graph with its date. An end names its bucket: an open row that starts inside it 
 bucket's end ("left in 2024" closes a row from March 2024 at 2025-01-01), a row that starts before it
 closes at its start. Materialized state rows with equal ends written before this are retired and
 computed again when one of their source statements has those ends; a row a person set to a single
-date is kept [0053 revision, #966]. The `[event]` / `[eternal]` prompt marks of 0031 d4 and the zoned-time sentence of 0024
+date is kept [0053 revision, #966]. An end moved to its bucket's end is marked `end_after_period`,
+by the closing path and the refinement alike, and an open row closed by both "until 2025" and "left
+in 2024" is marked in either order; a correction keeps the mark while the end stays as stored and a
+start remains [0053 revision 2026-10-17, #994]. The `[event]` / `[eternal]` prompt marks of 0031 d4 and the zoned-time sentence of 0024
 belonged to the typed contract and are gone with it; the write rule in the store is what remains.
 
 **Derived rows** store the interval as read: the intersection of premise read intervals, an anchored
@@ -116,6 +119,8 @@ only when that date came from the content or a dating source, else null [#731]. 
   bench no lower than 17 of 18 on both runs [0045].
 - The `as_of` control on the graph page; the anchor shown beside a blank start; an event drawn as a
   point; retrieval that takes `at` [0019, 0022, 0031].
+- Every reader prints a marked end as the period it names: chat and MCP, the review lines, the
+  export, the web views and the time dialog (#994 cut 1) [0053 revision 2026-10-17].
 
 ## Open questions
 

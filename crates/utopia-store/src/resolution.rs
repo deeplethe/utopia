@@ -50,6 +50,54 @@ pub fn normalize_name(raw: &str) -> String {
     mapped.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// Fold unambiguous Markdown formatting in names; evidence keeps the original text.
+/// Input should already have passed through [`normalize_name`]. Only whole-name
+/// `**...**` / `__...__` emphasis is removed; empty, nested, mismatched or
+/// whitespace-padded markup is kept.
+/// `__identifier__` stays literal (Unicode letters/digits and underscores count).
+/// Single backticks are removed only around a slash path or a dotted filename
+/// containing a letter: only letters, digits, `/`, `.`, `_` and `-` are allowed,
+/// with at least one alphanumeric character and no trailing dot. This deliberately
+/// leaves code, bare identifiers, numeric versions and paths with spaces alone.
+pub fn fold_markdown_markers(name: &str) -> &str {
+    for marker in ["**", "__", "`"] {
+        let Some(inner) = name
+            .strip_prefix(marker)
+            .and_then(|s| s.strip_suffix(marker))
+        else {
+            continue;
+        };
+        if inner.is_empty()
+            || inner.trim() != inner
+            || inner.contains(['*', '`'])
+            || (marker != "`"
+                && (inner.starts_with('_') || inner.ends_with('_') || inner.contains("__")))
+        {
+            return name;
+        }
+        let fold = match marker {
+            "__" => !inner.chars().all(|c| c.is_alphanumeric() || c == '_'),
+            "`" => {
+                (inner.contains('/')
+                    || (inner.contains('.') && inner.chars().any(char::is_alphabetic)))
+                    && inner.chars().any(char::is_alphanumeric)
+                    && !inner.ends_with('.')
+                    && inner
+                        .chars()
+                        .all(|c| c.is_alphanumeric() || matches!(c, '/' | '.' | '_' | '-'))
+            }
+            _ => true,
+        };
+        return if fold { inner } else { name };
+    }
+    name
+}
+
+/// Shared identity key for recall and document-level name claims.
+pub fn name_key(raw: &str) -> String {
+    fold_markdown_markers(&normalize_name(raw)).to_lowercase()
+}
+
 /// 泛用后缀词表：中文直接拼在词干后；英文按独立词算、首尾两种语序都认
 /// （"Phoenix Project" / "Project Phoenix"）。只影响召回，判定仍走画像相似度。
 const GENERIC_SUFFIXES_CJK: &[&str] = &["项目", "公司", "集团", "部门", "团队"];
@@ -75,8 +123,10 @@ pub fn name_stem(name: &str) -> Option<String> {
     if words.len() >= 2 {
         if generic(words[words.len() - 1]) {
             let stem = words[..words.len() - 1].join(" ");
-            if !generic(&stem) {
-                return Some(stem);
+            // 「Acme, Inc.」：后缀前那个逗号是写法，不是名字
+            let stem = stem.trim_end_matches(',');
+            if !stem.is_empty() && !generic(stem) {
+                return Some(stem.to_string());
             }
         }
         if generic(words[0]) {
@@ -89,10 +139,12 @@ pub fn name_stem(name: &str) -> Option<String> {
     None
 }
 
+/// 输入应已过 [`normalize_name`]。
 /// mention 的召回键集合（全 lower）：本名 + 词干 + 词干的泛用后缀增广。
 /// 增广覆盖反方向（库内是"星尘项目"、mention 只说"星尘"）；词干含 CJK 拼中文
-/// 尾缀，否则拼英文词（两种语序）。键数 ≤10，走 (kb,type,lower(name)) 索引多点查。
-pub fn recall_keys(name: &str) -> Vec<String> {
+/// 尾缀，否则拼英文词（两种语序）。键数 ≤11，走 (kb,type,lower(name)) 索引多点查。
+pub fn recall_keys(normalized: &str) -> Vec<String> {
+    let name = fold_markdown_markers(normalized);
     let lower = name.to_lowercase();
     let base = name_stem(name).unwrap_or_else(|| lower.clone());
     let mut keys = vec![lower];
@@ -101,6 +153,8 @@ pub fn recall_keys(name: &str) -> Vec<String> {
             keys.push(k);
         }
     }
+    // Keep exact recall of names already stored with formatting as well.
+    add(&mut keys, normalized.to_lowercase());
     add(&mut keys, base.clone());
     if base.chars().any(|c| ('\u{4E00}'..='\u{9FFF}').contains(&c)) {
         for suf in GENERIC_SUFFIXES_CJK {
@@ -191,9 +245,32 @@ fn cosine(a: &[f32], b: &[f32]) -> Option<f32> {
 struct Candidate {
     id: Uuid,
     canonical_name: String,
+    type_id: Option<Uuid>,
+    exact_name: bool,
     profile_embedding: Option<Vector>,
     profile_n: i32,
-    degree: i64,
+}
+
+/// 这些实体各自的度数（不数名字事实），与 `ids` 同序；没有事实的是 0。
+async fn degrees(pool: &PgPool, kb_id: Uuid, ids: &[Uuid]) -> AppResult<Vec<i64>> {
+    let rows: HashMap<Uuid, i64> = sqlx::query_as(&format!(
+        "SELECT n.id, count(*)
+           FROM unnest($2::uuid[]) AS n(id)
+           JOIN facts f ON f.kb_id = $1 AND (f.subject_id = n.id OR f.object_id = n.id)
+                       AND f.invalidated_at IS NULL AND {not_name}
+          GROUP BY n.id",
+        not_name = crate::names::not_a_name("f"),
+    ))
+    .bind(kb_id)
+    .bind(ids)
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .collect();
+    Ok(ids
+        .iter()
+        .map(|id| rows.get(id).copied().unwrap_or(0))
+        .collect())
 }
 
 /// 消解结果：mention 落到了哪个实体；附带需要入队的疑似重复审核对
@@ -289,6 +366,61 @@ async fn kept_apart_from(pool: &PgPool, kb_id: Uuid, entity_id: Uuid) -> AppResu
     Ok(rows.into_iter().map(|(id,)| id).collect())
 }
 
+/// 0071 决定 2、3：恰有一个活着的同名持有者（类为声明的类或无类）时，不看画像，直接归并；
+/// 没有就新建，哪怕该名字在别的类下已有（类型漂移审核照留）；两个及以上走原来的画像路径。
+/// 持有者按本名或名字事实认（合并会把输家的名字作为 known_as 移给存活者）。
+pub async fn resolve_identity_name(
+    pool: &PgPool,
+    kb_id: Uuid,
+    type_id: Option<Uuid>,
+    raw_name: &str,
+    context: Option<&[f32]>,
+    text: Option<&str>,
+    exclude: &[Uuid],
+) -> AppResult<Resolution> {
+    let normalized = normalize_name(raw_name);
+    let name = fold_markdown_markers(&normalized);
+    let spellings = vec![normalized.to_lowercase(), name.to_lowercase()];
+    let holders: Vec<Candidate> = sqlx::query_as(&format!(
+        "SELECT e.id, e.canonical_name, e.type_id, e.profile_embedding, e.profile_n,
+                TRUE AS exact_name
+           FROM entities e
+          WHERE e.kb_id = $1 AND e.merged_into IS NULL AND e.description IS NULL
+            AND (e.type_id IS NULL OR e.type_id = $2)
+            AND (lower(e.canonical_name) = ANY($3) OR {named})",
+        named = crate::names::has_name_in("e", 1, 3),
+    ))
+    .bind(kb_id)
+    .bind(type_id)
+    .bind(&spellings)
+    .fetch_all(pool)
+    .await?
+    .into_iter()
+    .filter(|holder: &Candidate| !exclude.contains(&holder.id))
+    .collect();
+    match holders.as_slice() {
+        [holder] => {
+            match context {
+                Some(ctx) => update_profile(pool, holder.id, holder.profile_n, ctx).await?,
+                None => touch_entity(pool, holder.id).await?,
+            }
+            if holder.type_id.is_none() {
+                adopt_type(pool, kb_id, holder.id, &holder.canonical_name, type_id).await?;
+            }
+            Ok(Resolution {
+                entity_id: holder.id,
+                created: false,
+                reviews: Vec::new(),
+            })
+        }
+        [] => {
+            let keys = recall_keys(&normalized);
+            resolve_type_drift(pool, kb_id, type_id, name, &keys, context, exclude, false).await
+        }
+        _ => resolve_by_name(pool, kb_id, type_id, raw_name, context, text, exclude).await,
+    }
+}
+
 /// 通道 2：mention 名字向量的近邻，各排一对（规矩见 [`resolve_mention`]）
 async fn propose_by_name_vector(
     pool: &PgPool,
@@ -299,7 +431,7 @@ async fn propose_by_name_vector(
     exclude: &[Uuid],
     r: &mut Resolution,
 ) -> AppResult<()> {
-    let mention_name = normalize_name(raw_name).to_lowercase();
+    let mention_name = name_key(raw_name);
     let mention_family = match type_id {
         Some(t) => type_label(pool, t)
             .await?
@@ -307,6 +439,7 @@ async fn propose_by_name_vector(
             .and_then(crate::governance::type_family),
         None => None,
     };
+    let disjoint = declared_disjoint_from(pool, kb_id, type_id).await?;
     let mut seen: HashSet<Uuid> = r.reviews.iter().map(|v| v.other_id).collect();
     seen.insert(r.entity_id);
     seen.extend(exclude.iter().copied());
@@ -330,6 +463,10 @@ async fn propose_by_name_vector(
             if a != b {
                 continue;
             }
+        }
+        // 大类认不出的类（Spec、Test……）靠本体声明分开，与 containment、类型漂移同一张表
+        if near.type_id.is_some_and(|t| disjoint.contains(&t)) {
+            continue;
         }
         r.reviews.push(ReviewRequest {
             other_id: near.entity_id,
@@ -365,57 +502,102 @@ async fn resolve_by_name(
     type_id: Option<Uuid>,
     raw_name: &str,
     context: Option<&[f32]>,
-    // 这次提及所在的**块原文**。画像分不出谁是谁时拿它做事实旁证（#331）——
-    // 传整篇文档会让每个部门都命中，所以这里要的是句子或块，不是文档。
+    // Grounded quotes owned by this mention's subject, supplied by the extractor.
+    // A whole chunk can mention another person's department and is not identity evidence.
     text: Option<&str>,
     // Candidates already claimed by a different response-local handle. They remain stored
     // and recallable on later calls, but this mention cannot attach to them.
     exclude: &[Uuid],
 ) -> AppResult<Resolution> {
-    let name = normalize_name(raw_name);
+    let normalized = normalize_name(raw_name);
     // 召回键 = 本名 + 泛用后缀词干及其增广（"星尘"↔"星尘项目"互为候选）。
     // 只扩召回，归并与否仍由下方画像相似度分层定夺。
-    let keys = recall_keys(&name);
+    let keys = recall_keys(&normalized);
+    // Store the same spelling whichever form is mentioned first.
+    let name = fold_markdown_markers(&normalized);
     // 名字召回读名字事实（0041 决定 1）：本名、简称、曾用名都是 `known_as` 上的一条。
     // 度数不数名字事实——名字不是一条「关于它的事」，数进去每个实体都凭空多一
-    let candidates: Vec<Candidate> = sqlx::query_as(&format!(
-        "SELECT e.id, e.canonical_name, e.profile_embedding, e.profile_n,
-                (SELECT count(*) FROM facts f
-                 WHERE f.kb_id = e.kb_id AND (f.subject_id = e.id OR f.object_id = e.id)
-                   AND f.invalidated_at IS NULL AND {not_name}) AS degree
+    // Keep degree counting lazy, including when corroboration widens exact-name recall.
+    let mut candidates: Vec<Candidate> = sqlx::query_as(&format!(
+        "SELECT e.id, e.canonical_name, e.type_id, e.profile_embedding, e.profile_n,
+                (lower(e.canonical_name) = ANY($4) OR {exact_named}) AS exact_name
          FROM entities e
          -- IS NOT DISTINCT FROM 而不是 =（0009 的那个陷阱）：开放图谱里的实体都没有类
          -- （类由对齐来定），`type_id = NULL` 永远不成立，同名的它就永远撞不上——
          -- 实测一个库里 Securities and Exchange Commission 与它的全大写写法成了两个实体
-         WHERE e.kb_id = $1 AND e.type_id IS NOT DISTINCT FROM $2 AND e.merged_into IS NULL
+         WHERE e.kb_id = $1 AND e.merged_into IS NULL
+           AND (e.type_id IS NOT DISTINCT FROM $2
+                OR ($5 AND ($2::uuid IS NULL OR e.type_id IS NULL)
+                    AND (lower(e.canonical_name) = ANY($4) OR {exact_named})))
            -- 被描述的东西没有名字（0044）：它的 canonical_name 只是显示用的描述，
            -- 不是召回的桥——两篇文档里描述得一样的两个东西不能因此接到一起
            AND e.description IS NULL
            AND (lower(e.canonical_name) = ANY($3) OR {named})",
-        not_name = crate::names::not_a_name("f"),
         named = crate::names::has_name_in("e", 1, 3),
+        exact_named = crate::names::has_name_in("e", 1, 4),
     ))
     .bind(kb_id)
     .bind(type_id)
     .bind(&keys)
+    // Match both the folded spelling and already-stored formatting, as recall does.
+    .bind(vec![name.to_lowercase(), normalized.to_lowercase()])
+    .bind(text.is_some())
     .fetch_all(pool)
     .await?
     .into_iter()
     .filter(|candidate: &Candidate| !exclude.contains(&candidate.id))
     .collect();
 
+    // A clear mention-local clue outranks the chunk's profile, even outside the tie
+    // margin. Include exact names whose class is not yet known on either side, but
+    // do not let that wider recall change profile fallback or classify the winner.
+    let tier_evidence = if let Some(text) = text {
+        let exact: Vec<_> = candidates.iter().filter(|c| c.exact_name).collect();
+        if exact.len() > 1 {
+            if let Some(c) = corroborating_candidate(pool, kb_id, &exact, text).await? {
+                if let Some(ctx) = context {
+                    update_profile(pool, c.id, c.profile_n, ctx).await?;
+                } else {
+                    touch_entity(pool, c.id).await?;
+                }
+                return Ok(Resolution {
+                    entity_id: c.id,
+                    created: false,
+                    reviews: Vec::new(),
+                });
+            }
+            // Shared/conflicting clues must not become unique by retrying a smaller
+            // subset (the best two profiles, or only candidates above SIM_NEW).
+            None
+        } else {
+            Some(text)
+        }
+    } else {
+        None
+    };
+    candidates.retain(|c| c.type_id == type_id);
+
     if candidates.is_empty() {
         // 同类型无候选 ≠ 新名字：类型标签会漂（同一团队被抽成 organization/project/
         // concept），先查其它类型下的同名实体，按类型对的互斥强度分流。
-        return resolve_type_drift(pool, kb_id, type_id, &name, &keys, context, exclude).await;
+        return resolve_type_drift(pool, kb_id, type_id, name, &keys, context, exclude, true).await;
     }
 
     let Some(ctx) = context else {
         // 无向量可比：v1 兼容 —— 归并到事实最多的同名候选
-        let best = candidates
-            .iter()
-            .max_by_key(|c| c.degree)
-            .expect("non-empty");
+        let best = match candidates.as_slice() {
+            [only] => only,
+            _ => {
+                let ids: Vec<Uuid> = candidates.iter().map(|c| c.id).collect();
+                let degree = degrees(pool, kb_id, &ids).await?;
+                candidates
+                    .iter()
+                    .zip(degree)
+                    .max_by_key(|(_, d)| *d)
+                    .map(|(c, _)| c)
+                    .expect("non-empty")
+            }
+        };
         touch_entity(pool, best.id).await?;
         return Ok(Resolution {
             entity_id: best.id,
@@ -435,7 +617,7 @@ async fn resolve_by_name(
 
     // 有画像的候选算相似度；无画像（历史数据/无 embedding 期创建）单独归类
     let mut scored: Vec<(&Candidate, f32)> = Vec::new();
-    let mut unprofiled: Option<&Candidate> = None;
+    let mut unprofiled: Vec<&Candidate> = Vec::new();
     for c in &candidates {
         match c
             .profile_embedding
@@ -443,11 +625,7 @@ async fn resolve_by_name(
             .and_then(|p| cosine(p.as_slice(), ctx))
         {
             Some(sim) => scored.push((c, sim)),
-            None => {
-                if unprofiled.map(|u| c.degree > u.degree).unwrap_or(true) {
-                    unprofiled = Some(c);
-                }
-            }
+            None => unprofiled.push(c),
         }
     }
     // 最高分候选：并列时保留先遇到的那个（与旧的 `sim > s` 严格大于一致）
@@ -476,7 +654,7 @@ async fn resolve_by_name(
             {
                 // 画像掷硬币之前，先问事实（#331）：这句话里提到了其中一个人的
                 // 部门或职位吗？提到了就不是硬币，是线索
-                if let Some(t) = text {
+                if let Some(t) = tier_evidence {
                     if let Some(c) =
                         corroborating_candidate(pool, kb_id, &[best, runner], t).await?
                     {
@@ -489,7 +667,7 @@ async fn resolve_by_name(
                     }
                 }
                 let (id, created) =
-                    create_entity(pool, kb_id, type_id, &name, context, &weighed).await?;
+                    create_entity(pool, kb_id, type_id, name, context, &weighed).await?;
                 if !created {
                     // 并行的另一份文档刚建好它：用它的，审核对也是它排的
                     return Ok(Resolution {
@@ -498,7 +676,7 @@ async fn resolve_by_name(
                         reviews: Vec::new(),
                     });
                 }
-                refresh_disambiguators(pool, kb_id, &name).await?;
+                refresh_disambiguators(pool, kb_id, name).await?;
                 let reviews = [(best, sim), (runner, r_sim)]
                     .into_iter()
                     .map(|(c, s)| ReviewRequest {
@@ -522,6 +700,19 @@ async fn resolve_by_name(
             });
         }
     }
+    let unprofiled = match unprofiled.as_slice() {
+        [] => None,
+        [only] => Some(*only),
+        many => {
+            let ids: Vec<Uuid> = many.iter().map(|c| c.id).collect();
+            let degree = degrees(pool, kb_id, &ids).await?;
+            many.iter()
+                .copied()
+                .zip(degree)
+                .reduce(|acc, cur| if cur.1 > acc.1 { cur } else { acc })
+                .map(|(c, _)| c)
+        }
+    };
     if let Some(c) = unprofiled {
         // 无画像候选无从判别：v1 兼容归并，并用本次上下文初始化画像
         update_profile(pool, c.id, c.profile_n, ctx).await?;
@@ -538,7 +729,7 @@ async fn resolve_by_name(
     // 这句话里若正好写着某一个候选的部门或职位，那比余弦值可靠。
     // **只认灰区**（≥ SIM_NEW）：分数低于它的候选连审核对都不配入队，
     // 拿一条旁证把它拉成同一人，等于绕过阈值而不是补充它。
-    if let Some(t) = text {
+    if let Some(t) = tier_evidence {
         let in_grey: Vec<&Candidate> = scored
             .iter()
             .filter(|(_, s)| *s >= SIM_NEW)
@@ -553,7 +744,7 @@ async fn resolve_by_name(
             });
         }
     }
-    let (id, created) = create_entity(pool, kb_id, type_id, &name, context, &weighed).await?;
+    let (id, created) = create_entity(pool, kb_id, type_id, name, context, &weighed).await?;
     if !created {
         // 并行的另一份文档刚建好它：用它的，审核对也是它排的
         return Ok(Resolution {
@@ -562,7 +753,7 @@ async fn resolve_by_name(
             reviews: Vec::new(),
         });
     }
-    refresh_disambiguators(pool, kb_id, &name).await?;
+    refresh_disambiguators(pool, kb_id, name).await?;
     let mut reviews = best_scored
         .filter(|(_, sim)| *sim >= SIM_NEW)
         .map(|(c, sim)| {
@@ -576,7 +767,7 @@ async fn resolve_by_name(
         .unwrap_or_default();
     // 名字互相包含的既有实体：等值召回看不见它们（前缀枚举不完），
     // 于是简称会静默变成第二个实体。只入队，不合并
-    reviews.extend(containment_reviews(pool, kb_id, type_id, &name, id, context).await?);
+    reviews.extend(containment_reviews(pool, kb_id, type_id, name, id, context).await?);
     Ok(Resolution {
         entity_id: id,
         created: true,
@@ -680,6 +871,13 @@ const MAX_CONTAIN_REVIEWS: usize = 4;
 /// 只取 4 行的话可能 4 行全是互斥类型，真正那一对反而被 LIMIT 切掉。
 const CONTAIN_SCAN_LIMIT: i64 = 16;
 
+/// 名字当 LIKE 的字面子串用：不转义的话名字里的 `_` 会匹配任意一个字（#1293）
+fn like_escaped(name: &str) -> String {
+    name.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
 /// 新建实体之后，找出**名字互相包含**的既有实体，作为审阅候选。
 ///
 /// 中文商业文本在一篇之内就会全称转简称（「星云科技上海研究院」→「上海研究院」），
@@ -706,9 +904,9 @@ const CONTAIN_SCAN_LIMIT: i64 = 16;
 /// `CREATE EXTENSION pg_trgm` 需要超级权限——本仓库是受限角色连库（见 `migrations/0010_least_privilege_role.sql`），
 /// 装扩展会在部署上失败。留给需要时再说。
 ///
-/// **性能**：反向那半（新名字包含旧名字）用不上任何索引，别名那半同样，
-/// 所以这里靠 `kb_id` 收窄行集并设上限，且只在**新建实体时**跑一次，
-/// 不是每条 mention。大库上如果不够，正解是建一张「后缀键」表走等值查，
+/// **性能**：从这个库的 `known_as` 事实出发（走 `facts_live_predicate_idx`），按 id 回连实体，
+/// 一趟读完，没有逐实体的相关子查询。LIKE 本身用不上索引，仍是对每个名字的一次扫描；
+/// 只在**新建实体时**跑一次，不是每条 mention。大库上如果不够，正解是建一张「后缀键」表走等值查，
 /// 而不是加模糊索引。
 /// 包含扫描的一行：(id, 本名, 类型 key, 类型 id, 画像)。类型 id 用来比本体声明的互斥
 type ContainRow = (Uuid, String, Option<String>, Option<Uuid>, Option<Vector>);
@@ -743,43 +941,40 @@ async fn containment_reviews(
     // 本体声明了跟这个类互斥的那些类（含继承），一次取出，逐行比 id
     let disjoint = declared_disjoint_from(pool, kb_id, type_id).await?;
     // 第三列可空：未分类实体也要参与包含关系扫描（0009）
-    let rows: Vec<ContainRow> = sqlx::query_as(
+    let rows: Vec<ContainRow> = sqlx::query_as(&format!(
         "SELECT e.id, e.canonical_name, t.key, e.type_id, e.profile_embedding
          FROM entities e LEFT JOIN entity_types t ON t.id = e.type_id
-         WHERE e.kb_id = $1 AND e.merged_into IS NULL
+         WHERE e.id IN (
+             -- **从名字事实出发，不逐个实体去探。** 本名和别名都是 `known_as` 事实，一条路覆盖两种。
+             -- 合并搬走名字事实后，`Holmes` 并入 `Sherlock Holmes` 的桥照样在存活者身上。
+             -- 谓词用标量子查询：这样它是 `facts_live_predicate_idx` 的索引条件（同 `name_vectors::PENDING_SQL`），
+             -- 写成 JOIN 规划器会沿别的索引读整个库。
+             -- 按描述建的实体没有名字事实（0044），不在这里出现：描述不是召回的桥。
+             SELECT nf.subject_id FROM facts nf
+              WHERE nf.kb_id = $1
+                AND nf.predicate_id = (SELECT nr.id FROM relation_types nr
+                                        WHERE nr.kb_id = $1 AND nr.builtin AND nr.key = 'known_as')
+                AND nf.invalidated_at IS NULL
+                AND char_length(nf.object_value->>'value') >= $4
+                AND ((lower(nf.object_value->>'value') LIKE '%' || $6 || '%'
+                      AND lower(nf.object_value->>'value') ~ $7)
+                     OR ($3 LIKE '%' || replace(replace(replace(lower(nf.object_value->>'value'), '\\', '\\\\'), '%', '\\%'), '_', '\\_') || '%'
+                      AND $3 ~ {name_edges})))
+           AND e.kb_id = $1 AND e.merged_into IS NULL
            AND e.id <> $2
            AND lower(e.canonical_name) <> $3
-           AND (
-             (char_length(e.canonical_name) >= $4
-              AND (lower(e.canonical_name) LIKE '%' || $3 || '%'
-                   OR $3 LIKE '%' || lower(e.canonical_name) || '%'))
-             -- **别的名字也要参与召回，否则每合并一次就少一条桥。**
-             --
-             -- 合并把名字事实搬到存活者身上：Holmes 并入 Sherlock Holmes 之后，
-             -- Holmes 那一行 merged_into 非空、被上面第一个条件滤掉了。可十分钟后
-             -- 出现的 Mr. Holmes 跟 Sherlock Holmes 谁也不含谁——本来正是靠
-             -- Holmes 才桥得上。实测就是这么漏的：同类型那个 bug 修好、Holmes
-             -- 正确合并之后，Mr. Holmes 反而永远进不了队列。
-             --
-             -- 合并越成功，桥拆得越多。这个洞会自我加剧。
-             OR EXISTS (
-               SELECT 1 FROM facts nf
-                 JOIN relation_types nr ON nr.id = nf.predicate_id
-                WHERE nf.subject_id = e.id AND nf.kb_id = $1
-                  AND nr.builtin AND nr.key = 'known_as'
-                  AND nf.invalidated_at IS NULL
-                  AND char_length(nf.object_value->>'value') >= $4
-                  AND (lower(nf.object_value->>'value') LIKE '%' || $3 || '%'
-                       OR $3 LIKE '%' || lower(nf.object_value->>'value') || '%'))
-           )
          ORDER BY char_length(e.canonical_name)
          LIMIT $5",
-    )
+        name_edges = crate::names::word_edges_sql("lower(nf.object_value->>'value')"),
+    ))
     .bind(kb_id)
     .bind(new_id)
     .bind(&lower)
     .bind(MIN_CONTAIN_CHARS)
     .bind(CONTAIN_SCAN_LIMIT)
+    .bind(like_escaped(&lower))
+    // 只靠 LIKE，`token` 会匹配到 `service_token`：拉丁名字须落在词边界上才算包含（#1104）
+    .bind(crate::names::word_edges_pattern(&lower))
     .fetch_all(pool)
     .await?;
 
@@ -821,8 +1016,6 @@ struct CrossCandidate {
     type_key: Option<String>,
     // 同上；`types_are_kin` 要按 id 走类层级
     type_id: Option<Uuid>,
-    // 抽取升格要看它：人说过「就是没有类型」时，那也是一个决定
-    type_source: String,
     profile_embedding: Option<Vector>,
     profile_n: i32,
 }
@@ -935,10 +1128,43 @@ fn confusable_reviews(
         .collect()
 }
 
+/// 持有者还没判出类型而这次判出来了 → 升格。
+/// 不是合并（没有第二个实体），不入 entity_merges；本体页可手工改回
+///
+/// **人说过的「没有类型」不算「还没判出来」。** 0009 之后两者都是
+/// NULL，只看 type_id 分不出——于是一个人看过、认为
+/// 本体里没有合适类的实体，会在下一次抽取时被安上一个类型
+async fn adopt_type(
+    pool: &PgPool,
+    kb_id: Uuid,
+    entity_id: Uuid,
+    canonical_name: &str,
+    type_id: Option<Uuid>,
+) -> AppResult<()> {
+    let Some(type_id) = type_id else {
+        return Ok(());
+    };
+    let adopted = sqlx::query(
+        "UPDATE entities
+         SET type_id = $2, type_source = 'extracted', updated_at = now()
+         WHERE id = $1 AND type_id IS NULL AND type_source <> 'human'",
+    )
+    .bind(entity_id)
+    .bind(type_id)
+    .execute(pool)
+    .await?;
+    if adopted.rows_affected() > 0 {
+        // 类型标签兜底的消歧后缀可能已过时
+        refresh_disambiguators(pool, kb_id, canonical_name).await?;
+    }
+    Ok(())
+}
+
 /// 同类型召回为空时的跨类型处置（类型漂移）。
 /// concept 兜底型候选跑既有画像分层：高相似直接 ATTACH（漂移的召回修复，concept
 /// 侧类型升格为具体类型），灰区/无从判别 → 宁分勿合新建 + 审核对；易混具体类型
 /// 一律新建 + 审核对（同名 + 类型摇摆本身就是信号，不设相似度门槛）；硬互斥忽略。
+#[allow(clippy::too_many_arguments)]
 async fn resolve_type_drift(
     pool: &PgPool,
     kb_id: Uuid,
@@ -948,6 +1174,8 @@ async fn resolve_type_drift(
     keys: &[String],
     context: Option<&[f32]>,
     exclude: &[Uuid],
+    // false = 不归并到概念兜底：身份名按自己声明的类新建，不能被兜底吞掉
+    may_attach: bool,
 ) -> AppResult<Resolution> {
     // 这一侧也可能还没判出类型（0009），那时没有 key 可查
     let mention_key: Option<String> = match type_id {
@@ -959,7 +1187,7 @@ async fn resolve_type_drift(
         None => None,
     };
     let cross: Vec<CrossCandidate> = sqlx::query_as(&format!(
-        "SELECT e.id, e.canonical_name, t.key AS type_key, e.type_id, e.type_source,
+        "SELECT e.id, e.canonical_name, t.key AS type_key, e.type_id,
                 e.profile_embedding, e.profile_n
          FROM entities e LEFT JOIN entity_types t ON t.id = e.type_id
          -- IS DISTINCT FROM 而不是 <>：后者遇 NULL 返回 NULL，被 WHERE 当假，
@@ -1004,7 +1232,7 @@ async fn resolve_type_drift(
         }
     }
 
-    if let Some(ctx) = context {
+    if let Some(ctx) = context.filter(|_| may_attach) {
         let best = recall_cands
             .iter()
             .filter_map(|c| {
@@ -1017,24 +1245,8 @@ async fn resolve_type_drift(
         if let Some((best, sim)) = best {
             if sim >= SIM_ATTACH {
                 update_profile(pool, best.id, best.profile_n, ctx).await?;
-                // 候选还没判出类型而这次抽取判出来了 → 升格。
-                // 不是合并（没有第二个实体），不入 entity_merges；本体页可手工改回
-                //
-                // **人说过的「没有类型」不算「还没判出来」。** 0009 之后两者都是
-                // NULL，只看 type_key.is_none() 分不出——于是一个人看过、认为
-                // 本体里没有合适类的实体，会在下一次抽取时被安上一个类型
-                if best.type_key.is_none() && best.type_source != "human" && type_id.is_some() {
-                    sqlx::query(
-                        "UPDATE entities
-                         SET type_id = $2, type_source = 'extracted', updated_at = now()
-                         WHERE id = $1",
-                    )
-                    .bind(best.id)
-                    .bind(type_id)
-                    .execute(pool)
-                    .await?;
-                    // 类型标签兜底的消歧后缀可能已过时
-                    refresh_disambiguators(pool, kb_id, &best.canonical_name).await?;
+                if best.type_key.is_none() {
+                    adopt_type(pool, kb_id, best.id, &best.canonical_name, type_id).await?;
                 }
                 // mention 已定居到召回实体；同名易混类型实体的疑点仍在 → 照常入队
                 let mut reviews =
@@ -2003,14 +2215,15 @@ pub async fn merge_entities(
     .collect();
 
     // 合并后 SPO+valid_from 重复的 live 事实：留最早 recorded_at 的一条，其余作废。
+    // 没有谓词的行不参与：开放陈述的不同短语都带 NULL，不能因此当成同一句话。
     //
     // **宾语两侧都要分组。** 字面值事实的 object_id 全是 NULL，只按它分组就等于
     // 把同主同谓下的**所有值**当成同一条断言：一次合并之后，
     // (公司, 成立年份, 2015) 与 (公司, 注册资本, …) 之外，同谓词的多个值只活得下来
     // 最早记的那一个，其余无声消失，且没有 supersedes 可查。
     let dups: Vec<(Vec<Uuid>,)> = sqlx::query_as(
-        "SELECT (array_agg(id ORDER BY recorded_at))[2:] FROM facts
-         WHERE kb_id = $1 AND invalidated_at IS NULL
+        "SELECT array_agg(id ORDER BY recorded_at, id) FROM facts
+         WHERE kb_id = $1 AND invalidated_at IS NULL AND predicate_id IS NOT NULL
            AND (subject_id = $2 OR object_id = $2)
          GROUP BY subject_id, predicate_id, object_id, object_value, valid_from
          HAVING count(*) > 1",
@@ -2019,7 +2232,41 @@ pub async fn merge_entities(
     .bind(target_id)
     .fetch_all(&mut *tx)
     .await?;
-    let dup_ids: Vec<Uuid> = dups.into_iter().flat_map(|(ids,)| ids).collect();
+    let mut dup_ids = Vec::new();
+    let (mut copied_to, mut copied_chunks) = (Vec::new(), Vec::new());
+    for (ids,) in dups {
+        // 先给存活行接上来源，否则下一次物化可能作废它，再按原文重建，丢掉人的修正。
+        // 旧行的链接暂留：撤回合并还用得上；物化按它原有的规则清理失效链接。
+        sqlx::query(
+            "INSERT INTO typed_fact_sources (fact_id, statement_id)
+             SELECT $1, statement_id FROM typed_fact_sources WHERE fact_id = ANY($2)
+             ON CONFLICT DO NOTHING",
+        )
+        .bind(ids[0])
+        .bind(&ids[1..])
+        .execute(&mut *tx)
+        .await?;
+        // 证据也抄一份（#1426）：身份来源的名字证据要是只留在作废的那条上，存活方就不再是
+        // 身份实体，精确名挂靠和合并前的人工把关（0071 决定 2、7）都认不出它。
+        // 同一分块存活行已有的不动；抄过去的记进账本，撤回合并时只删这些
+        let copied: Vec<Uuid> = sqlx::query_scalar(
+            "INSERT INTO fact_evidence (fact_id, chunk_id, quote, document_id, doc_version,
+                    proposed_predicate, quote_start, quote_end, attested_at, attested_by)
+             SELECT DISTINCT ON (chunk_id) $1, chunk_id, quote, document_id, doc_version,
+                    proposed_predicate, quote_start, quote_end, attested_at, attested_by
+               FROM fact_evidence WHERE fact_id = ANY($2)
+              ORDER BY chunk_id, array_position($2, fact_id)
+             ON CONFLICT DO NOTHING
+             RETURNING chunk_id",
+        )
+        .bind(ids[0])
+        .bind(&ids[1..])
+        .fetch_all(&mut *tx)
+        .await?;
+        copied_to.extend(std::iter::repeat_n(ids[0], copied.len()));
+        copied_chunks.extend(copied);
+        dup_ids.extend_from_slice(&ids[1..]);
+    }
     if !dup_ids.is_empty() {
         sqlx::query("UPDATE facts SET invalidated_at = now() WHERE id = ANY($1)")
             .bind(&dup_ids)
@@ -2027,6 +2274,8 @@ pub async fn merge_entities(
             .await?;
         invalidated.extend(dup_ids);
     }
+    // 抄过去的若是身份证据，存活的名字就不该再留向量（0071 决定 5）
+    crate::name_vectors::drop_with_identity_evidence(&mut tx, &copied_to).await?;
 
     // 画像加权合并
     let (profile, profile_n) = match (&target.profile_embedding, &source.profile_embedding) {
@@ -2131,8 +2380,8 @@ pub async fn merge_entities(
         "INSERT INTO entity_merges (id, kb_id, source_id, target_id,
                 moved_subject_facts, moved_object_facts, invalidated_facts,
                 target_profile_before, target_profile_n_before, target_type_before,
-                merged_by, reason)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
+                merged_by, reason, copied_evidence_facts, copied_evidence_chunks)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
     )
     .bind(merge_id)
     .bind(kb_id)
@@ -2146,6 +2395,8 @@ pub async fn merge_entities(
     .bind(target.type_id)
     .bind(merged_by)
     .bind(reason)
+    .bind(&copied_to)
+    .bind(&copied_chunks)
     .execute(&mut *tx)
     .await?;
 
@@ -2205,6 +2456,8 @@ struct MergeRow {
     moved_subject_facts: Vec<Uuid>,
     moved_object_facts: Vec<Uuid>,
     invalidated_facts: Vec<Uuid>,
+    copied_evidence_facts: Vec<Uuid>,
+    copied_evidence_chunks: Vec<Uuid>,
     target_profile_before: Option<Vector>,
     target_profile_n_before: i32,
     target_type_before: Option<Uuid>,
@@ -2214,17 +2467,19 @@ struct MergeRow {
 /// 搬过的事实，连同从它们改写出来的每一行（顺着 supersedes 往下走到底，作废的也算）
 async fn with_rewrites(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    kb_id: Uuid,
     roots: &[Uuid],
 ) -> AppResult<Vec<Uuid>> {
     Ok(sqlx::query_scalar(
         "WITH RECURSIVE chain(id) AS (
              SELECT unnest($1::uuid[])
              UNION
-             SELECT f.id FROM facts f JOIN chain c ON f.supersedes = c.id
+             SELECT f.id FROM facts f JOIN chain c ON f.supersedes = c.id AND f.kb_id = $2
          )
          SELECT id FROM chain",
     )
     .bind(roots)
+    .bind(kb_id)
     .fetch_all(&mut **tx)
     .await?)
 }
@@ -2245,8 +2500,8 @@ async fn with_rewrites(
 pub async fn revert_merge(pool: &PgPool, kb_id: Uuid, merge_id: Uuid) -> AppResult<()> {
     let m: MergeRow = sqlx::query_as(
         "SELECT source_id, target_id, moved_subject_facts, moved_object_facts,
-                invalidated_facts, target_profile_before,
-                target_profile_n_before, target_type_before, reverted_at
+                invalidated_facts, copied_evidence_facts, copied_evidence_chunks,
+                target_profile_before, target_profile_n_before, target_type_before, reverted_at
          FROM entity_merges WHERE id = $1 AND kb_id = $2",
     )
     .bind(merge_id)
@@ -2272,10 +2527,10 @@ pub async fn revert_merge(pool: &PgPool, kb_id: Uuid, merge_id: Uuid) -> AppResu
     .bind(m.target_id)
     .fetch_all(&mut *tx)
     .await?;
-    let touched: Vec<Uuid> = with_rewrites(&mut tx, &m.moved_subject_facts)
+    let touched: Vec<Uuid> = with_rewrites(&mut tx, kb_id, &m.moved_subject_facts)
         .await?
         .into_iter()
-        .chain(with_rewrites(&mut tx, &m.moved_object_facts).await?)
+        .chain(with_rewrites(&mut tx, kb_id, &m.moved_object_facts).await?)
         .chain(m.invalidated_facts.iter().copied())
         .collect();
     let timelines =
@@ -2283,8 +2538,8 @@ pub async fn revert_merge(pool: &PgPool, kb_id: Uuid, merge_id: Uuid) -> AppResu
             .await?;
     crate::temporal::lock_timelines(&mut tx, kb_id, &timelines).await?;
     // 锁上之后再走一遍：等锁的时候，引擎可能刚从它们改写出新的一行
-    let subject_rows = with_rewrites(&mut tx, &m.moved_subject_facts).await?;
-    let object_rows = with_rewrites(&mut tx, &m.moved_object_facts).await?;
+    let subject_rows = with_rewrites(&mut tx, kb_id, &m.moved_subject_facts).await?;
+    let object_rows = with_rewrites(&mut tx, kb_id, &m.moved_object_facts).await?;
 
     sqlx::query("UPDATE facts SET subject_id = $1 WHERE id = ANY($2) AND subject_id = ANY($3)")
         .bind(m.source_id)
@@ -2321,6 +2576,24 @@ pub async fn revert_merge(pool: &PgPool, kb_id: Uuid, merge_id: Uuid) -> AppResu
             crate::temporal::rehome_tx(&mut tx, id, subject, object).await?;
         }
     }
+    // 合并时抄到存活行上的证据删掉：重复的那条复活了，证据还在它身上（#1426）。
+    // 存活行之后可能被改写过（人改区间、时间线闭合、上面的搬回），证据随行复制到了新行上，
+    // 所以顺着 supersedes 删到底，跟 `with_rewrites` 同一条链。
+    // 存活的名字因此不再有身份证据的话，它重新等着补向量，跟来源关掉身份名一样（0071 决定 6）
+    sqlx::query(
+        "WITH RECURSIVE chain(fact_id, chunk_id) AS (
+             SELECT * FROM unnest($1::uuid[], $2::uuid[])
+             UNION
+             SELECT f.id, c.chunk_id FROM facts f JOIN chain c ON f.supersedes = c.fact_id AND f.kb_id = $3
+         )
+         DELETE FROM fact_evidence fe USING chain c
+          WHERE fe.fact_id = c.fact_id AND fe.chunk_id = c.chunk_id",
+    )
+    .bind(&m.copied_evidence_facts)
+    .bind(&m.copied_evidence_chunks)
+    .bind(kb_id)
+    .execute(&mut *tx)
+    .await?;
     sqlx::query("UPDATE facts SET invalidated_at = NULL WHERE id = ANY($1)")
         .bind(&m.invalidated_facts)
         .execute(&mut *tx)
@@ -2480,10 +2753,47 @@ mod tests {
     use super::*;
 
     #[test]
+    fn like_escaped_turns_backslash_percent_and_underscore_into_literals() {
+        assert_eq!(like_escaped(r"a\b%c_d"), r"a\\b\%c\_d");
+    }
+
+    #[test]
     fn normalize_fullwidth_and_whitespace() {
         assert_eq!(normalize_name("　ＡＣＭＥ  Corp　"), "ACME Corp");
         assert_eq!(normalize_name("张三"), "张三");
         assert_eq!(normalize_name("张  三"), "张 三");
+    }
+
+    #[test]
+    fn markdown_folding_is_conservative() {
+        for (raw, expected) in [
+            ("**Pump 1**", "Pump 1"),
+            ("__Pump 1__", "Pump 1"),
+            ("__init__", "__init__"),
+            ("`docs/setup.md`", "docs/setup.md"),
+            ("`setup.md`", "setup.md"),
+            ("`acme`", "`acme`"),
+            ("`main()`", "`main()`"),
+            ("`1.2`", "`1.2`"),
+            ("**Pump 1*", "**Pump 1*"),
+            ("***Pump 1***", "***Pump 1***"),
+            ("** Pump 1 **", "** Pump 1 **"),
+            ("****", "****"),
+        ] {
+            assert_eq!(fold_markdown_markers(raw), expected, "{raw:?}");
+        }
+    }
+
+    #[test]
+    fn recall_keys_fold_markdown_before_stemming_and_keep_exact_spelling() {
+        let normalized = normalize_name("　＊＊Ｐｈｏｅｎｉｘ　 Project＊＊ ");
+        let keys = recall_keys(&normalized);
+        assert_eq!(keys[0], name_key(&normalized));
+        for key in recall_keys("Phoenix Project") {
+            assert!(keys.contains(&key), "must recall {key:?}");
+        }
+        assert!(keys.contains(&"**phoenix project**".to_string()));
+        assert!(keys.len() <= 11);
     }
 
     #[test]
@@ -2514,6 +2824,17 @@ mod tests {
         let k = recall_keys("Project Phoenix");
         assert!(k.contains(&"phoenix".to_string()));
         assert!(recall_keys("张三").len() <= 10);
+    }
+
+    /// 英文公司名常在后缀前加逗号：「Acme, Inc.」与「Acme」「Acme Inc」是同一个召回
+    #[test]
+    fn a_comma_before_the_generic_suffix_is_not_part_of_the_stem() {
+        assert_eq!(name_stem("Acme, Inc.").as_deref(), Some("acme"));
+        assert_eq!(name_stem("Orion Labs, Inc").as_deref(), Some("orion labs"));
+        let k = recall_keys("Acme, Inc.");
+        assert!(k.contains(&"acme".to_string()), "{k:?}");
+        assert!(k.contains(&"acme inc".to_string()), "{k:?}");
+        assert_eq!(name_stem(", Inc."), None);
     }
 
     #[test]

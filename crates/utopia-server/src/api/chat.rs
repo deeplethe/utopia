@@ -365,8 +365,9 @@ pub(super) fn base_tools() -> serde_json::Value {
             "type": "function",
             "function": {
                 "name": "get_document",
-                "description": "Read the full text of ONE knowledge base document, all sections \
-                    in order, by the document_id shown in search_chunks results. Use it whenever \
+                "description": "Read ONE knowledge base document, all sections in order, up to \
+                    24,000 body characters per call, by the document_id shown in search_chunks \
+                    results. If truncated, call again with the offset in the notice to continue. Use it whenever \
                     a search hit looks like the right document but the excerpt does not contain \
                     the answer — action items, decisions and lists usually sit past the excerpt \
                     or in a section that did not match the query.",
@@ -377,6 +378,11 @@ pub(super) fn base_tools() -> serde_json::Value {
                             "type": "string",
                             "format": "uuid",
                             "description": "Document id (uuid) from a search_chunks result line."
+                        },
+                        "offset": {
+                            "type": "integer",
+                            "minimum": 0,
+                            "description": "Optional zero-based Unicode character position (default 0) across trimmed section bodies in order, excluding headers and separators. Use the next offset from a truncation notice; at or past the end returns no remaining text."
                         }
                     },
                     "required": ["document_id"]
@@ -424,11 +430,12 @@ pub(super) fn base_tools() -> serde_json::Value {
                     The best tool for who/when/history questions. Use after find_entities. \
                     Pass `at` to see the world as of that date (server-side filter) — \
                     always do this for \"who was X in <year/month>\" questions. \
-                    Conclusions a business rule reached about this entity come back too, \
-                    marked `[rule: <name>]` with the readings that made them true — take \
+                    Conclusions from business rules and ontology axioms come back too, \
+                    marked `[rule: <name>]`; an axiom names its defining property. \
+                    The readings that made them true are included — take \
                     those as given rather than re-deriving them from the readings yourself. \
-                    Output is grouped by predicate and cut at `limit`; narrow with predicate, \
-                    object_type, since / until, or use timeline / neighbors / paths_between.",
+                    Output is grouped by predicate and cut at `limit`; use `offset` to continue. \
+                    Narrow with predicate, object_type, since / until, or use timeline / neighbors / paths_between.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -438,6 +445,7 @@ pub(super) fn base_tools() -> serde_json::Value {
                         "since": { "type": "string", "description": "Optional WORLD-time window start: facts still holding after it." },
                         "until": { "type": "string", "description": "Optional WORLD-time window end: facts that had started by it." },
                         "limit": { "type": "integer", "description": "How many facts to return (default 80, max 300); the reply says when it is cut." },
+                        "offset": { "type": "integer", "minimum": 0, "description": "Zero-based position in the filtered facts (default 0). Use the reply's next_offset to continue, keeping the entity, filters and time parameters unchanged." },
                         "at": {
                             "type": "string",
                             "description": "Optional as-of moment on the WORLD axis (YYYY, YYYY-MM, \
@@ -517,12 +525,14 @@ pub(super) fn base_tools() -> serde_json::Value {
             "type": "function",
             "function": {
                 "name": "list_rules",
-                "description": "The business rules this base runs: what each one concludes and \
-                    the exact conditions it tests, thresholds included. A rule is written by a \
-                    person, and its conclusions are already in the graph — read the rule to \
+                "description": "The business rules and declared ontology axioms of this base. \
+                    Business rules show what each one concludes and the exact conditions it \
+                    tests, thresholds included. Ontology axioms name the defining properties \
+                    and the relations they imply, and say when derivation is off for this base. Read the rule to \
                     explain WHY something was concluded, or to answer \"what counts as X here\". \
                     Do not re-implement a rule's comparison yourself; ask entity_facts or \
-                    rule_matches for what it actually concluded.",
+                    rule_matches for what it actually concluded. rule_matches takes business \
+                    rule ids only.",
                 "parameters": { "type": "object", "properties": {} }
             }
         },
@@ -562,7 +572,7 @@ pub(super) fn base_tools() -> serde_json::Value {
                     fractional seconds. \
                     For 'before a correction arrived', find that event here and pass its \
                     timestamp, exactly as printed, to entity_facts as `before`. Keep at for the \
-                    world date asked about.",
+                    world date asked about. Returns up to 40 events; use `offset` to continue.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -589,7 +599,8 @@ pub(super) fn base_tools() -> serde_json::Value {
                             "description": "Optional filter. A freshly ingested corpus is nearly \
                                 all 'asserted'; pass [\"corrected\", \"rejected\"] to isolate \
                                 the places we actually changed our mind."
-                        }
+                        },
+                        "offset": { "type": "integer", "minimum": 0, "description": "Zero-based position in the matching events (default 0). Use the reply's next_offset to continue, keeping the window and filters unchanged." }
                     },
                     "required": ["since"]
                 }
@@ -599,7 +610,7 @@ pub(super) fn base_tools() -> serde_json::Value {
 }
 
 const SYSTEM_PROMPT: &str = "You are the assistant of Utopia, a temporal knowledge platform. \
-    You have tools: search_chunks (document search) and get_document (the full text of one \
+    You have tools: search_chunks (document search) and get_document (paged text of one \
     document found by search), find_entities, entity_facts, neighbors, timeline, \
     paths_between and changes (a bi-temporal knowledge graph), and search_docs (Utopia's \
     own manual, the Charter).\n\
@@ -610,7 +621,9 @@ const SYSTEM_PROMPT: &str = "You are the assistant of Utopia, a temporal knowled
     reason to skip the tools. Never say the base lacks something you have not searched for.\n\
     search_chunks returns short excerpts of the best-matching sections only. When a hit is \
     clearly the right document but the excerpt does not carry the answer, read the whole \
-    document with get_document before saying the knowledge base does not have it.\n\
+    document with get_document before saying the knowledge base does not have it. If a \
+    document read is truncated, continue with the offset in its notice; a partial read is \
+    not the full document and cannot establish that the document lacks the answer.\n\
     The graph has TWO independent time axes:\n\
     - World time — when something was true. entity_facts(`at` = as of that date).\n\
     - Record time — when we came to believe it, and when we revised it. entity_facts and search_chunks take `as_of` = the base as it stood at that moment, before later corrections, retractions and merges; changes lists what moved in a window.\n\
@@ -904,8 +917,12 @@ pub async fn chat(
             .filter(|(i, _)| Some(*i) != current)
             .map(|(_, turn)| turn.clone())
             .collect();
-        let context = super::chat_context::Context::new(
-            prior.clone(), history.last_tool_exchange.clone(), client.history_char_budget(),
+        let prior_reasoning: Vec<_> = history.reasoning.iter().enumerate()
+            .filter(|(i, _)| Some(*i) != current)
+            .map(|(_, text)| text.clone()).collect();
+        let context = super::chat_context::Context::with_reasoning(
+            prior.clone(), history.last_tool_exchange.clone(),
+            prior_reasoning.clone(), client.history_char_budget(),
         );
         let rig_agent = AgentBuilder::new(RigModel::with_context(client.clone(), context.clone()))
             .preamble(&system_prompt)
@@ -916,7 +933,9 @@ pub async fn chat(
             .build();
         let mut runner = rig_agent
             .runner(Message::user(query.clone()))
-            .history(agent::history_messages(&prior, &history.last_tool_exchange));
+            .history(agent::history_messages_with_reasoning(
+                &prior, &history.last_tool_exchange, &prior_reasoning,
+            ));
         // 贴在历史之后、当前问题之前——位置就是服从性，跟抽取里 known_block
         // 紧挨正文是同一条理由（角色与位置由 `rig_model::wire` 定）
         if let Some(block) = agent::known_entities_block(&history.entities, KNOWN_ENTITY_LIMIT) {
@@ -935,6 +954,7 @@ pub async fn chat(
         let mut exchange_acc: Vec<serde_json::Value> = Vec::new();
         // 当前模型回合里说的话与发出的调用；回合的结果一到，攒成一条 assistant 消息
         let mut turn_text = String::new();
+        let mut turn_reasoning: Option<String> = None;
         let mut turn_calls: Vec<serde_json::Value> = Vec::new();
         // 这一回合的正文发出去了多少；后面的扣着，因为那可能是写成正文的工具调用（#937）
         let mut turn_published = 0usize;
@@ -945,6 +965,15 @@ pub async fn chat(
 
         while let Some(item) = run.next().await {
             match item {
+                Ok(MultiTurnStreamItem::StreamAssistantItem(StreamedAssistantContent::Reasoning {
+                    reasoning, ..
+                })) => {
+                    for block in reasoning.content {
+                        if let rig_core::message::ReasoningContent::Text { text, .. } = block {
+                            turn_reasoning.get_or_insert_default().push_str(&text);
+                        }
+                    }
+                }
                 Ok(MultiTurnStreamItem::StreamAssistantItem(StreamedAssistantContent::Text(t))) => {
                     // Tool-round narration stays live, line by line; a line that is or
                     // may become a tool call written as text is held (#937). Withhold the
@@ -1000,7 +1029,7 @@ pub async fn chat(
                             answer_acc.push_str("\n\n");
                             yield ProducerEvent::Progress(delta_event("\n\n"));
                         }
-                        exchange_acc.push(json!({
+                        let mut recorded = json!({
                             "role": "assistant",
                             "content": if turn_text.is_empty() {
                                 serde_json::Value::Null
@@ -1008,7 +1037,11 @@ pub async fn chat(
                                 serde_json::Value::String(turn_text.clone())
                             },
                             "tool_calls": std::mem::take(&mut turn_calls),
-                        }));
+                        });
+                        if let Some(reasoning) = turn_reasoning.take() {
+                            recorded["reasoning_content"] = json!(reasoning);
+                        }
+                        exchange_acc.push(recorded);
                         turn_text.clear();
                         turn_published = 0;
                         turn_holding = false;
@@ -1078,6 +1111,7 @@ pub async fn chat(
                         yield ProducerEvent::Progress(delta_event("\n\n"));
                     }
                     turn_text.clear();
+                    turn_reasoning = None;
                     turn_calls.clear();
                     turn_published = 0;
                     turn_holding = false;
@@ -1128,7 +1162,12 @@ pub async fn chat(
                 exchange: &exchange_acc, sources: &sources, resolved: &resolved,
             };
             match finalization::answer_with_context(&client, input, &context).await {
-                Ok(answer) => { turn_text = answer; turn_calls.clear(); finished = true; }
+                Ok(answer) => {
+                    turn_text = answer.content.unwrap_or_default();
+                    turn_reasoning = answer.reasoning_content;
+                    turn_calls.clear();
+                    finished = true;
+                }
                 Err(e) => {
                     let message = format!("Model could not produce a final answer: {e}");
                     let code = model_failure_code(&e)
@@ -1184,6 +1223,7 @@ pub async fn chat(
                 .unwrap_or_default();
             sources = carried_sources(&answer_acc, previous, &history.last_sources);
         }
+        exchange_acc.extend(terminal_reasoning(turn_reasoning));
         yield ProducerEvent::Outcome(Ok(Answer {
             content: answer_acc,
             record: utopia_store::conversations::TurnRecord {
@@ -1237,6 +1277,15 @@ fn describe(err: &StreamingError) -> (Failure, bool) {
     }
 }
 
+// DeepSeek also needs a completed answer's reasoning on later tool requests.
+// Keep it in the internal exchange metadata, apart from the published answer.
+fn terminal_reasoning(reasoning: Option<String>) -> Vec<serde_json::Value> {
+    reasoning
+        .into_iter()
+        .map(|text| json!({"role":"assistant", "reasoning_content":text}))
+        .collect()
+}
+
 /// 降级路径：端点不支持工具调用时的一次性 RAG 注入。
 /// 检索一次、把来源塞进系统提示、流式作答、落库
 fn legacy_rag(
@@ -1267,6 +1316,7 @@ fn legacy_rag(
             serde_json::to_string(&legacy_sources).unwrap_or_else(|_| "[]".into()),
         ));
         let mut answer_acc = String::new();
+        let mut reasoning = None;
         let deltas = loop {
             let (turns, _) = context.snapshot();
             let mut lmsgs = vec![json!({ "role": "system", "content": legacy_system_prompt(&chunks) })];
@@ -1274,7 +1324,7 @@ fn legacy_rag(
                 lmsgs.push(json!({ "role": role, "content": content }));
             }
             lmsgs.push(json!({"role":"user", "content":query}));
-            match client.chat_stream_raw(&lmsgs).await {
+            match client.chat_tools_stream_with(&lmsgs, None, None).await {
                 Err(e) if context.recover(&client, &e) => continue,
                 result => break result,
             }
@@ -1284,7 +1334,8 @@ fn legacy_rag(
                 let mut deltas = std::pin::pin!(deltas);
                 while let Some(item) = deltas.next().await {
                     match item {
-                        Ok(text) => { answer_acc.push_str(&text); yield ProducerEvent::Progress(delta_event(&text)); }
+                        Ok(utopia_llm::ToolStreamItem::Delta(text)) => { answer_acc.push_str(&text); yield ProducerEvent::Progress(delta_event(&text)); }
+                        Ok(utopia_llm::ToolStreamItem::Turn(turn)) => reasoning = turn.reasoning_content,
                         Err(e) => { yield ProducerEvent::Outcome(Err(Failure::model(&e, e.to_string()))); return; }
                     }
                 }
@@ -1296,6 +1347,7 @@ fn legacy_rag(
                     content: answer_acc,
                     record: utopia_store::conversations::TurnRecord {
                         sources: serde_json::Value::Array(legacy_sources),
+                        tool_exchange: json!(terminal_reasoning(reasoning)),
                         ..utopia_store::conversations::TurnRecord::empty()
                     },
                     final_text: None,

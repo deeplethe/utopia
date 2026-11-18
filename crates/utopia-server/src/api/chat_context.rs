@@ -18,6 +18,8 @@ pub(super) struct Context(Arc<Mutex<Window>>);
 struct Window {
     /// 落库的历史，最旧在前；`start` 之前的不再发
     turns: Turns,
+    /// 每条终答自己的协议推理，按原始下标随正文一起保留或裁掉。
+    reasoning: Vec<Option<String>>,
     /// 上一轮的工具往返：带 tool_calls 的助手消息和配套的 tool 结果，协议 JSON
     exchange: Vec<Value>,
     /// 最后一条助手消息在 `turns` 里的下标，往返插在它前面
@@ -36,7 +38,10 @@ impl Window {
     fn size(&self) -> usize {
         self.turns[self.start..]
             .iter()
-            .map(|(_, s)| s.chars().count())
+            .zip(&self.reasoning[self.start..])
+            .map(|((_, s), reasoning)| {
+                s.chars().count() + reasoning.as_deref().map_or(0, |s| s.chars().count())
+            })
             .sum::<usize>()
             + if self.keeps_exchange() {
                 self.exchange
@@ -75,19 +80,40 @@ impl Window {
 }
 
 /// 落库的历史和往返展开成协议消息，和 rig 的 `wire` 走同一条路，数出来的条数才对得上
+#[cfg(test)]
 fn protocol(turns: &[(String, String)], exchange: &[Value]) -> Vec<Value> {
+    protocol_with_reasoning(turns, exchange, &[])
+}
+
+fn protocol_with_reasoning(
+    turns: &[(String, String)],
+    exchange: &[Value],
+    reasoning: &[Option<String>],
+) -> Vec<Value> {
     let mut out = Vec::new();
-    for m in agent::history_messages(turns, exchange) {
+    for m in agent::history_messages_with_reasoning(turns, exchange, reasoning) {
         rig_model::push_message(&mut out, &m);
     }
     out
 }
 
 impl Context {
+    #[cfg(test)]
     pub fn new(turns: Turns, exchange: Vec<Value>, budget: usize) -> Self {
+        Self::with_reasoning(turns, exchange, vec![], budget)
+    }
+
+    pub fn with_reasoning(
+        turns: Turns,
+        exchange: Vec<Value>,
+        mut reasoning: Vec<Option<String>>,
+        budget: usize,
+    ) -> Self {
+        reasoning.resize(turns.len(), None);
         let last_assistant = turns.iter().rposition(|(role, _)| role == "assistant");
         let mut window = Window {
             turns,
+            reasoning,
             exchange,
             last_assistant,
             start: 0,
@@ -117,7 +143,7 @@ impl Context {
     /// 问题前面。上一轮的往返在最后那条回答之前，丢它是从中间抠掉，不是掐头
     pub fn apply(&self, messages: &[Value]) -> Vec<Value> {
         let w = self.0.lock().unwrap();
-        let full = protocol(&w.turns, &w.exchange);
+        let full = protocol_with_reasoning(&w.turns, &w.exchange, &w.reasoning);
         // rig 的列表开头应当就是这份完整历史，后面至少还有本轮的问题。少了——rig 没把历史
         // 全交回来，或者给的不是这一轮的列表——按条数替换会把本轮的问题一起吞掉，还不出声。
         // 这时原样发：请求超长顶多再挨一次 400，也好过一个没有问题的请求（#973 评审的后续）
@@ -132,9 +158,10 @@ impl Context {
             }
             return messages.to_vec();
         }
-        let kept = protocol(
+        let kept = protocol_with_reasoning(
             &w.turns[w.start..],
             if w.keeps_exchange() { &w.exchange } else { &[] },
+            &w.reasoning[w.start..],
         );
         let mut out = Vec::with_capacity(messages.len());
         let mut replaced = 0;
@@ -298,6 +325,47 @@ mod tests {
         assert_eq!(context.snapshot(), (turns.clone(), exchange.clone()));
         let messages = protocol(&turns, &exchange);
         assert_eq!(context.apply(&messages), messages, "nothing to remove");
+    }
+
+    #[test]
+    fn reasoning_stays_with_its_answer_when_exchanges_and_older_turns_are_dropped() {
+        let turns: Turns = vec![
+            ("user".into(), "question".into()),
+            ("assistant".into(), "same answer".into()),
+            ("user".into(), "question".into()),
+            ("assistant".into(), "same answer".into()),
+        ];
+        let reasoning = vec![
+            None,
+            Some("old thought".into()),
+            None,
+            Some("界😀new thought".into()),
+        ];
+        let exchange = heavy_exchange();
+        let context = Context::with_reasoning(turns.clone(), exchange.clone(), reasoning, 100);
+        assert!(
+            context.snapshot().1.is_empty(),
+            "tool evidence is dropped first"
+        );
+        let mut messages = protocol(&turns, &exchange);
+        messages.push(json!({"role":"user","content":"current"}));
+        let applied = context.apply(&messages);
+        assert_eq!(applied[1]["reasoning_content"], "old thought");
+        assert_eq!(applied[3]["reasoning_content"], "界😀new thought");
+        assert!(applied[0].get("reasoning_content").is_none());
+
+        let budget = "questionsame answer界😀new thought".chars().count();
+        context.0.lock().unwrap().trim(budget);
+        assert_eq!(context.snapshot().0, turns[2..]);
+        let applied = context.apply(&messages);
+        assert_eq!(applied.len(), 3);
+        assert_eq!(applied[1]["reasoning_content"], "界😀new thought");
+        assert_eq!(applied[2]["content"], "current");
+        context.0.lock().unwrap().trim(budget - 1);
+        assert!(
+            context.snapshot().0.is_empty(),
+            "reasoning counts toward the budget"
+        );
     }
 
     #[test]

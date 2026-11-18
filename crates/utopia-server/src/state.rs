@@ -27,6 +27,7 @@ pub struct AppState {
     /// 原始文件字节的存取接缝（内容寻址，key = sha256）；当前实现为本地磁盘
     pub blob: Arc<dyn crate::blob::BlobStore>,
     pub open_registration: bool,
+    pub password_login: bool,
     /// 强制 Secure cookie（配置项）；未强制时按请求的 X-Forwarded-Proto 逐次判定
     pub cookie_secure: bool,
     /// 分块预算，见 `AppConfig::chunk_tokens`
@@ -66,6 +67,7 @@ impl AppState {
             docs: Arc::new(crate::docs_corpus::build_index()),
             blob,
             open_registration: cfg.open_registration,
+            password_login: cfg.password_login,
             cookie_secure: cfg.cookie_secure,
             chunk_tokens: cfg.chunk_tokens,
             extract_known_in_prompt: cfg.extract_known_in_prompt,

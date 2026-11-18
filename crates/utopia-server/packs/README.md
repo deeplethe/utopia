@@ -20,3 +20,10 @@
 
 重新抓取、`gzip -9c` 覆盖、更新 `ontology_packs.rs` 里的计数与本文件的抓取日。
 **不要改动原文内容**——投影只覆盖当下能消费的部分，原文保真是 [0001](../../../docs/decisions/0001-ontology-import-and-governance.md) 判据 1。
+
+## 场景包（`scenarios/`，0073）
+
+不是抓来的本体，是手写的：一个场景一个 JSON，几个类、十来条属性和关系、要回答的能力问题，
+标签与定义两种语言都写。由 `src/scenario_packs.rs` 内嵌并在建库时走编辑器的路建进库。
+改一个包：改 JSON，跑 `cargo test -p utopia-server scenario_packs`——它检查键不重复、
+定义域和父类指向本包排在前面的类、datatype 合法、每条定义两种语言都有。

@@ -6,7 +6,7 @@ use utopia_core::models::{KnowledgeBase, Role, User};
 use utopia_core::AppError;
 use uuid::Uuid;
 
-use crate::auth::AuthUser;
+use crate::auth::{AuthUser, SessionOrToken};
 use crate::error::ApiResult;
 use crate::state::AppState;
 
@@ -25,6 +25,10 @@ pub struct CreateKbReq {
     /// 后面的包撞名时查对齐表。schema.org 放第一个，别的包才对得上。
     #[serde(default)]
     pub ontology_packs: Vec<String>,
+    /// 场景包的 id（0073）：按业务场景预置的类、属性和能力问题，走编辑器的路建出来。
+    /// 排在标准包之后装，撞键的跳过
+    #[serde(default)]
+    pub scenario_packs: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -58,25 +62,35 @@ pub struct UpdateKbReq {
 }
 
 /// 用户可见的 KB 列表（restricted 库仅矩阵成员与系统管理员可见）。
+///
+/// 读令牌也能列（#1243）：客户端建库之前先按名字找，免得每跑一次建一个同名库。
+/// 限定过 `kb_ids` 的令牌只看得见它列着的那几个
 pub async fn list(
     State(state): State<AppState>,
-    AuthUser(user): AuthUser,
+    caller: SessionOrToken,
     Path(workspace_id): Path<Uuid>,
 ) -> ApiResult<Json<Vec<KnowledgeBase>>> {
+    let user = &caller.user;
     utopia_store::workspaces::require_role(&state.pool, user.id, workspace_id, Role::Viewer)
         .await?;
-    let list =
+    let mut list =
         utopia_store::kbs::list_visible(&state.pool, workspace_id, user.id, user.is_admin).await?;
+    list.retain(|kb| caller.reaches(kb.id));
     Ok(Json(list))
 }
 
 /// 建库：部署管理员（工作区 Admin+ 或系统管理员）。创建者自动进入矩阵为 admin。
+///
+/// 写令牌也能建（0014 决定 6）：以发令牌的人的身份，角色要求一点没松
 pub async fn create(
     State(state): State<AppState>,
-    AuthUser(user): AuthUser,
+    caller: SessionOrToken,
     Path(workspace_id): Path<Uuid>,
     Json(req): Json<CreateKbReq>,
 ) -> ApiResult<Json<KnowledgeBase>> {
+    caller.require_write(None)?;
+    let token_id = caller.token_id();
+    let user = caller.user;
     let name = req.name.trim();
     if name.is_empty() || name.chars().count() > 64 {
         return Err(AppError::invalid("bad_name", "Name must be 1-64 characters").into());
@@ -120,8 +134,21 @@ pub async fn create(
     }
     utopia_store::access::set_kb_member(&state.pool, kb.id, user.id, "admin", Some(user.id))
         .await?;
-    install_packs(&state, kb.id, user.id, &req.ontology_packs).await?;
+    install_packs(&state, kb.id, user.id, token_id, &req.ontology_packs).await?;
     let kb = utopia_store::kbs::get(&state.pool, kb.id).await?;
+    // 场景包排在标准包之后：它的类键撞上标准包的就让给标准包，声明还能指向它们（0073）
+    let scenarios = crate::scenario_packs::install(
+        &state,
+        kb.id,
+        user.id,
+        &kb.ontology_lang,
+        &req.scenario_packs,
+    )
+    .await?;
+    if scenarios.classes + scenarios.properties + scenarios.questions > 0 {
+        tracing::info!(kb_id = %kb.id, classes = scenarios.classes, properties = scenarios.properties,
+                       questions = scenarios.questions, "场景包装好");
+    }
     Ok(Json(kb))
 }
 
@@ -401,6 +428,7 @@ pub(super) async fn install_packs(
     state: &AppState,
     kb_id: Uuid,
     actor: Uuid,
+    via_token: Option<Uuid>,
     pack_ids: &[String],
 ) -> ApiResult<()> {
     if pack_ids.is_empty() {
@@ -413,7 +441,7 @@ pub(super) async fn install_packs(
         packs.push((pack, crate::ontology_packs::bytes(pack)?));
     }
     for (pack, bytes) in &packs {
-        crate::owl_import::apply(state, kb_id, actor, pack.filename, bytes)
+        crate::owl_import::apply(state, kb_id, actor, via_token, pack.filename, bytes)
             .await
             .map_err(|e| AppError::Other(anyhow::anyhow!("装本体包 {} 失败：{e}", pack.id)))?;
     }
@@ -431,6 +459,25 @@ pub(super) async fn install_packs(
         }
     }
     Ok(())
+}
+
+/// 场景包清单（0073），给建库界面：两种语言的名字都给，界面按自己的语言挑；
+/// 装进库时按库的 `ontology_lang` 挑
+pub async fn list_scenario_packs(AuthUser(_): AuthUser) -> ApiResult<Json<serde_json::Value>> {
+    let packs: Vec<_> = crate::scenario_packs::PACKS
+        .iter()
+        .map(|p| {
+            json!({
+                "id": p.id,
+                "name": { "zh": p.name.zh, "en": p.name.en },
+                "summary": { "zh": p.summary.zh, "en": p.summary.en },
+                "classes": p.classes.len(),
+                "properties": p.attributes.len() + p.relations.len(),
+                "questions": p.questions.len(),
+            })
+        })
+        .collect();
+    Ok(Json(json!({ "packs": packs })))
 }
 
 /// 可选的本体包清单，给建库界面。不需要登录之外的权限——它是静态数据。

@@ -398,10 +398,8 @@ pub fn emit_relation(
     }
     // 时间语义也照抄（0031）：一个 event 谓词的事实两端是同一刻，一个 eternal 谓词的
     // 事实没有日期——读的人不看这一条，会把前者读成一天的状态、后者读成从不知何时起。
-    // 状态是默认，不写
-    if r.temporal != "state" {
-        sink.l(&iri, &utopia("temporal"), &text(r.temporal.clone()))?;
-    }
+    // `state` 也写：导入把「没写」读成「不动」，不写它，改回 state 的关系重导入后还是 event
+    sink.l(&iri, &utopia("temporal"), &text(r.temporal.clone()))?;
     for d in &r.domains {
         if let Some(c) = vocab.class(*d) {
             let c = c.clone();
@@ -1597,6 +1595,18 @@ mod tests {
             &format!("<{WORKS_FOR}>"),
             "http://www.w3.org/1999/02/22-rdf-syntax-ns#type",
             "http://www.w3.org/2002/07/owl#FunctionalProperty"
+        ));
+    }
+
+    /// 改回 state 的关系重导入也得是 state：导入把没写的 `utopia:temporal` 读成「不动」
+    #[test]
+    fn a_state_relation_exports_its_temporal() {
+        let quads = export(Format::Turtle, |_, _, _| {});
+        assert!(has(
+            &quads,
+            &format!("<{WORKS_FOR}>"),
+            "urn:utopia:ns:temporal",
+            "\"state\""
         ));
     }
 

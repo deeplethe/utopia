@@ -67,10 +67,12 @@ the keys of its candidate classes. The classes themselves are listed once under 
 each with its key, its label and its definition. For each item, answer with the key of the one \
 candidate class that every thing of this kind is an instance of, or null.\n\
 \n\
-Output exactly one JSON object and nothing else, one pair per item:\n\
-{\"b\": [[12, \"organization\"], [13, null]]}\n\
-The first element of a pair is the item's id; the second is the chosen key, copied exactly as \
-listed under that item, or null.\n\
+Output exactly one JSON object and nothing else, one pair per item. Format (uppercase words \
+and the ellipsis are placeholders, not literal output):\n\
+{\"b\": [[ITEM_ID, CLASS_KEY_OR_NULL], ...]}\n\
+Copy the exact integer after \"Item\" in the user message into that item's ITEM_ID slot. \
+Never invent an id or renumber the items. Answer every supplied id exactly once. \
+The second element is the chosen key, copied exactly as listed under that item, or null.\n\
 \n\
 1. Choose a candidate only when every thing of this kind is an instance of that class by the \
 class's definition. The class may be broader than the word: a bakery is an organization, a \
@@ -636,7 +638,7 @@ mod tests {
         let user = &msgs[1].content;
 
         assert!(system.contains("every thing of this kind is an instance of that class"));
-        assert!(system.contains("{\"b\": [[12, \"organization\"], [13, null]]}"));
+        assert!(system.contains("{\"b\": [[ITEM_ID, CLASS_KEY_OR_NULL], ...]}"));
         assert!(system.contains("never merely related"));
         assert!(system.contains("Never invent a key"));
 

@@ -130,3 +130,103 @@ async fn the_last_admin_and_oneself_are_protected() -> anyhow::Result<()> {
         .await?;
     run
 }
+
+async fn concurrent_admin_removal(deactivate: [bool; 2]) -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let (org, a, b) = org_with_two_admins(&pool).await?;
+    let run = async {
+        let mut gate = pool.begin().await?;
+        sqlx::query("SELECT id FROM users WHERE org_id = $1 FOR UPDATE")
+            .bind(org)
+            .execute(&mut *gate)
+            .await?;
+        let mut tasks = tokio::task::JoinSet::new();
+        let mut pids = Vec::new();
+        for ((actor, target), retire) in [(a, b), (b, a)].into_iter().zip(deactivate) {
+            let writer = sqlx::postgres::PgPoolOptions::new()
+                .max_connections(1)
+                .connect(&url)
+                .await?;
+            pids.push(
+                sqlx::query_scalar::<_, i32>("SELECT pg_backend_pid()")
+                    .fetch_one(&writer)
+                    .await?,
+            );
+            tasks.spawn(async move {
+                if retire {
+                    utopia_store::accounts::deactivate_user(&writer, target, actor).await
+                } else {
+                    utopia_store::accounts::set_system_admin(&writer, target, actor, false).await
+                }
+            });
+        }
+        // Observe real lock waits, not elapsed time: before the fix both writers
+        // have passed their checks; afterwards one waits on the organization lock.
+        let waiting = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let blocked: i64 = sqlx::query_scalar(
+                    "SELECT count(*) FROM pg_stat_activity
+                     WHERE pid = ANY($1) AND cardinality(pg_blocking_pids(pid)) > 0",
+                )
+                .bind(&pids)
+                .fetch_one(&pool)
+                .await?;
+                if blocked == 2 {
+                    break anyhow::Ok(());
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        gate.commit().await?;
+        waiting??;
+        let mut succeeded = 0;
+        while let Some(result) =
+            tokio::time::timeout(std::time::Duration::from_secs(10), tasks.join_next()).await?
+        {
+            match result? {
+                Ok(()) => succeeded += 1,
+                Err(utopia_core::AppError::Validation(_)) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        let remaining: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM users
+             WHERE org_id = $1 AND is_admin AND deactivated_at IS NULL",
+        )
+        .bind(org)
+        .fetch_one(&pool)
+        .await?;
+        anyhow::Ok((succeeded, remaining))
+    }
+    .await;
+    sqlx::query("DELETE FROM organizations WHERE id = $1")
+        .bind(org)
+        .execute(&pool)
+        .await?;
+    let (succeeded, remaining) = run?;
+    assert_eq!(
+        remaining, 1,
+        "concurrent removals must retain an active administrator"
+    );
+    assert_eq!(succeeded, 1, "exactly one removal must succeed");
+    Ok(())
+}
+
+#[tokio::test]
+async fn concurrent_revocations_keep_an_active_admin() -> anyhow::Result<()> {
+    concurrent_admin_removal([false, false]).await
+}
+
+#[tokio::test]
+async fn concurrent_deactivations_keep_an_active_admin() -> anyhow::Result<()> {
+    concurrent_admin_removal([true, true]).await
+}
+
+#[tokio::test]
+async fn concurrent_revocation_and_deactivation_keep_an_active_admin() -> anyhow::Result<()> {
+    concurrent_admin_removal([false, true]).await
+}

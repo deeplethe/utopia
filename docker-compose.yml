@@ -2,6 +2,9 @@ services:
   db:
     # 拉不动 Docker Hub 时可用 UTOPIA_DB_IMAGE 覆盖为任何带 pgvector 的 PG16+ 镜像
     image: ${UTOPIA_DB_IMAGE:-pgvector/pgvector:pg16}
+    # Parallel queries on larger bases can exhaust Docker's default 64 MiB /dev/shm.
+    # This raises the limit; memory is allocated only as it is used.
+    shm_size: 1g
     environment:
       POSTGRES_USER: utopia
       POSTGRES_PASSWORD: ${UTOPIA_DB_PASSWORD:-utopia}
@@ -68,6 +71,8 @@ services:
       # 请求变慢而不是报错说池子不够，所以调并发时别忘了它。
       # 上调前先确认 Postgres 的 max_connections（默认 100）容得下。
       UTOPIA_DB_MAX_CONNECTIONS: ${UTOPIA_DB_MAX_CONNECTIONS:-32}
+      # 不设：被取代的分块一直留着向量。只写键名，理由同上面三条。
+      UTOPIA_SUPERSEDED_VECTOR_DAYS:
     volumes:
       # 原始文件（files/）与全文索引（index/）。不挂出来的话，容器一重建
       # 它们就没了，而库里的 documents 记录还在——引用全断且不报错。

@@ -15,9 +15,13 @@ export function fmtObjectValue(v: Record<string, unknown> | null): string | null
        因为值要能比大小才有资格不当节点；可原样念出来是「5000000000 $」，
        比原文那句「$5 billion」难读得多。符号在前、数收成紧凑写法，两头都要 */
     if (typeof v.value === "number" && unit && unit !== "%") {
+      /* 两位小数只给紧凑写法：值是按声明单位读出来的，「350万元」进单位亿元的属性是
+         0.035，舍到两位就显示成 0.04，「3万元」成了 0。普通写法留十五位有效数，
+         也不把规则算术的 0.1 + 0.2 显示成 0.30000000000000004 */
+      const compact = Math.abs(v.value) >= 10000;
       const n = new Intl.NumberFormat(undefined, {
-        notation: Math.abs(v.value) >= 10000 ? "compact" : "standard",
-        maximumFractionDigits: 2,
+        notation: compact ? "compact" : "standard",
+        ...(compact ? { maximumFractionDigits: 2 } : { maximumSignificantDigits: 15 }),
       }).format(v.value);
       // Currency symbols precede an amount; physical units follow a quantity.
       return /\p{Sc}/u.test(unit) ? `${unit}${n}` : `${n} ${unit}`;

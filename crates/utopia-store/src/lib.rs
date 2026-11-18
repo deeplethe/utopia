@@ -39,6 +39,7 @@ pub mod phrase_bindings;
 pub mod reasoning;
 pub mod record_axis;
 pub mod resolution;
+pub mod retention;
 pub mod review;
 pub mod review_summary;
 pub mod rss_full_content;

@@ -13,7 +13,8 @@ use utopia_core::AppResult;
 /// 这个模型允许多少并发。没有专属配置就走部署缺省。
 ///
 /// 每次 LLM 调用前查一次——相对于一次动辄二十几秒的调用，这个查询的成本可以
-/// 忽略，换来的是"管理员改完即时生效"，不必做缓存失效。
+/// 忽略。闸门手里也存着一份：管理员改限额时 `ModelGates::refresh` 再查一遍、当场
+/// 调闸门（#1302），等在闸门上的任务不必等下一次调用来读。
 pub async fn limit_for(pool: &PgPool, base_url: &str, model: &str) -> AppResult<usize> {
     let row: Option<(i32,)> = sqlx::query_as(
         "SELECT max_concurrent FROM model_concurrency WHERE base_url = $1 AND model = $2",

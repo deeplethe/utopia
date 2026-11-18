@@ -33,6 +33,10 @@ impl IntoResponse for ApiErr {
             AppError::NotFound => (StatusCode::NOT_FOUND, self.0.to_string()),
             AppError::Unauthorized => (StatusCode::UNAUTHORIZED, self.0.to_string()),
             AppError::Forbidden => (StatusCode::FORBIDDEN, self.0.to_string()),
+            AppError::CodedForbidden { code: c, message } => {
+                code = Some(c);
+                (StatusCode::FORBIDDEN, message.clone())
+            }
             AppError::CodedConflict { code: c, message } => {
                 code = Some(c);
                 (StatusCode::CONFLICT, message.clone())
@@ -90,6 +94,14 @@ mod tests {
             (AppError::Conflict("legacy".into()), 409, None),
             (AppError::Unauthorized, 401, None),
             (AppError::Forbidden, 403, None),
+            (
+                AppError::CodedForbidden {
+                    code: "token_read_only",
+                    message: "read-only".into(),
+                },
+                403,
+                Some("token_read_only"),
+            ),
             (AppError::NotFound, 404, None),
             (
                 AppError::invalid("bad_input", "invalid"),

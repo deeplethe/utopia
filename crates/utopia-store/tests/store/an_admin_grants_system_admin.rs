@@ -44,6 +44,13 @@ async fn granting_a_member_makes_them_admin() -> anyhow::Result<()> {
     let run = async {
         utopia_store::accounts::set_system_admin(&pool, member, admin, true).await?;
         assert!(is_admin(&pool, member).await?);
+        utopia_store::accounts::set_system_admin(&pool, member, admin, false).await?;
+        assert!(!is_admin(&pool, member).await?);
+        // A request admitted before the actor's revocation still cannot remove
+        // the last administrator. Repeating a non-admin's revocation is harmless.
+        let refused = utopia_store::accounts::set_system_admin(&pool, admin, member, false).await;
+        assert!(matches!(refused, Err(utopia_core::AppError::Validation(_))));
+        utopia_store::accounts::set_system_admin(&pool, member, admin, false).await?;
         Ok::<_, anyhow::Error>(())
     }
     .await;
@@ -90,9 +97,11 @@ async fn granting_a_deactivated_or_unknown_user_is_not_found() -> anyhow::Result
     let run = async {
         utopia_store::accounts::deactivate_user(&pool, member, admin).await?;
         for target in [member, Uuid::now_v7()] {
-            let missing =
-                utopia_store::accounts::set_system_admin(&pool, target, admin, true).await;
-            assert!(matches!(missing, Err(utopia_core::AppError::NotFound)));
+            for value in [true, false] {
+                let missing =
+                    utopia_store::accounts::set_system_admin(&pool, target, admin, value).await;
+                assert!(matches!(missing, Err(utopia_core::AppError::NotFound)));
+            }
         }
         assert!(!is_admin(&pool, member).await?);
         Ok::<_, anyhow::Error>(())

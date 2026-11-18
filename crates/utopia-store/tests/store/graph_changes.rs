@@ -176,6 +176,7 @@ async fn ledger_events_are_derived_as_specified() -> anyhow::Result<()> {
                 entity,
                 kinds.as_deref(),
                 100,
+                0,
             )
             .await
         }

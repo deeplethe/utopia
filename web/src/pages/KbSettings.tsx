@@ -7,6 +7,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams, useNavigate } from "@tanstack/react-router";
 import {
   History as HistoryIcon,
+  Download,
   Lock,
   Plus,
   Search,
@@ -124,18 +125,40 @@ export function KbSettings() {
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // 每张卡只跟随自己的服务端字段；保存别的卡触发重取时，保留这张卡的草稿。
   useEffect(() => {
     if (kb.data) {
       setName(kb.data.name);
       setDesc(kb.data.description ?? "");
+    }
+  }, [kbId, kb.data?.name, kb.data?.description]);
+
+  useEffect(() => {
+    if (kb.data) {
       setVisibility(kb.data.visibility);
+    }
+  }, [kbId, kb.data?.visibility]);
+
+  useEffect(() => {
+    if (kb.data) {
       setMaterialize(kb.data.materialize_inferences);
       setAutoResolve(kb.data.auto_type_resolution);
       setGovernance(kb.data.governance);
       setInferMins(kb.data.inference_interval_minutes);
+    }
+  }, [
+    kbId,
+    kb.data?.materialize_inferences,
+    kb.data?.auto_type_resolution,
+    kb.data?.governance,
+    kb.data?.inference_interval_minutes,
+  ]);
+
+  useEffect(() => {
+    if (kb.data) {
       setOntoLang(kb.data.ontology_lang);
     }
-  }, [kb.data]);
+  }, [kbId, kb.data?.ontology_lang]);
 
   // 四张卡，四个保存：改名字那一下不该把下面的开关一起送上去
   const saveIdentity = useKbPatch(kbId!, setError);
@@ -434,6 +457,19 @@ export function KbSettings() {
                   }
                 />
               )}
+
+              <SettingsCard
+                title={S.kbset.exportKb}
+                hint={S.kbset.exportKbNote}
+                action={
+                  <Button variant="secondary" size="sm"
+                    onClick={() => window.open(`/api/v1/kbs/${kbId}/export?format=turtle`)}
+                  >
+                    <Download size={14} />
+                    {S.kbset.exportKbAction}
+                  </Button>
+                }
+              />
             </div>
           )}
 
@@ -495,7 +531,20 @@ function auditDetailName(e: AuditEvent): string {
 
 const AUDIT_PAGE = 50;
 
-function KbActivity({ kbId }: { kbId: string }) {
+/** 两个日期框说的是读者日历上的几天：起始那天零点起、截止那天过完为止。服务端的区间
+ *  含起点不含终点、按时刻比，所以截止日要送下一天的零点，零点也按本地时区换成时刻 */
+export function auditBounds(since: string, until: string) {
+  const midnight = (day: string, later: number) => {
+    const [y, m, d] = day.split("-").map(Number);
+    return new Date(y, m - 1, d + later).toISOString();
+  };
+  return {
+    since: since ? midnight(since, 0) : undefined,
+    until: until ? midnight(until, 1) : undefined,
+  };
+}
+
+export function KbActivity({ kbId }: { kbId: string }) {
   // 筛选按真实查法来：查一类动作、查一个人、查一段时间。
   // 动作前缀匹配——`entity.` 就能把 retyped / renamed 一族一起捞出来
   const [action, setAction] = useState("");
@@ -507,17 +556,15 @@ function KbActivity({ kbId }: { kbId: string }) {
     queryFn: () =>
       api.kbAudit(kbId, {
         action: action || undefined,
-        since: since || undefined,
-        until: until || undefined,
+        ...auditBounds(since, until),
         limit: AUDIT_PAGE,
         offset: page * AUDIT_PAGE,
       }),
     placeholderData: (prev) => prev,
   });
-  const events = audit.data?.events ?? [];
-  const total = audit.data?.total ?? 0;
+  const result = audit.isSuccess && !audit.isPlaceholderData ? audit.data : undefined;
   // 下拉按这个库实际发生过的动作填，不是硬编码清单
-  const actions = audit.data?.actions ?? [];
+  const actions = audit.data?.actions ?? (action ? [action] : []);
   const filtered = !!(action || since || until);
 
   const reset = (fn: () => void) => {
@@ -568,49 +615,68 @@ function KbActivity({ kbId }: { kbId: string }) {
             {S.kbset.auditClear}
           </Button>
         )}
-        <span className="ml-auto u-num text-fine text-ink-2">
-          {S.kbset.auditTotal(total)}
-        </span>
+        {result && (
+          <span className="ml-auto u-num text-fine text-ink-2">
+            {S.kbset.auditTotal(result.total)}
+          </span>
+        )}
       </div>
       <SettingsCard title={S.kbset.activity} hint={S.kbset.activityHint}>
-      {audit.isPending ? (
-        <p className="text-small text-ink-2">{S.nav.loading}</p>
-      ) : events.length === 0 ? (
-        <p className="text-small text-ink-2">{S.kbset.activityEmpty}</p>
-      ) : (
-        <div className="divide-y divide-line">
-          {events.map((e) => (
-            <div
-              key={e.id}
-              className="flex items-baseline gap-3 py-2 text-body first:pt-0"
-            >
-              <span className="u-num shrink-0 text-fine text-ink-2">
-                {localDateTime(e.created_at)}
-              </span>
-              <span className="min-w-0 truncate">
-                <span className="text-ink">
-                  {e.actor_name ??
-                    (e.actor_id
-                      ? S.kbset.deletedUser
-                      : e.action.startsWith("review.")
-                        ? S.kbset.adjudicator
-                        : S.kbset.engine)}
-                </span>{" "}
-                <span className="text-ink-2">
-                  {S.kbset.auditActions[e.action] ?? e.action}
-                </span>
-                {auditDetailName(e) && (
-                  <span className="text-ink-2">
-                    {" "}
-                    “{auditDetailName(e)}”
-                  </span>
-                )}
-              </span>
+        {audit.isError ? (
+          <div className="space-y-2">
+            <div role="alert" className="text-small text-danger">
+              <p>{S.kbset.activityLoadError}</p>
+              {audit.error.message && <p>{audit.error.message}</p>}
             </div>
-          ))}
-        </div>
-      )}
-      <Pager total={total} pageSize={AUDIT_PAGE} page={page} onPage={setPage} />
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={audit.isFetching}
+              onClick={() => { void audit.refetch(); }}
+            >
+              {S.kbset.activityRetry}
+            </Button>
+          </div>
+        ) : !result ? (
+          <p role="status" className="text-small text-ink-2">{S.nav.loading}</p>
+        ) : result.events.length === 0 ? (
+          <p className="text-small text-ink-2">{S.kbset.activityEmpty}</p>
+        ) : (
+          <div className="divide-y divide-line">
+            {result.events.map((e) => (
+              <div
+                key={e.id}
+                className="flex items-baseline gap-3 py-2 text-body first:pt-0"
+              >
+                <span className="u-num shrink-0 text-fine text-ink-2">
+                  {localDateTime(e.created_at)}
+                </span>
+                <span className="min-w-0 truncate">
+                  <span className="text-ink">
+                    {e.actor_name ??
+                      (e.actor_id
+                        ? S.kbset.deletedUser
+                        : e.action.startsWith("review.")
+                          ? S.kbset.adjudicator
+                          : S.kbset.engine)}
+                  </span>{" "}
+                  <span className="text-ink-2">
+                    {S.kbset.auditActions[e.action] ?? e.action}
+                  </span>
+                  {auditDetailName(e) && (
+                    <span className="text-ink-2">
+                      {" "}
+                      “{auditDetailName(e)}”
+                    </span>
+                  )}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+        {result && (
+          <Pager total={result.total} pageSize={AUDIT_PAGE} page={page} onPage={setPage} />
+        )}
       </SettingsCard>
     </div>
   );

@@ -154,6 +154,15 @@ export interface LiveHandle {
 }
 
 export const liveAnswer = {
+  /** 换人（登录、登出）时整张表交出去，写完的条目也算：它们都是上一个人的。
+   *  只断开读取、不发停止——服务端照常把上一个人的回答写完落库。先摘掉归属再
+   *  断开，断开时同步触发的回调就认领不到任何条目。 */
+  clear: () => {
+    const previous = [...lives.values()];
+    lives.clear();
+    for (const slot of previous) slot.abort();
+    flush();
+  },
   /** `useSyncExternalStore` 要求同一个快照对象在没变时保持同一引用 */
   get: (): readonly Live[] => snapshot,
   subscribe: (l: () => void) => {

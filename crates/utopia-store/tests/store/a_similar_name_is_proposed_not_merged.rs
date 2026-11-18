@@ -102,6 +102,14 @@ fn vector_reviews(r: &utopia_store::resolution::Resolution) -> Vec<(Uuid, f32)> 
         .collect()
 }
 
+fn contained(r: &utopia_store::resolution::Resolution) -> Vec<Uuid> {
+    r.reviews
+        .iter()
+        .filter(|v| v.reason.starts_with("contains|"))
+        .map(|v| v.other_id)
+        .collect()
+}
+
 /// 相近的名字：新建实体，给裁决器排一对，绝不静默归并
 #[tokio::test]
 async fn a_near_name_creates_an_entity_and_proposes_a_pair() -> anyhow::Result<()> {
@@ -267,26 +275,40 @@ async fn the_same_literal_name_is_not_proposed_twice() -> anyhow::Result<()> {
     let f = seed(&pool, "name-vector-literal").await?;
     let run = async {
         let same: Vec<f32> = vec![1.0, 0.0, 0.0];
-        // 没有上下文向量：v1 路径归并到唯一的字面候选
-        let r = utopia_store::resolution::resolve_mention(
-            &pool,
-            f.kb,
-            Some(f.device),
-            "海洋探测器1号",
-            None,
-            Some(&same),
-            None,
-            &[],
+        // A second entity with the same name stays a channel-1 decision, including
+        // when the mention carries Markdown. Neither candidate is excluded here.
+        sqlx::query(
+            "UPDATE entities SET canonical_name = '海洋探测器1号', type_id = $2 WHERE id = $1",
         )
+        .bind(f.captain)
+        .bind(f.device)
+        .execute(&pool)
         .await?;
-        assert_eq!(r.entity_id, f.probe, "字面相等走通道 1");
-        // 夹具里 海洋探测队长 的向量与之相同、大类又拦不住，它照常被提议；要看的只是
-        // 已归并到的 海洋探测器1号 自己不会再被排一对
-        assert!(
-            !vector_reviews(&r).iter().any(|(id, _)| *id == f.probe),
-            "已经归并到它，不再对它排 name_vector：{:?}",
-            r.reviews
-        );
+        sqlx::query(
+            "UPDATE facts SET object_value = '{\"value\":\"海洋探测器1号\"}' WHERE subject_id = $1",
+        )
+        .bind(f.captain)
+        .execute(&pool)
+        .await?;
+        for mention in ["海洋探测器1号", "**海洋探测器1号**"] {
+            let r = utopia_store::resolution::resolve_mention(
+                &pool,
+                f.kb,
+                Some(f.device),
+                mention,
+                None,
+                Some(&same),
+                None,
+                &[],
+            )
+            .await?;
+            assert!(!r.created);
+            assert!(
+                vector_reviews(&r).is_empty(),
+                "a namesake must not be reconsidered by name vector: {:?}",
+                r.reviews
+            );
+        }
         Ok::<_, anyhow::Error>(())
     }
     .await;
@@ -326,6 +348,42 @@ async fn a_new_name_is_pending_until_its_vector_is_set() -> anyhow::Result<()> {
         name_vectors::set(&pool, f.kb, &[(fact, fresh, vec![0.0, 0.0, 1.0])]).await?;
         let after = name_vectors::pending(&pool, f.kb, 100).await?;
         assert!(after.iter().all(|(fid, _, _)| *fid != fact), "写了向量就不该再待补");
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    teardown(&pool, &f).await?;
+    run
+}
+
+/// 上一篇文档没补上的名字，下一篇照样补：`pending` 取整个库里没有向量的名字，先记的在前，
+/// 不只是这篇刚记的。有向量的名字不在里面（#1296 改这条查询时守住这次重试）
+#[tokio::test]
+async fn a_name_left_without_a_vector_earlier_is_pending_before_a_new_one() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let f = seed(&pool, "name-vector-backlog").await?;
+    let run = async {
+        let mut recorded = Vec::new();
+        for name in ["远洋重工", "深蓝船舶"] {
+            let entity = Uuid::now_v7();
+            sqlx::query(
+                "INSERT INTO entities (id, kb_id, type_id, canonical_name) VALUES ($1, $2, $3, $4)",
+            )
+            .bind(entity)
+            .bind(f.kb)
+            .bind(f.device)
+            .bind(name)
+            .execute(&pool)
+            .await?;
+            let fact = names::record(&pool, f.kb, entity, name, None, None)
+                .await?
+                .expect("a name fact");
+            recorded.push((fact, entity, name.to_string()));
+        }
+
+        assert_eq!(name_vectors::pending(&pool, f.kb, 100).await?, recorded);
         Ok::<_, anyhow::Error>(())
     }
     .await;
@@ -447,13 +505,6 @@ async fn names_that_carry_different_numbers_are_not_proposed() -> anyhow::Result
         );
 
         // 包含关系：`migration 39` 是 `migration 395` 的子串，但不是它的简称
-        let contained = |r: &utopia_store::resolution::Resolution| {
-            r.reviews
-                .iter()
-                .filter(|v| v.reason.starts_with("contains|"))
-                .map(|v| v.other_id)
-                .collect::<Vec<_>>()
-        };
         let long = resolve("migration 395", None).await?;
         let short = resolve("migration 39", None).await?;
         assert!(short.created);
@@ -470,6 +521,198 @@ async fn names_that_carry_different_numbers_are_not_proposed() -> anyhow::Result
             "简称照常配到带版本号的全称上：{:?}",
             brief.reviews
         );
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    teardown(&pool, &f).await?;
+    run
+}
+
+/// 名字里的 `_` 按字面比，不当通配符（#1293）：`src/a_b.ts` 不包含在 `src/axb.ts::adds` 里，
+/// 反过来 `a_b.ts` 也不在后者里；真包含的 `src/a_b.ts` 照常配对
+#[tokio::test]
+async fn an_underscore_in_a_name_is_not_a_wildcard() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let f = seed(&pool, "contain-underscore").await?;
+    let run = async {
+        let resolve = |name: &'static str| {
+            utopia_store::resolution::resolve_mention(
+                &pool,
+                f.kb,
+                Some(f.device),
+                name,
+                None,
+                None,
+                None,
+                &[],
+            )
+        };
+        let file = resolve("src/a_b.ts").await?;
+        let other = resolve("src/axb.ts::adds").await?;
+        assert!(
+            !contained(&other).contains(&file.entity_id),
+            "库里名字的 _ 不匹配 x：{:?}",
+            other.reviews
+        );
+        let brief = resolve("a_b.ts").await?;
+        assert_eq!(
+            contained(&brief),
+            vec![file.entity_id],
+            "mention 的 _ 不匹配 x，真包含的照常配对：{:?}",
+            brief.reviews
+        );
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    teardown(&pool, &f).await?;
+    run
+}
+
+/// 别名也是召回的桥：`Holmes` 是 `Sherlock Holmes` 的别名，`Mr. Holmes` 含 `Holmes`，
+/// 却不含本名 `Sherlock Holmes`，也不被它包含
+#[tokio::test]
+async fn mr_holmes_is_paired_with_sherlock_holmes_through_its_alias_holmes() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let f = seed(&pool, "contain-alias").await?;
+    let run = async {
+        let resolve = |name: &'static str| {
+            utopia_store::resolution::resolve_mention(
+                &pool,
+                f.kb,
+                Some(f.device),
+                name,
+                None,
+                None,
+                None,
+                &[],
+            )
+        };
+        let detective = resolve("Sherlock Holmes").await?;
+        names::record(&pool, f.kb, detective.entity_id, "Holmes", None, None).await?;
+        let mr = resolve("Mr. Holmes").await?;
+        assert_eq!(
+            contained(&mr),
+            vec![detective.entity_id],
+            "别名 Holmes 被 Mr. Holmes 包含：{:?}",
+            mr.reviews
+        );
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    teardown(&pool, &f).await?;
+    run
+}
+
+/// 按描述建的实体没有名字事实（0044），描述文字不是召回的桥；
+/// 同样的文字落在普通实体的 `known_as` 上照常配对
+#[tokio::test]
+async fn a_described_entity_is_not_paired_by_containment() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let f = seed(&pool, "contain-described").await?;
+    let run = async {
+        let described = utopia_store::resolution::create_described(
+            &pool,
+            f.kb,
+            "the museum Sherlock Holmes fans visit",
+            None,
+        )
+        .await?;
+        let named = utopia_store::resolution::resolve_mention(
+            &pool,
+            f.kb,
+            Some(f.device),
+            "the museum Sherlock Holmes fans visit",
+            None,
+            None,
+            None,
+            &[],
+        )
+        .await?;
+        let mention = utopia_store::resolution::resolve_mention(
+            &pool,
+            f.kb,
+            Some(f.device),
+            "Sherlock Holmes",
+            None,
+            None,
+            None,
+            &[],
+        )
+        .await?;
+        assert_eq!(
+            contained(&mention),
+            vec![named.entity_id],
+            "描述建的 {described} 不配对，同文字的普通实体配对：{:?}",
+            mention.reviews
+        );
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    teardown(&pool, &f).await?;
+    run
+}
+
+/// 拉丁名字只在词边界上算包含（#1104）；汉字照旧按子串匹配
+#[tokio::test]
+async fn a_latin_name_is_contained_only_at_word_edges() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    let f = seed(&pool, "contain-word-edges").await?;
+    let run = async {
+        let resolve = |name: &'static str| {
+            utopia_store::resolution::resolve_mention(
+                &pool,
+                f.kb,
+                Some(f.device),
+                name,
+                None,
+                None,
+                None,
+                &[],
+            )
+        };
+        // (库里的名字, 它的别名, 新名字, 是否排成一对)
+        for (stored, alias, new, want) in [
+            ("SERVICE_TOKEN", None, "token", false),
+            ("install_scheduled_task.ps1", None, "task", false),
+            ("AreaScorecard", None, "area", false),
+            ("Sherlock Holmes", None, "Holmes", true),
+            ("星云科技上海研究院", None, "上海研究院", true),
+            ("pump", None, "pumpkin soup", false),
+            ("Watson", None, "Doctor Watson", true),
+            (
+                "Scotland Yard",
+                Some("Inspector Lestrade"),
+                "Lestrade",
+                true,
+            ),
+            ("Gregson file", Some("gregson_notes"), "notes", false),
+            ("Baker Street", Some("Hudson"), "Mrs Hudson", true),
+            ("Prefect file", Some("Ford"), "Fordham Road", false),
+        ] {
+            let old = resolve(stored).await?;
+            if let Some(alias) = alias {
+                utopia_store::names::record(&pool, f.kb, old.entity_id, alias, None, None).await?;
+            }
+            let r = resolve(new).await?;
+            assert_eq!(
+                contained(&r).contains(&old.entity_id),
+                want,
+                "{new} against {stored}: {:?}",
+                r.reviews
+            );
+        }
         Ok::<_, anyhow::Error>(())
     }
     .await;

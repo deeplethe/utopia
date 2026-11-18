@@ -26,6 +26,7 @@ import { ServerDown } from "./ServerDown";
 import { useAlertEvents } from "../useAlertEvents";
 import { useKbEvents } from "../useKbEvents";
 import { usePageTitle } from "../useTitle";
+import { fetchMe } from "../authSession";
 
 const TABS = [
   // 图谱是门面，排第一；两种查询方式（Search/Ask）随后
@@ -45,7 +46,7 @@ export function Shell() {
   const navigate = useNavigate();
   const kbId = useKbId();
 
-  const me = useQuery({ queryKey: ["me"], queryFn: api.me });
+  const me = useQuery({ queryKey: ["me"], queryFn: fetchMe });
   const health = useQuery({
     queryKey: ["health"],
     queryFn: api.health,

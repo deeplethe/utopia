@@ -109,6 +109,16 @@ export type OntologyPack = {
   properties: number;
 };
 
+/** 场景包（0073）：名字与说明两种语言都给，界面按自己的语言挑 */
+export type ScenarioPack = {
+  id: string;
+  name: { zh: string; en: string };
+  summary: { zh: string; en: string };
+  classes: number;
+  properties: number;
+  questions: number;
+};
+
 export interface Kb {
   id: string;
   workspace_id: string;
@@ -225,14 +235,28 @@ export interface SourceView {
     feed_url?: string;
     content_mode?: "feed" | "full_new_items";
     endpoint?: string;
-    /** github_issues：owner/name */
+    /** github_issues / github_repo：owner/name */
     repo?: string;
     /** github_issues：PR 在 GitHub 模型里也是工单，默认不收 */
     include_pull_requests?: boolean;
+    /** gitlab_issues：合并请求默认不收，与 GitHub 的 PR 同一个理由 */
+    include_merge_requests?: boolean;
+    /** github_repo / gitlab_repo：给了就整列替换默认的 glob（markdown；隐藏目录、node_modules、vendor） */
+    include?: string[];
+    exclude?: string[];
     /** jira_issues：站点地址，如 https://issues.apache.org/jira */
     base_url?: string;
-    /** jira_issues：项目 key，如 KAFKA */
+    /** jira_issues：项目 key，如 KAFKA；gitlab_repo / gitlab_issues：项目路径，如 group/subgroup/name */
     project?: string;
+    /** google_drive：选中的文件夹（名字只给界面看，同步只认 id） */
+    folders?: { id: string; name: string }[];
+    /** google_drive：连上的 Google 账号；`connected_at` 有值即已连接（令牌从不下发） */
+    account_email?: string | null;
+    connected_at?: string;
+    /** google_drive：连上的那个 Utopia 用户；浏览与选文件夹只给他 */
+    connected_by?: string;
+    /** google_drive：连上的那个人连接时的名字，断开前的确认里用 */
+    connected_by_name?: string;
     /** false = 这个来源下的文档只检索、不抽取（schema 文档，0035 决定 7）；缺省抽取 */
     extract?: boolean;
   } | null;
@@ -243,6 +267,10 @@ export interface SourceView {
   last_sync_status: "never" | "queued" | "running" | "ok" | "failed";
   last_sync_error: string | null;
   last_sync_added: number;
+  /** 工单来源读到了哪里（ADR 0072）：消费到的更新时刻，且那一刻的整组都读完了。
+   *  null = 没有游标（首轮同步，或这一类来源不用游标）。说的是「读到哪」，
+   *  不是 `last_sync_at` 的「这一轮什么时候跑」 */
+  sync_checkpoint: string | null;
   doc_count: number;
   missing_count: number;
   /** 全文补全那一块；**不是 RSS 全文来源的就是 null**，不用再拿 kind 与
@@ -940,10 +968,12 @@ export interface ConflictItem {
   old_subject: string;
   old_object: string | null;
   old_valid_from: string | null;
+  old_valid_from_precision: string | null;
   new_fact_id: string;
   new_subject: string;
   new_object: string | null;
   new_valid_from: string | null;
+  new_valid_from_precision: string | null;
   new_confidence: number;
 }
 
@@ -1071,6 +1101,8 @@ export interface GraphEdge {
   blocked: boolean;
   /** 边上的属性（0037） */
   qualifiers: FactQualifier[];
+  /** 文档的角色词（0044）：不是本体属性，另放一处 */
+  statement_qualifiers: StatementQualifier[];
 }
 
 /** 实体的一个名字（0041）。`canonical` 是面板标题上那个；曾用名在世界轴上有结束 */
@@ -1085,6 +1117,16 @@ export interface NameView {
   valid_to_precision: string | null;
   document_ids: string[];
   evidence_count: number;
+}
+
+/** 开放陈述按文档角色词记的限定（0044）：值或实体 */
+export interface StatementQualifier {
+  role: string;
+  value: unknown | null;
+  entity_id: string | null;
+  entity_name: string | null;
+  /** 说这个值的那几块（0070）：两块活着的块说法不同，各自一条 */
+  chunk_ids: string[];
 }
 
 export interface EntityFact {
@@ -1106,6 +1148,8 @@ export interface EntityFact {
   object_value: Record<string, unknown> | null;
   /** 边上的属性（0037） */
   qualifiers: FactQualifier[];
+  /** 文档的角色词（0044）：不是本体属性，另放一处 */
+  statement_qualifiers: StatementQualifier[];
   valid_from: string | null;
   valid_to: string | null;
   /** 读出来的区间（0022），与 GraphEdge 同义：「此刻成立」按它判 */
@@ -1181,8 +1225,9 @@ export interface OntologyRegressionCase {
   id: string;
   kb_id: string;
   statement_id: string;
-  expected_property_id: string;
-  expected_direction: "forward" | "reverse";
+  expected_binding: "bound" | "none";
+  expected_property_id: string | null;
+  expected_direction: "forward" | "reverse" | null;
   created_by: string | null;
   created_at: string;
   origin: "adoption" | "person";
@@ -1190,6 +1235,7 @@ export interface OntologyRegressionCase {
   last_result: {
     passed: boolean;
     human_bound: boolean;
+    conflict?: "human_binding" | null;
     actual_property_id: string | null;
     actual_direction: "forward" | "reverse" | null;
     status: "bound" | "none" | "undecided";
@@ -1201,8 +1247,8 @@ export interface OntologyRegressionCase {
   object_id: string | null;
   object_label: string | null;
   object_value: Record<string, unknown> | null;
-  expected_property_label: string;
-  expected_property_key: string;
+  expected_property_label: string | null;
+  expected_property_key: string | null;
   actual_property_label: string | null;
   actual_property_key: string | null;
   created_by_label: string | null;
@@ -1744,6 +1790,8 @@ export const api = {
       visibility?: string;
       /** 预置本体包 id，顺序有意义：第一个会认领同名的种子类 */
       ontology_packs?: string[];
+      /** 场景包 id（0073）：按场景预置的类、属性和能力问题 */
+      scenario_packs?: string[];
     },
   ) =>
     request<Kb>(`/api/v1/workspaces/${workspaceId}/kbs`, {
@@ -1753,6 +1801,8 @@ export const api = {
 
   ontologyPacks: () =>
     request<{ packs: OntologyPack[] }>("/api/v1/ontology-packs"),
+  scenarioPacks: () =>
+    request<{ packs: ScenarioPack[] }>("/api/v1/scenario-packs"),
 
   kbDetail: (kbId: string) => request<Kb>(`/api/v1/kbs/${kbId}`),
   updateKb: (kbId: string, body: Record<string, unknown>) =>
@@ -2050,10 +2100,11 @@ export const api = {
       { method: "POST" },
     ),
 
-  search: (kbId: string, q: string) =>
-    request<{ results: SearchResult[] }>(`/api/v1/kbs/${kbId}/search`, {
+  search: (kbId: string, q: string, offset: number, topK: number, signal?: AbortSignal) =>
+    request<{ results: SearchResult[]; has_more: boolean }>(`/api/v1/kbs/${kbId}/search`, {
       method: "POST",
-      body: JSON.stringify({ q }),
+      body: JSON.stringify({ q, offset, top_k: topK }),
+      signal,
     }),
 
   settings: (workspaceId: string) =>
@@ -2253,11 +2304,15 @@ export const api = {
     ),
   addOntologyRegression: (
     kbId: string,
-    body: {
-      statement_id: string;
+    body: { statement_id: string } & ({
+      expected_binding?: "bound";
       relation_type_id: string;
       direction: "forward" | "reverse";
-    },
+    } | {
+      expected_binding: "none";
+      relation_type_id?: null;
+      direction?: null;
+    }),
   ) =>
     request<{ id: string }>(`/api/v1/kbs/${kbId}/ontology/regressions`, {
       method: "POST",
@@ -2330,12 +2385,13 @@ export const api = {
   /** 上次算出来、还没人表态的提案（0049）。刷新页面靠它，不必重跑模型 */
   storedProposals: (kbId: string) =>
     request<OntologyProposals>(`/api/v1/kbs/${kbId}/ontology/proposals`),
-  /** 一条提案有人表态了。改状态不删行——拒绝留痕，下一轮 Suggest 不再刷回待看 */
+  /** 一条提案有人拒绝了。改状态不删行——拒绝留痕，下一轮 Suggest 不再刷回待看。
+   *  只收拒绝：采纳走 adoptProposal，元素和采纳的状态一起提交（0061 决定 3） */
   decideProposal: (
     kbId: string,
     section: string,
     key: string,
-    status: "adopted" | "rejected",
+    status: "rejected",
     /** 拒绝的理由（0061）：下一轮代理读得到 */
     reason?: string,
   ) =>
@@ -2349,7 +2405,7 @@ export const api = {
       method: "POST",
       body: "{}",
     }),
-  /** 采纳代理的一条提案（0061 决定 3）：服务端建元素、标记、排对齐 */
+  /** 采纳代理的一条提案（0061 决定 3）：元素、回归用例、采纳的状态和后续任务一次提交 */
   adoptProposal: (
     kbId: string,
     section: string,
@@ -2363,7 +2419,11 @@ export const api = {
       parents?: string[];
     },
   ) =>
-    request<{ id: string }>(`/api/v1/kbs/${kbId}/ontology/proposals/adopt`, {
+    request<{
+      id: string;
+      /** 复用时留着没写的形状或类别词，各带人定成了什么：代理读过之后人另定了、和提案不一样的 */
+      skipped: ({ phrase: string } | { kind_word: string })[];
+    }>(`/api/v1/kbs/${kbId}/ontology/proposals/adopt`, {
       method: "POST",
       body: JSON.stringify({ section, key, ...(edits ?? {}) }),
     }),
@@ -2467,6 +2527,32 @@ export const api = {
         method: "POST",
       },
     ),
+  googleDriveStatus: () =>
+    request<{ enabled: boolean }>(`/api/v1/google-drive/status`),
+  googleDriveConnect: (kbId: string, sourceId: string) =>
+    request<{ url: string }>(
+      `/api/v1/kbs/${kbId}/sources/${sourceId}/google-drive/connect`,
+      { method: "POST" },
+    ),
+  googleDriveDisconnect: (kbId: string, sourceId: string) =>
+    request<{ ok: boolean }>(
+      `/api/v1/kbs/${kbId}/sources/${sourceId}/google-drive/connection`,
+      { method: "DELETE" },
+    ),
+  googleDriveFolders: (kbId: string, sourceId: string, parent?: string) =>
+    request<{ folders: { id: string; name: string }[] }>(
+      `/api/v1/kbs/${kbId}/sources/${sourceId}/google-drive/folders` +
+        (parent ? `?parent=${encodeURIComponent(parent)}` : ""),
+    ),
+  googleDriveSelect: (
+    kbId: string,
+    sourceId: string,
+    folders: { id: string; name: string }[],
+  ) =>
+    request<{ source: SourceView }>(
+      `/api/v1/kbs/${kbId}/sources/${sourceId}/google-drive/folders`,
+      { method: "PUT", body: JSON.stringify({ folders }) },
+    ),
   syncSource: (kbId: string, sourceId: string) =>
     request<{ queued: boolean }>(
       `/api/v1/kbs/${kbId}/sources/${sourceId}/sync`,
@@ -2520,9 +2606,11 @@ export const api = {
     kbId: string,
     conflictId: string,
     body: {
-      action: "close" | "keep" | "reject_new";
+      action: "close" | "retime_new" | "keep" | "reject_new";
       close_at?: string;
       close_at_precision?: string;
+      new_from?: string;
+      new_from_precision?: string;
     },
   ) =>
     request<{ ok: boolean }>(`/api/v1/kbs/${kbId}/conflicts/${conflictId}`, {
@@ -2733,13 +2821,20 @@ export const api = {
       },
     ),
 
-  testSettings: (workspaceId: string) =>
+  /** 只测 `card` 那一张卡，回来的也只有那一项（#1424） */
+  testSettings: (workspaceId: string, card: "chat" | "embed" | "ocr" | "transcribe") =>
     request<{
-      chat: { ok: boolean; reply?: string; error?: string };
-      embed: { ok: boolean; dim?: number; error?: string };
+      /** `ok` only when all three request shapes the jobs send pass; `checks` has each one (#1354) */
+      chat?: {
+        ok: boolean;
+        reply?: string;
+        error?: string;
+        checks?: Record<"plain" | "streaming" | "tools", { ok: boolean; timed_out?: boolean; error?: string }>;
+      };
+      embed?: { ok: boolean; dim?: number; error?: string };
       ocr?: { ok: boolean; version?: string | null; error?: string };
       transcribe?: { ok: boolean; error?: string };
-    }>(`/api/v1/workspaces/${workspaceId}/settings/test`, { method: "POST" }),
+    }>(`/api/v1/workspaces/${workspaceId}/settings/test?card=${card}`, { method: "POST" }),
   /** 读扫描件的服务、转写模型各自一个保存：存它们不碰对话与嵌入那几列。
    *  `requeued`：因为缺它而等着的文件，这一存重新排进了处理队列几份 */
   saveOcrSettings: (
@@ -2761,7 +2856,8 @@ export const api = {
 
   /** 是否配置了单点登录（0056）。四项环境变量缺一个都是 false——
    *  登录页据此决定要不要露出那个按钮 */
-  oidcStatus: () => request<{ enabled: boolean }>("/api/v1/auth/oidc/status"),
+  oidcStatus: () =>
+    request<{ enabled: boolean; password_login: boolean }>("/api/v1/auth/oidc/status"),
   /** 谁的哪个身份提供方 subject 绑定到了这个部署的哪个账号（只读 + 解绑） */
   oidcIdentities: () =>
     request<{

@@ -6,6 +6,10 @@ pub enum AppError {
     Unauthorized,
     #[error("You don't have permission to do that")]
     Forbidden,
+    /// 带 code 的 403：人改得了的那种「不行」（换一枚令牌），要让客户端分得出来，
+    /// 而不是和「你的角色不够」混成同一句
+    #[error("{message}")]
+    CodedForbidden { code: &'static str, message: String },
     #[error("{0}")]
     Conflict(String),
     /// Localizable conflict; legacy internal callers may still use Conflict.

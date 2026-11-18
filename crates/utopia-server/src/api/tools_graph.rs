@@ -12,8 +12,8 @@
 //! 写在结果最上面，模型不同意就拿 id 再来一次。
 
 use super::tools::{
-    entity_facts_detail, fact_line, just_before, literal_text, parse_when, Step, ToolCtx,
-    ToolResult, ToolSink,
+    entity_facts_detail, fact_line, just_before, literal_text, page_offset, parse_when, Step,
+    ToolCtx, ToolResult, ToolSink,
 };
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -331,6 +331,7 @@ pub async fn find_entities(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value)
     }
     ToolResult::new(text, step.json()).structured(json!({
         "kb_id": ctx.kb_id,
+        "matched_entities": total, "truncated": total.is_some_and(|t| t > read as i64),
         "entities": ranked.iter().map(|n| json!({
             "id": n.id, "name": n.name, "type_key": n.type_key,
             "type_label": n.type_label, "disambiguator": n.disambiguator,
@@ -343,36 +344,39 @@ pub async fn find_entities(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value)
 
 /// 事实的另一端：对端实体，或属性值
 /// 边上的属性（0037）跟在对端后面：`Vega Capital [amount: 5000000000 $]`。
-/// 模型读事实行时最常问的就是"投了多少"，数不在行里它就答"没有金额信息"
+/// 模型读事实行时最常问的就是"投了多少"，数不在行里它就答"没有金额信息"。
+/// 按文档角色词记的属性（0061）接在后面，名字是角色词：`[lines: 10-42]`
 fn qualifiers_text(f: &EntityFact) -> String {
-    if f.qualifiers.is_empty() {
-        return String::new();
-    }
-    let parts: Vec<String> = f
+    let typed = f
         .qualifiers
         .iter()
-        .map(|q| {
-            let v = q
-                .value
-                .as_ref()
-                .and_then(|v| v.get("value"))
-                .map(|v| match v {
-                    Value::String(s) => s.clone(),
-                    other => other.to_string(),
-                })
-                .or_else(|| q.entity_name.clone())
-                .unwrap_or_else(|| "?".to_string());
-            let u = q
-                .value
-                .as_ref()
-                .and_then(|v| v.get("unit"))
-                .and_then(|u| u.as_str())
-                .map(|u| format!(" {u}"))
-                .unwrap_or_default();
-            format!("{}: {v}{u}", q.key)
-        })
-        .collect();
+        .map(|q| qualifier_text(&q.key, q.value.as_ref(), q.entity_name.as_deref()));
+    let worded = f
+        .statement_qualifiers
+        .iter()
+        .map(|q| qualifier_text(&q.role, q.value.as_ref(), q.entity_name.as_deref()));
+    let parts: Vec<String> = typed.chain(worded).collect();
+    if parts.is_empty() {
+        return String::new();
+    }
     format!(" [{}]", parts.join(", "))
+}
+
+fn qualifier_text(name: &str, value: Option<&Value>, entity_name: Option<&str>) -> String {
+    let v = value
+        .and_then(|v| v.get("value"))
+        .map(|v| match v {
+            Value::String(s) => s.clone(),
+            other => other.to_string(),
+        })
+        .or_else(|| entity_name.map(String::from))
+        .unwrap_or_else(|| "?".to_string());
+    let u = value
+        .and_then(|v| v.get("unit"))
+        .and_then(|u| u.as_str())
+        .map(|u| format!(" {u}"))
+        .unwrap_or_default();
+    format!("{name}: {v}{u}")
 }
 
 fn other_text(f: &EntityFact) -> String {
@@ -467,7 +471,8 @@ async fn lookup(
     // 现在算——和现状一致，回放图上的搜索框另走 `/kbs/{id}/entities` 自己挂
     // 时刻
     let (hits, total) =
-        utopia_store::graph::search_entities(&ctx.state.pool, ctx.kb_id, raw, 8, 0, None).await?;
+        utopia_store::graph::search_entities(&ctx.state.pool, ctx.kb_id, raw, 8, 0, None, false)
+            .await?;
     if !hits.is_empty() {
         return Ok((hits, Some(total)));
     }
@@ -478,7 +483,7 @@ async fn lookup(
     let mut pool: Vec<GraphNode> = Vec::new();
     for w in &words {
         let (found, _) =
-            utopia_store::graph::search_entities(&ctx.state.pool, ctx.kb_id, w, 40, 0, None)
+            utopia_store::graph::search_entities(&ctx.state.pool, ctx.kb_id, w, 40, 0, None, false)
                 .await?;
         for n in found {
             if !pool.iter().any(|p| p.id == n.id) {
@@ -676,6 +681,10 @@ impl FactFilter<'_> {
 }
 
 pub async fn entity_facts(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) -> ToolResult {
+    let offset = match page_offset(args, "facts") {
+        Ok(offset) => offset,
+        Err(result) => return result,
+    };
     let raw = args["entity_id"]
         .as_str()
         .or_else(|| args["entity"].as_str())
@@ -766,7 +775,9 @@ pub async fn entity_facts(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) 
             Vec::new()
         });
     let (kept, aligned) = filtered(ctx, sink, &facts, &filter).await;
-    let shown: Vec<&EntityFact> = kept.iter().copied().take(limit).collect();
+    let shown: Vec<&EntityFact> = kept.iter().copied().skip(offset).take(limit).collect();
+    let end = offset + shown.len();
+    let next_offset = (end < kept.len()).then_some(end);
     let mut lines: Vec<String> = Vec::new();
     if let Some(note) = &who.note {
         lines.push(note.clone());
@@ -803,11 +814,12 @@ pub async fn entity_facts(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) 
                 ));
             }
         }
-        if shown.len() < kept.len() {
+        if offset > 0 || shown.len() < kept.len() {
+            head.push_str(&format!(", {} shown at offset {offset}", shown.len()));
+        }
+        if let Some(next) = next_offset {
             head.push_str(&format!(
-                ", {} shown. Narrow with predicate=, object_type=, since/until; timeline for the \
-                 dated ones; neighbors for the related entities",
-                shown.len()
+                ". Call entity_facts with offset={next} and the same entity, filters and time parameters to continue"
             ));
         }
         lines.push(head);
@@ -850,7 +862,8 @@ pub async fn entity_facts(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) 
         })).collect::<Vec<_>>(),
         "at": m.at, "as_of": m.as_of, "before": m.before,
         "total_facts": facts.len(), "matched_facts": kept.len(),
-        "limit": limit, "truncated": shown.len() < kept.len(),
+        "limit": limit, "offset": offset, "next_offset": next_offset,
+        "truncated": next_offset.is_some(),
         "facts": shown.iter().map(|f| json!({
             "id": f.id, "direction": f.direction,
             "predicate_key": f.predicate_key, "predicate_label": f.predicate_label,
@@ -861,6 +874,7 @@ pub async fn entity_facts(ctx: &ToolCtx<'_>, sink: &mut ToolSink, args: &Value) 
                 "qualifier_type_id": q.qualifier_type_id, "key": q.key, "label": q.label,
                 "value": q.value, "entity_id": q.entity_id, "entity_name": q.entity_name,
             })).collect::<Vec<_>>(),
+            "statement_qualifiers": f.statement_qualifiers,
             "valid_from": f.valid_from, "valid_to": f.valid_to,
             "valid_from_precision": f.valid_from_precision,
             "valid_to_precision": f.valid_to_precision,
@@ -1487,6 +1501,7 @@ mod tests {
             other_name: Some(other.into()),
             other_type: other_type.map(String::from),
             qualifiers: Vec::new(),
+            statement_qualifiers: Vec::new(),
             object_value: None,
             valid_from: Some("2021-01-01T00:00:00Z".parse().unwrap()),
             valid_to: None,
@@ -1500,6 +1515,7 @@ mod tests {
             stale: false,
             corrected: false,
             end_derived: false,
+            end_after_period: false,
             time_corrected: false,
             corrected_ends: None,
             closed_by_id: None,

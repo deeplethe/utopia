@@ -17,22 +17,29 @@ async fn post(
     statement: Uuid,
     property: Uuid,
 ) -> anyhow::Result<axum::response::Response> {
+    post_body(
+        app,
+        kb,
+        token,
+        json!({ "statement_id": statement,
+        "relation_type_id": property, "direction": "forward" }),
+    )
+    .await
+}
+
+async fn post_body(
+    app: &Router,
+    kb: Uuid,
+    token: &str,
+    body: serde_json::Value,
+) -> anyhow::Result<axum::response::Response> {
     Ok(app
         .clone()
         .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/api/v1/kbs/{kb}/ontology/regressions"))
+            Request::post(format!("/api/v1/kbs/{kb}/ontology/regressions"))
                 .header("content-type", "application/json")
                 .header("authorization", format!("Bearer {token}"))
-                .body(Body::from(
-                    json!({
-                        "statement_id": statement,
-                        "relation_type_id": property,
-                        "direction": "forward"
-                    })
-                    .to_string(),
-                ))?,
+                .body(Body::from(body.to_string()))?,
         )
         .await?)
 }
@@ -134,12 +141,143 @@ async fn editor_adds_regression_case_while_viewer_and_cross_kb_statement_are_rej
         .await?;
         anyhow::ensure!(saved);
 
+        let negative = graph::insert_open_statement(
+            &pool,
+            kb,
+            subject,
+            "mentioned alongside",
+            graph::FactObject::Entity(object),
+            None,
+            1.0,
+        )
+        .await?
+        .0;
+        for fields in [
+            json!({}),
+            json!({"expected_binding":"bound"}),
+            json!({"expected_binding":"unknown"}),
+            json!({"expected_binding":null}),
+            json!({"relation_type_id":property}),
+            json!({"direction":"forward"}),
+            json!({"expected_binding":"none","relation_type_id":property}),
+            json!({"expected_binding":"none","direction":"reverse"}),
+            json!({"relation_type_id":property,"direction":"sideways"}),
+        ] {
+            let mut body = fields;
+            body["statement_id"] = json!(negative);
+            // The JSON extractor rejects an explicit null enum before the handler.
+            let expected = if body.get("expected_binding") == Some(&serde_json::Value::Null) {
+                StatusCode::BAD_REQUEST
+            } else {
+                StatusCode::UNPROCESSABLE_ENTITY
+            };
+            assert_eq!(
+                post_body(&app, kb, &editor_token, body.clone())
+                    .await?
+                    .status(),
+                expected,
+                "{body}"
+            );
+        }
+        let mut negative_id = serde_json::Value::Null;
+        for targets in [json!({}), json!({"relation_type_id":null,"direction":null})] {
+            let mut request = targets;
+            request["statement_id"] = json!(negative);
+            request["expected_binding"] = json!("none");
+            let response = post_body(&app, kb, &editor_token, request).await?;
+            assert_eq!(response.status(), StatusCode::CREATED);
+            let body: serde_json::Value =
+                serde_json::from_slice(&to_bytes(response.into_body(), 65536).await?)?;
+            if negative_id.is_null() {
+                negative_id = body["id"].clone();
+            }
+            assert_eq!(body["id"], negative_id);
+        }
+        for request in [
+            json!({"statement_id":statement,"expected_binding":"none"}),
+            json!({"statement_id":negative,"relation_type_id":property,"direction":"forward"}),
+        ] {
+            let response = post_body(&app, kb, &editor_token, request).await?;
+            assert_eq!(response.status(), StatusCode::CREATED);
+            let body: serde_json::Value =
+                serde_json::from_slice(&to_bytes(response.into_body(), 65536).await?)?;
+            assert_ne!(
+                body["id"], negative_id,
+                "opposite cases do not overwrite a confirmation"
+            );
+        }
+        let sig = utopia_store::phrase_bindings::signatures(&pool, kb)
+            .await?
+            .into_iter()
+            .find(|s| s.phrase == "mentioned alongside")
+            .unwrap();
+        utopia_store::phrase_bindings::decide(
+            &pool,
+            kb,
+            &sig,
+            utopia_store::phrase_bindings::Decision {
+                relation_type_id: Some(property),
+                direction: Some("forward"),
+                status: "bound",
+                decided_by: "person",
+                votes: &serde_json::Value::Null,
+                basis: None,
+                marks: None,
+                marks_asked: false,
+            },
+        )
+        .await?;
+        // Negative expectations remain visible even though they have no property to join.
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/v1/kbs/{kb}/ontology/regressions"))
+                    .header("authorization", format!("Bearer {viewer_token}"))
+                    .body(Body::empty())?,
+            )
+            .await?;
+        let body: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 65536).await?)?;
+        let case = body["cases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["id"] == negative_id)
+            .unwrap();
+        assert_eq!(case["expected_binding"], "none");
+        for key in [
+            "expected_property_id",
+            "expected_direction",
+            "expected_property_label",
+            "expected_property_key",
+        ] {
+            assert!(case[key].is_null(), "{key}: {case}");
+        }
+        assert_eq!(case["last_result"]["conflict"], "human_binding");
+        assert_eq!(case["last_result"]["passed"], false);
+        assert_eq!(case["last_result"]["actual_property_id"], json!(property));
+        assert_eq!(case["actual_property_key"], "worksFor");
+        assert_eq!(case["subject_label"], "Alice");
+        assert_eq!(case["statement_id"], json!(negative));
+
         for (token, statement, expected) in [
             (&viewer_token, statement, StatusCode::FORBIDDEN),
             (&editor_token, foreign_statement, StatusCode::NOT_FOUND),
         ] {
             let response = post(&app, kb, token, statement, property).await?;
             anyhow::ensure!(response.status() == expected);
+            assert_eq!(
+                post_body(
+                    &app,
+                    kb,
+                    token,
+                    json!({"statement_id":statement,"expected_binding":"none"})
+                )
+                .await?
+                .status(),
+                expected
+            );
         }
         anyhow::Ok(())
     }
@@ -209,8 +347,8 @@ async fn viewer_reads_only_live_cases_in_the_authorized_kb() -> anyhow::Result<(
             ).await?.0;
             utopia_store::ontology_regressions::add(&pool, case_kb,
                 utopia_store::ontology_regressions::NewCase {
-                    statement_id: id, expected_property_id: expected,
-                    expected_direction: "forward", created_by: viewer, origin: "person",
+                    statement_id: id, expected_property_id: Some(expected),
+                    expected_direction: Some("forward"), created_by: viewer, origin: "person",
                 },
             ).await?;
             if case_kb == kb {

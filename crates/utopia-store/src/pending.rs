@@ -315,6 +315,7 @@ pub async fn confirm(pool: &PgPool, kb_id: Uuid, id: Uuid) -> AppResult<Confirme
         attested_at,
         // 待定的事实是人或代理提的，日期是直接给的，没经过时间解析
         from_grade: None,
+        end_after_period: false,
     };
     let (fact_id, created) = match (v.object_id, v.object_value.as_ref()) {
         (Some(object_id), _) => {
@@ -498,7 +499,8 @@ async fn confirm_open(
         } else {
             q.get("value")
         };
-        crate::graph::add_statement_qualifier(pool, fact_id, role, value, entity_id).await?;
+        crate::graph::add_statement_qualifier(pool, fact_id, v.chunk_id, role, value, entity_id)
+            .await?;
     }
     for t in json_items(v.time_words.as_ref()) {
         let (Some(text), Some(char_start)) = (

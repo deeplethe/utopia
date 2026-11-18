@@ -92,6 +92,59 @@ async fn the_question_reaches_the_model_once() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
+async fn repeated_answers_keep_their_own_reasoning_when_history_is_replayed() -> anyhow::Result<()>
+{
+    const ANSWER: &str = "The same public answer.";
+    let tool_thoughts = ["private-tool-1", "private-tool-2", "private-tool-3"];
+    let answer_thoughts = ["private-answer-1", "private-answer-2", "private-answer-3"];
+    let replies = tool_thoughts
+        .into_iter()
+        .zip(answer_thoughts)
+        .flat_map(|(tool, answer)| {
+            [
+                Reply::ThoughtTool("no_evidence_needed", r#"{"reason":"greeting"}"#, tool),
+                Reply::ThoughtText(ANSWER, answer),
+            ]
+        })
+        .collect();
+    let Some(f) = fixture(Scripted::new(replies)).await? else {
+        return Ok(());
+    };
+    let id = utopia_store::conversations::create(&f.pool, f.kb, f.user.id, "Reasoning").await?;
+    for question in ["first greeting", "second greeting", "third greeting"] {
+        let sse = ask_in(&f, id, question).await?;
+        assert!(sse.contains("event: done") && sse.contains(ANSWER), "{sse}");
+        assert!(
+            !sse.contains("private-"),
+            "reasoning must not enter SSE: {sse}"
+        );
+        assert_eq!(f.stored_answer().await?.as_deref(), Some(ANSWER));
+    }
+    let requests = f.requests();
+    assert_eq!(
+        requests.len(),
+        6,
+        "each question has a tool turn then an answer"
+    );
+    let messages = requests[5]["messages"].as_array().expect("messages");
+    let earlier_answers: Vec<_> = messages
+        .iter()
+        .filter(|m| m["role"] == "assistant" && m["content"] == ANSWER)
+        .collect();
+    assert_eq!(earlier_answers.len(), 2, "{messages:?}");
+    for (message, reasoning) in earlier_answers.iter().zip(answer_thoughts) {
+        assert_eq!(message["reasoning_content"], reasoning, "{message}");
+    }
+    let latest_tool = messages
+        .iter()
+        .rev()
+        .find(|m| m["role"] == "assistant" && m["tool_calls"].is_array())
+        .expect("the third tool turn is echoed for continuation");
+    assert_eq!(latest_tool["reasoning_content"], tool_thoughts[2]);
+    f.cleanup().await
+}
+
+#[tokio::test]
 async fn earlier_entities_sit_right_before_the_question() -> anyhow::Result<()> {
     let Some(f) = fixture(Scripted::new(vec![
         Reply::Tool("no_evidence_needed", r#"{"reason":"follow-up"}"#),

@@ -36,7 +36,14 @@ the person ticks one in the creation dialog [0008, 0009]. Five packs ship inside
 of about twenty rows, additive and without undo [0008]. An OWL file (Turtle or RDF/XML) is stored
 verbatim in the blob store and projected into the tables by a re-runnable derivation that reports
 what it did not project; a dry run precedes every import; individuals are never imported as facts
-[0001]. The rest is typed on the ontology page or adopted from a proposal. The self-check of [0002]
+[0001]. A **scenario pack** [0073] is the top-down start the standard packs are not: a small
+vocabulary written for one kind of corpus (企业档案, 合同链, 人事档案 ship first), with definitions
+written for the aligner, datatypes and units already right, and the competency questions that
+corpus is read for. It is one JSON file embedded in the binary, bilingual, installed at creation
+beside the standard packs through the editor's own calls (`scenario_packs::install`): its elements
+are the base's own, without IRIs; a key that already exists is skipped and reported; its questions
+are created accepted with the creating person as author; `embed_ontology` is queued. The rest is
+typed on the ontology page or adopted from a proposal. The self-check of [0002]
 runs after an import: eight defect kinds (a relation both symmetric and asymmetric, a subclass cycle,
 an inverse that does not point back) are shown before any fact-level check, and a base without axioms
 reports zero.
@@ -47,7 +54,21 @@ retype, including "no type", out of every automatic path [0009, 0001]. Same-name
 across types and untyped [0009]. Type resolution (candidates from class descriptions and from the
 classes of context neighbours, interleaved and never scored together; a class inside the current
 subtree applied on its own, a cross-axis class sent to a person, each pair acknowledged once) runs
-from the ontology page; extraction no longer enqueues it [0001, 0016, #736].
+from the ontology page; extraction no longer enqueues it [0001, 0016, #736]. A kind-word binding
+is projected onto its entities when it is decided, and again at the end of every extraction and
+the start of every kind-word alignment run (`type_bindings::apply_bound`): extraction reads the
+binding table once per document, so a word bound while a document was still extracting left that
+document's later entities untyped, and an untyped subject admits no property with a declared
+domain. On a four-document test the table document's six attribute statements were lost this way
+(2026-10-22).
+
+**A class's member list can name what its members lack** [#1269]. The instance list
+(`GET /kbs/{id}/ontology/entity-types/{type_id}/entities`) takes `missing_predicate`, a property key
+or an open phrase, and `missing_direction` (`out`, the default, with the member as subject; `in`;
+`either`), and keeps only the members no live fact links by that predicate: a typed row, a derived
+row, a row of the inverse (or symmetric) property from the other end, an open statement whose phrase
+normalizes to it, or one whose phrase is bound to the property. The answer echoes what was matched
+(`missing.relation_type_id`, `missing.phrases`); membership itself is unchanged (`entities.type_id`).
 
 **One statement draws one edge** [#755]. The typed graph is a view, so the canvas and the entity
 panel show one edge per statement: the property's name when a live typed row was computed from it,
@@ -70,15 +91,20 @@ the ten properties nearest by the ontology's own vectors (`embed_ontology`) are 
 label shares a word with the phrase; without an embedding model the model sees every structural
 candidate. A property without a vector never enters the shortlist, so the fingerprint of the
 shapes it could bind does not change and they are never re-decided: every path that adds or
-relabels an element therefore refreshes the index before alignment. The ontology agent's adoption
-refreshes it in place [0061 cut 1.1]; the editor's create and update handlers queue
-`embed_ontology` ahead of the alignment job, and both aligners wait while that job is queued or
-running, so the order is vectors, then kind words, then phrases. The shortlist is part of the
-decision's basis, so a changed list re-asks. The candidate
+relabels an element therefore refreshes the index before alignment. The ontology agent's adoption,
+like the editor's create and update handlers and an OWL import, queues `embed_ontology` ahead of
+the alignment job; adoption queues both in the element's commit [0061]. Both aligners wait while
+that job is queued or running, so the order is vectors, then kind words, then phrases. The
+shortlist is part of the decision's basis, so a changed list re-asks. The candidate
 properties are described once per batch and each item names only its keys. A signature the votes disagree on is `undecided` for the alignment queue of #725; one with no
 fitting property is `none`, its statements stay in the open graph and it counts toward the
 workbench's suggestions. Bindings live in `phrase_bindings`. A binding to a state property also
-says what a statement dated at a single moment marks (`marks`: start, end or none). The aligner asks
+says what a statement dated at a single moment marks (`marks`: start, end or none); with `none` or
+no value a statement bound to an attribute is materialised over the period its date names,
+`valid_to` at the bucket's end with `end_after_period` set, so "2023年营业收入58亿元" is a row that
+holds during 2023; on a relation it still computes no row [0053 revision 2026-10-22]. An attribute of datatype `text` with a declared domain is also a candidate for a signature whose
+object is a named thing (法定代表人 → 陈国华), forward only; its typed row carries the object's
+name as the value and no link [0044 revision 2026-10-22]. The aligner asks
 it once, with the binding: the value is written when both votes give the same one, and a binding
 without one records the ask (`marks_asked_at`) and waits in the alignment queue, as a person's
 binding without one does. A binding made before the question is asked once, and that question only
@@ -95,6 +121,14 @@ and ancestor closure, read from one snapshot before the model is called. A reply
 if that basis still matches the rows when it is written; otherwise it is discarded and the kind
 word asked again [0053 revision, #795]. Cosmetic edits to a candidate class still count as a
 change.
+
+**A pushed phrase that names a declared relation binds without the model** [0044 revision, #1242].
+A signature from a document a `statements` source pushed (0054) whose phrase equals the key or label
+of exactly one declared relation that is not a state, with the subject's class in its declared
+domain and the object's in its declared range, is bound when the document's extraction finishes,
+`decided_by = 'ontology'`; the extraction then queues `materialize`. A person's decision stands over
+it, and the aligner re-decides it only once the relation stops declaring it. Anything short of that
+equality, and every state relation, goes to the aligner.
 
 **A shape of statement can imply a fact of another property** [0044 decision 3, migration 0073].
 An implication rule is keyed like a binding (a signature) or by a kind word, names the property it
@@ -171,7 +205,11 @@ invalidated, rows that are due and missing are added, rows whose binding is unch
 id, evidence and recorded time. Several statements that produce the same triple give one row: the row is written through
 the typed graph's own gate (the dedup, time refinement and closing rules of `insert_fact`), and
 `typed_fact_sources` lists every statement behind it, so a row is retired only when none of its
-sources holds [#753]. On the 25-document batch the 36 bound signatures give 184 typed rows.
+sources holds [#753]. On the 25-document batch the 36 bound signatures give 184 typed rows. A
+bound value the attribute's datatype cannot read (「超过2000人」as a number, a currency that does
+not convert) stays an open statement and is counted in `extraction_drops` as `attr_datatype`,
+keyed by the property and rewritten as a set on every recompute, so the row retires once the value
+reads; before 2026-10-22 this skip was silent.
 
 **Argument order is enforced, participation is guided.** A declared domain or range shapes
 candidates and never discards a fact; argument order is the key's encoding convention, so a fact
@@ -222,7 +260,9 @@ the prompt, a description is read by people and by the aligner.
   per signature costs distinct phrasings, not documents, and a changed ontology recomputes only the
   affected signatures instead of re-extracting [0044].
 - **Standard vocabularies reify events as classes**, so every pack object property is a state; a
-  person changes `temporal` on the page and reads pick it up at once [0031].
+  person changes `temporal` on the page and reads pick it up at once, and a vocabulary that
+  annotates a property with `utopia:temporal` (what the export writes) is imported with that value,
+  a re-import updating an existing relation's [0031].
 
 ## Proposed and not built
 
@@ -236,6 +276,14 @@ the prompt, a description is read by people and by the aligner.
   they would bind and the questions they serve; approval writes the element with its structure and
   re-decides those signatures; every approved element carries regression cases rerun when its
   definition changes; duplicate properties merged as governance.
+  A property regression case can also expect no binding (`expected_binding: "none"`, with
+  both target fields absent or null); omitting the mode keeps the existing bound request.
+  Only an explicit `none` decision passes a negative case. Bound or undecided decisions fail,
+  including a conflicting human binding, which remains authoritative in the formal graph.
+  With no decision the case stays unchecked. Reconfirming a case retains its first creator.
+  Adoption skips positive case registration for an example with a negative case; the
+  existing case reports any disagreement after alignment without blocking adoption.
+
 - **Exploration proposes an alignment per table** through `ontology_proposals`, adopted as one
   thing; `Metric` / `Dimension` retire (#554, #556) [0036].
 - Filtering reified-shell relations (`Action`, `Offer`) out of pack import [0012]; Chinese

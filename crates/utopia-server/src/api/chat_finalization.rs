@@ -5,7 +5,7 @@ use futures_util::StreamExt;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::time::Duration;
-use utopia_llm::{LlmClient, ToolStreamItem};
+use utopia_llm::{AssistantTurn, LlmClient, ToolStreamItem};
 
 const ANSWER_DEADLINE: Duration = Duration::from_secs(120);
 const MAX_CONTEXT_BYTES: usize = 1024 * 1024;
@@ -89,7 +89,7 @@ fn messages(input: &AnswerContext<'_>) -> Vec<Value> {
 }
 
 enum Candidate {
-    Accepted(String),
+    Accepted(AssistantTurn),
     Repairable(&'static str),
 }
 
@@ -126,13 +126,13 @@ async fn answer_once(
                         anyhow::bail!("Model did not finish its final answer: {reason}")
                     }
                 }
-                let text = turn.content.unwrap_or_default();
+                let text = turn.content.as_deref().unwrap_or_default();
                 if let Some(reason) =
-                    finalization_error(&text, !turn.tool_calls.is_empty(), question)
+                    finalization_error(text, !turn.tool_calls.is_empty(), question)
                 {
                     return Ok(Candidate::Repairable(reason));
                 }
-                return Ok(Candidate::Accepted(text));
+                return Ok(Candidate::Accepted(turn));
             }
         }
     }
@@ -143,7 +143,7 @@ pub(super) async fn answer_with_context(
     client: &LlmClient,
     input: AnswerContext<'_>,
     context: &super::super::chat_context::Context,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<AssistantTurn> {
     answer_with_deadline(client, input, ANSWER_DEADLINE, Some(context)).await
 }
 
@@ -152,7 +152,7 @@ async fn answer_with_deadline(
     input: AnswerContext<'_>,
     deadline: Duration,
     context: Option<&super::super::chat_context::Context>,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<AssistantTurn> {
     let mut messages = messages(&input);
     // A total deadline covers BOTH attempts, not a fresh allowance per retry.
     tokio::time::timeout(deadline, async {
@@ -201,7 +201,7 @@ mod tests {
                 ResponseTemplate::new(400).set_body_json(json!({"error":{"code":"context_length_exceeded","message":"Prompt is too long"}}))
             } else {
                 ResponseTemplate::new(200).insert_header("content-type", "text/event-stream")
-                    .set_body_string("data: {\"choices\":[{\"delta\":{\"content\":\"Answer from evidence.\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+                    .set_body_string("data: {\"choices\":[{\"delta\":{\"content\":\"Answer from evidence.\",\"reasoning_content\":\"private final reasoning\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
             }
         }).mount(&server).await;
         let history = vec![
@@ -224,9 +224,11 @@ mod tests {
             resolved: &[],
         };
         let client = LlmClient::new(&server.uri(), None, "test");
+        let answer = answer_with_context(&client, input, &context).await.unwrap();
+        assert_eq!(answer.content.as_deref(), Some("Answer from evidence."));
         assert_eq!(
-            answer_with_context(&client, input, &context).await.unwrap(),
-            "Answer from evidence."
+            answer.reasoning_content.as_deref(),
+            Some("private final reasoning")
         );
         let seen = seen.lock().unwrap();
         assert_eq!(seen.len(), 2);

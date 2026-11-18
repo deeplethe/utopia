@@ -158,6 +158,14 @@ pub struct Source {
     pub last_sync_status: String,
     pub last_sync_error: Option<String>,
     pub last_sync_added: i32,
+    /// 工单来源读到了哪里（ADR 0072）。NULL = 没有游标：首轮同步，或者这一类
+    /// 来源不用游标。
+    ///
+    /// **说的是「读到哪」，不是「这一轮什么时候跑」**——后者是 `last_sync_at`。
+    /// 一轮读不完是常事（同一个更新时刻上可能挂着一千条工单），游标说的是
+    /// 「消费到了哪个更新时刻，且那一刻的整组都读完了」；下一轮从那儿接着读，
+    /// 而不是把这一轮没读完的跳过去（#1212）
+    pub sync_checkpoint: Option<DateTime<Utc>>,
     /// api 来源的推送密钥（明文；查看走 Editor 权限的专用端点，列表响应不带）
     #[serde(skip_serializing)]
     pub ingest_token: Option<String>,
@@ -181,6 +189,13 @@ impl Source {
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(true)
     }
+
+    /// statements 来源的 config 写了 `{"names": "identity"}`：它推来的每个名字各指一个
+    /// 确定的东西（0071），按字面归并、不算名字向量。其余来源照旧。
+    pub fn names_are_identities(&self) -> bool {
+        self.kind == "statements"
+            && self.config.get("names").and_then(serde_json::Value::as_str) == Some("identity")
+    }
 }
 
 #[cfg(test)]
@@ -201,6 +216,7 @@ mod source_extracts_tests {
             last_sync_status: "never".into(),
             last_sync_error: None,
             last_sync_added: 0,
+            sync_checkpoint: None,
             ingest_token: None,
             created_at: chrono::Utc::now(),
         }
@@ -216,6 +232,25 @@ mod source_extracts_tests {
         assert!(with(serde_json::json!({ "extract": "no" })).extracts());
         assert!(with(serde_json::json!({ "extract": 0 })).extracts());
         assert!(!with(serde_json::json!({ "extract": false })).extracts());
+    }
+
+    fn of_kind(kind: &str, config: serde_json::Value) -> Source {
+        Source {
+            kind: kind.into(),
+            ..with(config)
+        }
+    }
+
+    #[test]
+    fn only_a_statements_source_with_the_string_identity_has_identity_names() {
+        let identity = serde_json::json!({ "names": "identity" });
+        assert!(of_kind("statements", identity.clone()).names_are_identities());
+        assert!(!of_kind("api", identity).names_are_identities());
+        assert!(!of_kind("statements", serde_json::json!({})).names_are_identities());
+        assert!(!of_kind("statements", serde_json::json!({ "names": true })).names_are_identities());
+        assert!(
+            !of_kind("statements", serde_json::json!({ "names": "prose" })).names_are_identities()
+        );
     }
 }
 
@@ -233,6 +268,8 @@ pub const SOURCE_SECRET_KEYS: &[&str] = &[
     "secret_access_key",
     "account_key",
     "service_account_key",
+    // Google Drive 的 OAuth 刷新令牌（0074）：能换出那个人整个 Drive 的只读权限
+    "refresh_token",
 ];
 
 impl Source {
@@ -271,12 +308,19 @@ pub enum SourceKind {
     Url,
     Rss,
     GithubIssues,
+    GithubRepo,
+    /// gitlab.com 项目默认分支的文件（#1327）；自建 GitLab 没有验证过
+    GitlabRepo,
+    /// gitlab.com 项目的工单与合并请求（#1327）；自建 GitLab 没有验证过
+    GitlabIssues,
     JiraIssues,
     S3,
     AzureBlob,
     Gcs,
     Webdav,
     Notion,
+    /// 一个人授权、按他选的文件夹同步（0074）
+    GoogleDrive,
     Api,
     /// 推送的不是文档而是陈述本身（0054）：请求体就是开放抽取契约，抽取不问模型
     Statements,
@@ -356,6 +400,8 @@ pub struct SourceView {
     pub last_sync_status: String,
     pub last_sync_error: Option<String>,
     pub last_sync_added: i32,
+    /// 工单来源读到了哪里（ADR 0072）。见 [`Source::sync_checkpoint`]
+    pub sync_checkpoint: Option<DateTime<Utc>>,
     pub doc_count: i64,
     /// 已标记"不在来源中"的文档数（url 全集对账 / custom 墓碑产生）
     pub missing_count: i64,
@@ -444,6 +490,20 @@ pub struct ChunkView {
     pub seq: i32,
     pub text: String,
     pub filename: String,
+}
+
+/// 分块带上它来自哪个来源，连同来源的 kind 和文档的 `external_key`：推送来源的
+/// `external_id` 由这两样反推（`sources_routes::pushed_identity`，#1271）
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct SourcedChunk {
+    #[serde(flatten)]
+    #[sqlx(flatten)]
+    pub chunk: ChunkView,
+    pub source_id: Option<Uuid>,
+    #[serde(skip)]
+    pub source_kind: Option<String>,
+    #[serde(skip)]
+    pub external_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, sqlx::FromRow)]
@@ -607,6 +667,21 @@ pub struct FactQualifier {
     pub entity_name: Option<String>,
 }
 
+/// 开放陈述上的一个属性（0044 第一刀、0061）：按文档的角色词记，不按本体属性——没有
+/// `qualifier_type_id`，所以不混进 [`FactQualifier`]（RDF 导出靠那一格拼 IRI）。
+/// 值或实体二选一；实体那一格带上它的显示名。物化出来的类型化行带着抄过去的那一份
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StatementQualifier {
+    /// 文档自己的角色词（"amount"、"buyer"）
+    pub role: String,
+    /// 形状与 [`FactQualifier::value`] 一致：{"value": …}
+    pub value: Option<serde_json::Value>,
+    pub entity_id: Option<Uuid>,
+    pub entity_name: Option<String>,
+    /// 说这个值的那几块（0070）：两块活着的块说法不同，各自一条
+    pub chunk_ids: Vec<Uuid>,
+}
+
 /// 一次 OWL 导入的记录。原文按内容寻址存在 blob 里，这行只是账。
 /// `summary` 记下那次投影做了什么，包括**暂未投影**的公理——将来补上消费者
 /// 时据此知道哪些导入值得重跑。
@@ -729,6 +804,9 @@ pub struct GraphEdge {
     /// 边上的属性（0037）：画布把金额写到边的标签上要靠它
     #[sqlx(skip)]
     pub qualifiers: Vec<FactQualifier>,
+    /// 按文档角色词记的属性（0061，#1267）：与 `qualifiers` 分开，没有就是空列表
+    #[sqlx(skip)]
+    pub statement_qualifiers: Vec<StatementQualifier>,
     /// 推它出来的那条规则（`transitive` / `symmetric` / `inverse` / `sub_property`）；
     /// 断言的边为 None。
     ///
@@ -804,6 +882,9 @@ pub struct EntityFact {
     /// 边上的属性（0037）。不在行里——`fact_qualifiers` 另一张表，加载后按事实 id 补
     #[sqlx(skip)]
     pub qualifiers: Vec<FactQualifier>,
+    /// 按文档角色词记的属性（0061，#1267）：`statement_qualifiers` 那张表，同样加载后补
+    #[sqlx(skip)]
+    pub statement_qualifiers: Vec<StatementQualifier>,
     pub valid_from: Option<DateTime<Utc>>,
     pub valid_to: Option<DateTime<Utc>>,
     /// 精度描述的是这条事实**有的那些日期**的粒度。两端都没有日期时为 None——
@@ -830,6 +911,9 @@ pub struct EntityFact {
     /// 终点是时间线推出来的（`facts.end_derived`）：后一条事实开始时引擎把它关上，原文没说
     /// 这一天（#970）
     pub end_derived: bool,
+    /// `valid_to` 仍是存的边界；true 说原文讲的是在它之前结束的那个时段（`facts.end_after_period`，
+    /// #994）：「2024 年离开」存 2025-01-01，原文说的是 2024
+    pub end_after_period: bool,
     /// 区间是人改过的（#970）：`corrected_ends` 有值。与 `corrected` 不同，那一位是任何一次
     /// 改写：自动接续、审阅裁决、人手改
     pub time_corrected: bool,
@@ -916,6 +1000,9 @@ pub struct GraphChange {
     pub predicate_label: Option<String>,
     pub object_name: Option<String>,
     pub object_value: Option<serde_json::Value>,
+    /// corrected 事件的前值，来自 supersedes 指向的行；那次断言可能在查询窗口之外。
+    pub previous_object_name: Option<String>,
+    pub previous_object_value: Option<serde_json::Value>,
     /// 这条断言说的是**世界轴**上的哪一段——与 `at` 正交，别读混
     pub valid_from: Option<DateTime<Utc>>,
     pub valid_to: Option<DateTime<Utc>>,
@@ -1063,10 +1150,12 @@ pub struct ConflictView {
     pub old_subject: String,
     pub old_object: Option<String>,
     pub old_valid_from: Option<DateTime<Utc>>,
+    pub old_valid_from_precision: Option<String>,
     pub new_fact_id: Uuid,
     pub new_subject: String,
     pub new_object: Option<String>,
     pub new_valid_from: Option<DateTime<Utc>>,
+    pub new_valid_from_precision: Option<String>,
     pub new_confidence: f32,
 }
 
@@ -1324,7 +1413,8 @@ pub struct DerivedFactView {
     pub predicate: String,
     /// transitive | symmetric | inverse | sub_property，或 `business`（业务规则）
     pub rule: String,
-    /// 业务规则的名字。公理推的为 None——公理没有名字，`rule` 那一列就是它的全部身份
+    /// 业务规则的名字，或公理的种类及声明谓词（如 `inverse of works_for`）。
+    /// 逆关系等公理的声明谓词可以不同于结论谓词，不能拿结论的谓词来充当解释。
     pub rule_name: Option<String>,
     /// 凭业务规则定义的哪一版推出的（0060），和那一版的定义本身。公理推的为 None
     pub rule_version: Option<i32>,

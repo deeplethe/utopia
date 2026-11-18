@@ -80,6 +80,20 @@ liveAnswer.subscribe(() => {
 });
 
 export const convMarks = {
+  /** 换人时清空：这些都是上一个人的会话。要在 liveAnswer.clear 之后调——摘掉
+   *  还在写的条目时，上面的订阅会把它们记成写完未读。liveSnap 不在这里清：它跟着
+   *  liveAnswer 走，回答清了它自然空；只清共用那份时，留下的回答还要接着记 */
+  clear() {
+    ids.clear();
+    viewing = null;
+    unreadSnap = new Set();
+    try {
+      localStorage.removeItem(KEY);
+    } catch {
+      /* 同 save：存不了就只清内存 */
+    }
+    for (const l of listeners) l();
+  },
   unread: (): ReadonlySet<string> => unreadSnap,
   live: (): ReadonlySet<string> => liveSnap,
   subscribe(l: () => void) {

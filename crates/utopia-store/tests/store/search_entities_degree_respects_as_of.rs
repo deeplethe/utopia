@@ -148,7 +148,8 @@ async fn search_entities_degree_respects_as_of() -> anyhow::Result<()> {
     };
 
     // 当下：alpha=1，beta=1（旧的已作废、新的还活着）
-    let now_rows = utopia_store::graph::search_entities(&pool, kb, "Person", 50, 0, None).await?;
+    let now_rows =
+        utopia_store::graph::search_entities(&pool, kb, "Person", 50, 0, None, false).await?;
     assert_eq!(find_degree(&now_rows.0, alpha), 1, "当下 alpha degree=1");
     assert_eq!(
         find_degree(&now_rows.0, beta),
@@ -164,6 +165,7 @@ async fn search_entities_degree_respects_as_of() -> anyhow::Result<()> {
         50,
         0,
         Some(t("2026-02-01T00:00:00Z")),
+        false,
     )
     .await?;
     assert_eq!(find_degree(&feb_rows.0, alpha), 1, "2 月 alpha degree=1");
@@ -181,6 +183,7 @@ async fn search_entities_degree_respects_as_of() -> anyhow::Result<()> {
         50,
         0,
         Some(t("2026-04-01T00:00:00Z")),
+        false,
     )
     .await?;
     assert_eq!(find_degree(&apr_rows.0, alpha), 1, "4 月 alpha degree=1");
@@ -198,6 +201,7 @@ async fn search_entities_degree_respects_as_of() -> anyhow::Result<()> {
         50,
         0,
         Some(t("2026-06-01T00:00:00Z")),
+        false,
     )
     .await?;
     assert_eq!(find_degree(&jun_rows.0, alpha), 1, "6 月 alpha degree=1");
@@ -306,6 +310,7 @@ async fn a_search_in_replay_lists_the_entities_of_that_moment() -> anyhow::Resul
             10,
             0,
             Some(t("2026-03-01T00:00:00Z")),
+            false,
         )
         .await?;
         let mut seen: Vec<(Uuid, i64)> = march.iter().map(|n| (n.id, n.degree)).collect();
@@ -315,7 +320,24 @@ async fn a_search_in_replay_lists_the_entities_of_that_moment() -> anyhow::Resul
         assert_eq!(seen, want, "三月：A 还没并进 B，各一度；C 还没建");
         assert_eq!(total, 2);
 
-        let (now, total) = utopia_store::graph::search_entities(&pool, kb, "Zhang", 10, 0, None).await?;
+        let (march_exact, march_exact_total) = utopia_store::graph::search_entities(
+            &pool,
+            kb,
+            "Zhang Wei A",
+            10,
+            0,
+            Some(t("2026-03-01T00:00:00Z")),
+            true,
+        )
+        .await?;
+        assert_eq!(
+            march_exact.iter().map(|n| n.id).collect::<Vec<_>>(),
+            vec![a],
+            "三月按名字精确找：后来并掉的 A 当时还在"
+        );
+        assert_eq!(march_exact_total, 1);
+
+        let (now, total) = utopia_store::graph::search_entities(&pool, kb, "Zhang", 10, 0, None, false).await?;
         let ids: Vec<Uuid> = now.iter().map(|n| n.id).collect();
         assert!(ids.contains(&b) && ids.contains(&later) && !ids.contains(&a));
         assert_eq!(total, 2);

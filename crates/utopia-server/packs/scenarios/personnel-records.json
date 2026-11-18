@@ -1,0 +1,144 @@
+{
+  "id": "personnel-records",
+  "name": { "zh": "人事档案", "en": "Personnel records" },
+  "summary": {
+    "zh": "任免通知、组织架构、花名册：谁在哪个部门担任什么岗位、从何时到何时、向谁汇报",
+    "en": "Appointment notices, org charts and rosters: who held which post in which unit, from when to when, reporting to whom"
+  },
+  "classes": [
+    {
+      "key": "person",
+      "label": { "zh": "人员", "en": "Person" },
+      "description": {
+        "zh": "一个具体的人：员工、干部、负责人。",
+        "en": "A particular human being: an employee, officer or manager."
+      }
+    },
+    {
+      "key": "department",
+      "label": { "zh": "部门", "en": "Department" },
+      "description": {
+        "zh": "组织里的一个单位：部门、处室、事业部、分公司、团队。",
+        "en": "A unit of an organisation: a department, division, business unit, branch or team."
+      }
+    },
+    {
+      "key": "post",
+      "label": { "zh": "岗位", "en": "Post" },
+      "description": {
+        "zh": "一个职位或岗位：总经理、部门主任、项目负责人、财务经理。岗位是职位本身，不是担任它的人。",
+        "en": "A post or position: general manager, department head, project lead. The post itself, not the person holding it."
+      }
+    }
+  ],
+  "attributes": [
+    {
+      "key": "hired_on",
+      "host": "person",
+      "label": { "zh": "入职日期", "en": "Hired on" },
+      "description": {
+        "zh": "人员入职、报到的日期。原文写「2019 年 7 月入职」「入职时间：2021-03-01」。",
+        "en": "The date a person joined the organisation: 2019 年 7 月入职."
+      },
+      "datatype": "date",
+      "functional": true
+    },
+    {
+      "key": "left_on",
+      "host": "person",
+      "label": { "zh": "离职日期", "en": "Left on" },
+      "description": {
+        "zh": "人员离职、退休或调离的日期。原文写「2024 年 3 月离职」。",
+        "en": "The date a person left, retired or transferred out: 2024 年 3 月离职."
+      },
+      "datatype": "date",
+      "functional": true
+    },
+    {
+      "key": "grade",
+      "host": "person",
+      "label": { "zh": "职级", "en": "Grade" },
+      "description": {
+        "zh": "人员的职级或级别，照原文记：「P7」「正处级」「高级工程师」。",
+        "en": "A person's grade or rank as written: P7, senior engineer."
+      },
+      "datatype": "text",
+      "functional": true
+    },
+    {
+      "key": "employee_id",
+      "host": "person",
+      "label": { "zh": "工号", "en": "Employee ID" },
+      "description": {
+        "zh": "人员的工号或员工编号。",
+        "en": "A person's employee number."
+      },
+      "datatype": "text",
+      "functional": true
+    }
+  ],
+  "relations": [
+    {
+      "key": "member_of",
+      "label": { "zh": "所属部门", "en": "Member of" },
+      "description": {
+        "zh": "主语人员属于宾语部门：「调入财务部」「研发中心员工张三」。方向：人员 → 部门。",
+        "en": "The subject person belongs to the object department: 调入财务部. Direction: person → department."
+      },
+      "domains": ["person"],
+      "ranges": ["department"],
+      "temporal": "state"
+    },
+    {
+      "key": "holds_post",
+      "label": { "zh": "担任", "en": "Holds post" },
+      "description": {
+        "zh": "主语人员担任宾语岗位：「任命李四为市场部经理」「周敏担任心内科主任」。方向：人员 → 岗位。",
+        "en": "The subject person holds the object post: 任命李四为市场部经理. Direction: person → post."
+      },
+      "domains": ["person"],
+      "ranges": ["post"],
+      "temporal": "state"
+    },
+    {
+      "key": "reports_to",
+      "label": { "zh": "汇报给", "en": "Reports to" },
+      "description": {
+        "zh": "主语人员向宾语人员汇报、受其领导：「向总经理汇报」「分管副总为王五」。方向：下级 → 上级。",
+        "en": "The subject person reports to the object person: 向总经理汇报. Direction: subordinate → superior."
+      },
+      "domains": ["person"],
+      "ranges": ["person"],
+      "temporal": "state"
+    },
+    {
+      "key": "part_of",
+      "label": { "zh": "隶属", "en": "Part of" },
+      "description": {
+        "zh": "主语部门隶属于宾语部门：「财务部下设会计科」「研发中心归属技术事业部」。方向：下级部门 → 上级部门。",
+        "en": "The subject department is part of the object department: 财务部下设会计科. Direction: sub-unit → parent unit."
+      },
+      "domains": ["department"],
+      "ranges": ["department"],
+      "temporal": "state"
+    }
+  ],
+  "questions": [
+    {
+      "question": { "zh": "某个时间段内，谁担任某个岗位？", "en": "Who held a given post during a period?" },
+      "needs": { "classes": ["person", "post"], "properties": ["holds_post"] }
+    },
+    {
+      "question": { "zh": "某个人属于哪个部门，向谁汇报？", "en": "Which department is a person in, and whom do they report to?" },
+      "needs": { "classes": ["person", "department"], "properties": ["member_of", "reports_to"] }
+    },
+    {
+      "question": { "zh": "某个人什么时候入职、什么时候离职？", "en": "When did a person join, and when did they leave?" },
+      "needs": { "classes": ["person"], "properties": ["hired_on", "left_on"] }
+    },
+    {
+      "question": { "zh": "某个部门下设哪些部门，有哪些人？", "en": "Which units sit under a department, and who is in them?" },
+      "needs": { "classes": ["department", "person"], "properties": ["part_of", "member_of"] }
+    }
+  ]
+}

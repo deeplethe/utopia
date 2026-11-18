@@ -12,8 +12,9 @@ pub struct Case {
     pub id: Uuid,
     pub kb_id: Uuid,
     pub statement_id: Uuid,
-    pub expected_property_id: Uuid,
-    pub expected_direction: String,
+    pub expected_binding: String,
+    pub expected_property_id: Option<Uuid>,
+    pub expected_direction: Option<String>,
     pub created_by: Option<Uuid>,
     pub created_at: DateTime<Utc>,
     pub origin: String,
@@ -23,8 +24,8 @@ pub struct Case {
 
 pub struct NewCase<'a> {
     pub statement_id: Uuid,
-    pub expected_property_id: Uuid,
-    pub expected_direction: &'a str,
+    pub expected_property_id: Option<Uuid>,
+    pub expected_direction: Option<&'a str>,
     pub created_by: Uuid,
     pub origin: &'a str,
 }
@@ -40,8 +41,8 @@ pub struct CaseView {
     pub object_id: Option<Uuid>,
     pub object_label: Option<String>,
     pub object_value: Option<serde_json::Value>,
-    pub expected_property_label: String,
-    pub expected_property_key: String,
+    pub expected_property_label: Option<String>,
+    pub expected_property_key: Option<String>,
     pub actual_property_label: Option<String>,
     pub actual_property_key: Option<String>,
     pub created_by_label: Option<String>,
@@ -50,7 +51,8 @@ pub struct CaseView {
 /// The workbench reads saved results and live source labels without evaluating or writing.
 pub async fn views(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<CaseView>> {
     Ok(sqlx::query_as(
-        "SELECT c.*, f.subject_id, s.canonical_name AS subject_label, f.phrase,
+        "SELECT c.*, CASE WHEN c.expected_property_id IS NULL THEN 'none' ELSE 'bound' END AS expected_binding,
+                f.subject_id, s.canonical_name AS subject_label, f.phrase,
                 f.object_id, o.canonical_name AS object_label, f.object_value,
                 expected.label AS expected_property_label, expected.key AS expected_property_key,
                 actual.label AS actual_property_label, actual.key AS actual_property_key,
@@ -59,7 +61,7 @@ pub async fn views(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<CaseView>> {
          JOIN facts f ON f.kb_id=c.kb_id AND f.id=c.statement_id
          JOIN entities s ON s.kb_id=f.kb_id AND s.id=f.subject_id
          LEFT JOIN entities o ON o.kb_id=f.kb_id AND o.id=f.object_id
-         JOIN relation_types expected ON expected.kb_id=c.kb_id AND expected.id=c.expected_property_id
+         LEFT JOIN relation_types expected ON expected.kb_id=c.kb_id AND expected.id=c.expected_property_id
          LEFT JOIN relation_types actual ON actual.kb_id=c.kb_id
            AND actual.id=(c.last_result->>'actual_property_id')::uuid
          LEFT JOIN users u ON u.id=c.created_by
@@ -73,7 +75,8 @@ pub async fn views(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<CaseView>> {
 
 pub async fn list(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<Case>> {
     Ok(sqlx::query_as(
-        "SELECT c.* FROM ontology_regression_cases c WHERE c.kb_id=$1
+        "SELECT c.*, CASE WHEN c.expected_property_id IS NULL THEN 'none' ELSE 'bound' END AS expected_binding
+        FROM ontology_regression_cases c WHERE c.kb_id=$1
         AND EXISTS(SELECT 1 FROM facts f WHERE f.id=c.statement_id AND f.kb_id=c.kb_id
           AND f.layer='open' AND f.invalidated_at IS NULL) ORDER BY c.created_at DESC,c.id",
     )
@@ -84,7 +87,8 @@ pub async fn list(pool: &PgPool, kb_id: Uuid) -> AppResult<Vec<Case>> {
 
 pub async fn get(pool: &PgPool, kb_id: Uuid, id: Uuid) -> AppResult<Option<Case>> {
     Ok(
-        sqlx::query_as("SELECT * FROM ontology_regression_cases WHERE kb_id=$1 AND id=$2")
+        sqlx::query_as("SELECT *, CASE WHEN expected_property_id IS NULL THEN 'none' ELSE 'bound' END AS expected_binding
+            FROM ontology_regression_cases WHERE kb_id=$1 AND id=$2")
             .bind(kb_id)
             .bind(id)
             .fetch_optional(pool)
@@ -102,10 +106,13 @@ pub async fn add(pool: &PgPool, kb_id: Uuid, case: NewCase<'_>) -> AppResult<Uui
 /// Adoption calls this in its own transaction so marking a proposal adopted and keeping
 /// its examples cannot commit separately. Duplicate requests retain the first actor/origin.
 pub async fn add_on(conn: &mut PgConnection, kb_id: Uuid, case: NewCase<'_>) -> AppResult<Uuid> {
-    if !matches!(case.expected_direction, "forward" | "reverse") {
+    if !matches!(
+        (case.expected_property_id, case.expected_direction),
+        (None, None) | (Some(_), Some("forward" | "reverse"))
+    ) {
         return Err(AppError::invalid(
-            "bad_direction",
-            "Direction is forward or reverse.",
+            "bad_case_expectation",
+            "A bound expectation needs a property and direction; a none expectation has neither.",
         ));
     }
     if !matches!(case.origin, "adoption" | "person") {
@@ -124,33 +131,45 @@ pub async fn add_on(conn: &mut PgConnection, kb_id: Uuid, case: NewCase<'_>) -> 
     .fetch_optional(&mut *conn)
     .await?;
     let value = value.ok_or(AppError::NotFound)?;
-    let kind: Option<String> =
-        sqlx::query_scalar("SELECT kind FROM relation_types WHERE kb_id=$1 AND id=$2 FOR SHARE")
-            .bind(kb_id)
-            .bind(case.expected_property_id)
-            .fetch_optional(&mut *conn)
-            .await?;
-    let kind = kind.ok_or(AppError::NotFound)?;
-    if value != (kind == "attribute") || (value && case.expected_direction != "forward") {
-        return Err(AppError::invalid(
-            "bad_property_shape",
-            "The property's kind and direction must fit the statement's object.",
-        ));
+    if let Some(property) = case.expected_property_id {
+        let kind: Option<String> = sqlx::query_scalar(
+            "SELECT kind FROM relation_types WHERE kb_id=$1 AND id=$2 FOR SHARE",
+        )
+        .bind(kb_id)
+        .bind(property)
+        .fetch_optional(&mut *conn)
+        .await?;
+        let kind = kind.ok_or(AppError::NotFound)?;
+        if value != (kind == "attribute") || (value && case.expected_direction != Some("forward")) {
+            return Err(AppError::invalid(
+                "bad_property_shape",
+                "The property's kind and direction must fit the statement's object.",
+            ));
+        }
     }
     // DO NOTHING followed by SELECT observes a concurrent inserter after its commit,
     // without turning an idempotent retry into an edit of the original confirmation.
-    let inserted:Option<Uuid>=sqlx::query_scalar("INSERT INTO ontology_regression_cases
+    let inserted: Option<Uuid> = sqlx::query_scalar(
+        "INSERT INTO ontology_regression_cases
         (id,kb_id,statement_id,expected_property_id,expected_direction,created_by,origin)
         VALUES($1,$2,$3,$4,$5,$6,$7)
-        ON CONFLICT(kb_id,statement_id,expected_property_id,expected_direction) DO NOTHING RETURNING id")
-        .bind(Uuid::now_v7()).bind(kb_id).bind(case.statement_id).bind(case.expected_property_id)
-        .bind(case.expected_direction).bind(case.created_by).bind(case.origin).fetch_optional(&mut *conn).await?;
+        ON CONFLICT DO NOTHING RETURNING id",
+    )
+    .bind(Uuid::now_v7())
+    .bind(kb_id)
+    .bind(case.statement_id)
+    .bind(case.expected_property_id)
+    .bind(case.expected_direction)
+    .bind(case.created_by)
+    .bind(case.origin)
+    .fetch_optional(&mut *conn)
+    .await?;
     let id = match inserted {
         Some(id) => id,
         None => {
             sqlx::query_scalar(
                 "SELECT id FROM ontology_regression_cases WHERE kb_id=$1 AND statement_id=$2
-            AND expected_property_id=$3 AND expected_direction=$4",
+            AND expected_property_id IS NOT DISTINCT FROM $3 AND expected_direction IS NOT DISTINCT FROM $4",
             )
             .bind(kb_id)
             .bind(case.statement_id)
@@ -173,15 +192,18 @@ pub async fn add_on(conn: &mut PgConnection, kb_id: Uuid, case: NewCase<'_>) -> 
 }
 
 // The live statement determines the signature, exactly as production alignment does.
-// A person's binding remains authoritative even when it differs from the example; the
-// human_bound flag distinguishes that protection from an independent machine success.
+// Comparing a case never changes a binding. Only positive cases retain the human-bound
+// exception; a negative case records that disagreement explicitly as a failure.
 fn record_sql(fresh: bool) -> String {
     let checked_at = if fresh { "now()" } else { "b.decided_at" };
     format!("UPDATE ontology_regression_cases c
     SET last_checked_at={checked_at},
-        last_result=jsonb_build_object('passed',coalesce((b.decided_by='person' AND b.status='bound') OR
-          (b.status='bound' AND b.relation_type_id=c.expected_property_id AND b.direction=c.expected_direction),false),
-          'human_bound',b.decided_by='person' AND b.status='bound','actual_property_id',b.relation_type_id,
+        last_result=jsonb_build_object('passed',coalesce(CASE WHEN c.expected_property_id IS NULL THEN b.status='none'
+          ELSE (b.decided_by='person' AND b.status='bound') OR
+          (b.status='bound' AND b.relation_type_id=c.expected_property_id AND b.direction=c.expected_direction) END,false),
+          'human_bound',c.expected_property_id IS NOT NULL AND b.decided_by='person' AND b.status='bound',
+          'conflict',CASE WHEN c.expected_property_id IS NULL AND b.decided_by='person' AND b.status='bound' THEN 'human_binding' END,
+          'actual_property_id',b.relation_type_id,
           'actual_direction',b.direction,'status',b.status,'decided_at',b.decided_at)
     FROM facts f JOIN entities s ON s.id=f.subject_id AND s.kb_id=f.kb_id
     LEFT JOIN entities o ON o.id=f.object_id AND o.kb_id=f.kb_id

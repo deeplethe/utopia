@@ -105,6 +105,20 @@ token ceiling* instead of only *could not be parsed* — and the two causes stay
 is too long is a number to change, a reply that does not fit the shape is not. Across all bases in
 the e2e database `truncated_reply` has fired 10 times, and those rows keep every complete item.
 
+**Where a looping answer stops** [#1301]. At temperature 0 a small local model sometimes falls into
+a loop and writes the same row until the ceiling: on qwen3-8b about 3% of extraction calls, each
+holding a slot for over an hour and together about 60% of the tokens generated. The ceiling stays
+where it is, for the reasons above. Instead the streamed reply is read until the same span of 30 to
+600 bytes fills its tail five times in a row, and only if that run's shortest period is also at
+least 30 bytes: every statement starts with a verbatim quote, and a quoted dot leader or a row of
+empty table cells repeats with a short period. A loop of rows shorter than 30 bytes is left to run
+to the ceiling (4 of 57 cuts in one night of a local deployment) rather than risk cutting a quote.
+The reply comes back marked `repeating`, apart from `finish_reason`, so it is never counted as the
+ceiling. Its drop row reads *started repeating itself* under the same `truncated_reply` code
+(`chunk_unextracted` when nothing before the loop parses), and it keeps every complete item before
+the loop. The guard sits in the streaming call, so the alignment, errata, implication, time and
+ontology calls that stream get it too.
+
 **Server checks, each a drop reason in `extraction_drops`.** Every quote must occur in the chunk
 (`quote_not_in_chunk`); every name in its quote (`name_not_in_text`); a time mention only when its
 words occur in the statement's own quote (`time_not_in_quote`), because the model otherwise attaches

@@ -570,15 +570,11 @@ async fn apply(ctx: &Ctx<'_>, item: &ReviewItem, p: &Precedents, look: Look) -> 
                 return Ok(());
             }
             // 执行闸门（0027）：合并会立刻送出图外的东西——违规、派生、答案——留给人，
-            // 把握再高也不动手。agent 的看法照记成建议，理由前面写明是闸门留下的
-            let impact = execution_gate::impact_of(pool, kb_id, l, r).await?;
-            if let Some(hold) = execution_gate::hold(&impact) {
-                utopia_store::resolution::escalate_review(
-                    pool,
-                    item.id,
-                    &format!("escalate_impact|{hold}"),
-                )
-                .await?;
+            // 身份来源也留给人（0071），把握再高也不动手。agent 的看法照记成建议，
+            // 理由前面写明是闸门留下的
+            if let Some(hold) = execution_gate::hold_for_merge(pool, kb_id, l, r).await? {
+                utopia_store::resolution::escalate_review(pool, item.id, &hold.review_reason())
+                    .await?;
                 let held = match look.why.as_deref() {
                     Some(why) => format!("held for a person: {}; {why}", hold.explain()),
                     None => format!("held for a person: {}", hold.explain()),

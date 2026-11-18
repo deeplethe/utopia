@@ -249,7 +249,8 @@ pub struct AdoptReq {
     pub edits: ontology_agent::AdoptEdits,
 }
 
-/// 采纳一条提案（人改过的几格随请求来）：建元素、标记、排对齐
+/// 采纳一条提案（人改过的几格随请求来）：元素、回归用例、采纳的状态和后续任务一次提交。
+/// 复用时，代理读过之后人另定了、和提案不一样的形状或类别词留着没写，列在 `skipped` 里
 pub async fn adopt(
     State(state): State<AppState>,
     AuthUser(user): AuthUser,
@@ -257,7 +258,9 @@ pub async fn adopt(
     Json(req): Json<AdoptReq>,
 ) -> ApiResult<Json<serde_json::Value>> {
     utopia_store::access::require_kb(&state.pool, &user, kb_id, Role::Editor).await?;
-    let id =
+    let adopted =
         ontology_agent::adopt(&state, kb_id, &req.section, &req.key, req.edits, user.id).await?;
-    Ok(Json(json!({ "id": id })))
+    Ok(Json(
+        json!({ "id": adopted.id, "skipped": adopted.skipped }),
+    ))
 }

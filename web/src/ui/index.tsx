@@ -389,6 +389,9 @@ export interface SearchSelectOption {
   hint?: string;
   /** 树形缩进的层级（父类选择器用它） */
   indent?: number;
+  /** 同组的选项不在搜索时排在一个组名下面，显示 `short`；搜索时照旧显示 `label` */
+  group?: string;
+  short?: string;
 }
 
 export function SearchSelect({
@@ -584,7 +587,22 @@ export function MultiSearchSelect({
       </div>
       {open && (
         <div className="u-menu-glass u-pop-in u-pop-in-tl absolute z-50 mt-1 w-full rounded-overlay u-lift-strong overflow-hidden">
-          {visible.map((o, i) => (
+          {(q
+            ? visible.map((option, index) => ({ kind: "option" as const, option, index }))
+            : withGroupHeadings(visible)
+          ).map((row) => {
+            if (row.kind === "heading")
+              return (
+                <div
+                  key={`heading-${row.name}`}
+                  className="px-2.5 pt-2 pb-0.5 text-fine font-medium text-ink-2"
+                >
+                  {row.name}
+                </div>
+              );
+            const { option: o, index: i } = row;
+            const indent = q ? 0 : (o.indent ?? 0) + (o.group ? 1 : 0);
+            return (
             <button
               key={o.value}
               type="button"
@@ -598,11 +616,11 @@ export function MultiSearchSelect({
                   : "text-ink-2",
               )}
             >
-              {!q && !!o.indent && (
-                <span className="shrink-0" style={{ width: o.indent * 14 }} />
+              {indent > 0 && (
+                <span className="shrink-0" style={{ width: indent * 14 }} />
               )}
               <span className="min-w-0 flex-1 truncate">
-                {o.label}
+                {!q && o.short ? o.short : o.label}
                 {o.hint && (
                   <span className="ml-2 text-ink-2">{o.hint}</span>
                 )}
@@ -611,7 +629,8 @@ export function MultiSearchSelect({
                 <Check size={12} className="shrink-0 text-ink-2" />
               )}
             </button>
-          ))}
+            );
+          })}
           {visible.length === 0 && (
             <p className="px-2.5 py-1 text-small text-ink-2">
               {S.ui.noMatches}
@@ -629,6 +648,7 @@ export function MultiSearchSelect({
 }
 
 import { ENTITY_PALETTE } from "../palette";
+import { withGroupHeadings } from "./withGroupHeadings";
 export { ENTITY_PALETTE, colorForKey } from "../palette";
 
 export function ColorPicker({

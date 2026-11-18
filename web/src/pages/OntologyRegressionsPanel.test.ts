@@ -8,7 +8,7 @@ import { OntologyRegressionsPanel } from "./OntologyRegressionsPanel";
 
 const base: OntologyRegressionCase = {
   id: "case", kb_id: "kb", statement_id: "statement",
-  expected_property_id: "works-for", expected_direction: "forward",
+  expected_binding: "bound", expected_property_id: "works-for", expected_direction: "forward",
   created_by: "actor", created_at: "2026-10-10T00:00:00Z", origin: "adoption",
   last_checked_at: "2026-10-10T01:00:00Z",
   last_result: {
@@ -62,4 +62,25 @@ describe("stored property regression comparisons", () => {
     expect(html).toContain(S.ontology.caseHumanHint);
     expect(html).not.toContain(`>${S.ontology.casePassed}<`);
   });
+});
+
+
+it("shows negative expectations and a failing manual conflict without a fabricated property or direction", () => {
+  const negative: OntologyRegressionCase = {
+    ...base, expected_binding: "none", expected_property_id: null, expected_direction: null,
+    expected_property_label: null, expected_property_key: null, actual_property_label: null,
+    last_result: { ...base.last_result!, status: "none", actual_property_id: null, actual_direction: null },
+  };
+  const passing = render([negative]);
+  expect(passing).toContain(S.ontology.caseUnbound);
+  expect(passing).toContain(S.ontology.casePassed);
+  expect(passing).not.toContain(S.ontology.caseForward);
+  const conflict = render([{ ...negative, actual_property_label: "Works for", last_result: {
+    ...base.last_result!, passed: false, human_bound: false, conflict: "human_binding",
+  } }]);
+  expect(conflict).toContain(S.ontology.caseHumanConflict);
+  expect(conflict).toContain(S.ontology.caseHumanConflictHint);
+  expect(conflict).toContain("Works for");
+  expect(conflict).not.toContain(S.ontology.caseHumanHint);
+  expect(conflict).not.toContain(`>${S.ontology.casePassed}<`);
 });

@@ -20,6 +20,7 @@ import { HeaderActions } from "./HeaderActions";
 import { usePageTitle } from "../useTitle";
 import ingestMd from "../docs/ingest.md?raw";
 import mcpMd from "../docs/mcp.md?raw";
+import { fetchMe } from "../authSession";
 
 /** 文档清单：slug → 标题 + 内容（构建期打进 bundle） */
 const DOCS: { slug: string; title: string; body: string }[] = [
@@ -117,7 +118,7 @@ export function DocsPage() {
   // 标题：`Utopia | {文章名}`——Charter 是门脸字标，标题直接给文章
   usePageTitle(S.app.name, doc.title);
   // 公开页也感知登录态：已登录给用户菜单，未登录给 Sign in
-  const me = useQuery({ queryKey: ["me"], queryFn: api.me, retry: false });
+  const me = useQuery({ queryKey: ["me"], queryFn: fetchMe, retry: false });
   const health = useQuery({ queryKey: ["health"], queryFn: api.health });
 
   // 滚动跟随：视口上沿之上最近的标题为当前小节；

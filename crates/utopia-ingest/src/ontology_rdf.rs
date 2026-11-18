@@ -62,6 +62,10 @@ pub struct OwlProperty {
     /// `author rangeIncludes Organization, Person` 就会被读成
     /// "必须既是组织又是人"，然后降级成 text——一条边就这么没了
     pub ranges_union: bool,
+    /// `utopia:temporal` 的值：`state` / `event` / `eternal`（0031）。导出端早就写这一条，
+    /// 导入端从前不读——一份本体自己说「这条关系是一个时刻」，导进来还是 `state`。
+    /// 没写或写了别的值都是 `None`，落库时按 `state`；数据属性读了也不用
+    pub temporal: Option<String>,
 }
 
 /// 一次解析的结果。`unprojected` 是**报告**不是错误——见模块文档。
@@ -85,6 +89,8 @@ pub type VocabDatatypes = BTreeMap<String, &'static str>;
 const RDF_TYPE: &str = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type";
 const RDFS: &str = "http://www.w3.org/2000/01/rdf-schema#";
 const OWL: &str = "http://www.w3.org/2002/07/owl#";
+/// 我们自己的注解命名空间，与导出端（`utopia-server::rdf`）同一个
+const UTOPIA_NS: &str = "urn:utopia:ns:";
 
 /// schema.org 自己那套 domain/range。**不是标准词汇**，所以写死在这里，
 /// 但值得认：schema.org 及派生词汇表一个 `rdfs:domain` 都没有，
@@ -342,6 +348,9 @@ pub fn project(bytes: &[u8], format: RdfFormat) -> anyhow::Result<OwlProjection>
     let mut ranges: BTreeMap<String, Vec<String>> = BTreeMap::new();
     // rangeIncludes 用过的属性，它的 range 按并集读
     let mut union_ranged: BTreeSet<String> = BTreeSet::new();
+    // `utopia:temporal` 说的时间语义；只认三个值
+    let mut temporal: BTreeMap<String, String> = BTreeMap::new();
+    let utopia_temporal = format!("{UTOPIA_NS}temporal");
     let known = |p: &str| {
         p == RDF_TYPE
             || p == format!("{RDFS}label")
@@ -365,6 +374,12 @@ pub fn project(bytes: &[u8], format: RdfFormat) -> anyhow::Result<OwlProjection>
     };
     for t in &triples {
         let p = t.predicate.as_str();
+        // 导出端写的就是这三个字面值（0031）。别的值不猜：落到下面按谓词报告，落库按 `state`
+        let declared_temporal = t
+            .object_lit
+            .as_ref()
+            .map(|(v, _)| v.as_str())
+            .filter(|v| p == utopia_temporal && matches!(*v, "state" | "event" | "eternal"));
         if p == format!("{RDFS}label") {
             if let Some(l) = &t.object_lit {
                 labels.entry(t.subject.clone()).or_default().push(l.clone());
@@ -444,6 +459,8 @@ pub fn project(bytes: &[u8], format: RdfFormat) -> anyhow::Result<OwlProjection>
                 ranges.entry(t.subject.clone()).or_default().push(o.clone());
                 union_ranged.insert(t.subject.clone());
             }
+        } else if let Some(v) = declared_temporal {
+            temporal.entry(t.subject.clone()).or_insert(v.to_string());
         } else if !known(p) {
             // 报告而不是丢弃：预览页要能说清"这个文件里还有什么我们没消费"
             *proj.unprojected.entry(p.to_string()).or_insert(0) += 1;
@@ -582,6 +599,7 @@ pub fn project(bytes: &[u8], format: RdfFormat) -> anyhow::Result<OwlProjection>
             domains: domains.get(iri).cloned().unwrap_or_default(),
             ranges: rs,
             ranges_union: union_ranged.contains(iri),
+            temporal: temporal.get(iri).cloned(),
             iri: iri.clone(),
         });
     }
@@ -822,13 +840,20 @@ fn is_opaque_local_name(local: &str) -> bool {
 }
 
 /// 派生 key：局部名是纯编号且词汇表给了 label 时用 label，否则用局部名。
+/// 局部名派生不出 key 的（`ex:公司` 一个 ASCII 字母都没有）也改用 label。
 ///
 /// **IRI 始终是身份**，这里只换那个给模型读的标签，所以重导入、对齐、
 /// `e_by_iri` 的认领都不受影响。
 pub fn key_from_iri_or_label(iri: &str, label: Option<&str>) -> String {
+    let from_iri = key_from_iri(iri);
     match label {
-        Some(l) if is_opaque_local_name(local_name(iri)) && !l.trim().is_empty() => to_key(l),
-        _ => key_from_iri(iri),
+        Some(l)
+            if (from_iri.is_empty() || is_opaque_local_name(local_name(iri)))
+                && !l.trim().is_empty() =>
+        {
+            to_key(l)
+        }
+        _ => from_iri,
     }
 }
 
@@ -1274,6 +1299,29 @@ mod tests {
         assert_eq!(k("http://x#part_12", "part twelve"), "part_12");
     }
 
+    /// 中文写的 IRI 派生不出 key：有英文 label 就用它，不然每个类都是空 key，导入整个被拒
+    #[test]
+    fn a_chinese_iri_takes_its_key_from_the_label() {
+        let ttl = r#"
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+@prefix ex: <http://example.cn/onto#> .
+
+ex:公司 a owl:Class ; rdfs:label "Company"@en, "公司"@zh .
+ex:人员 a owl:Class ; rdfs:label "Person"@en, "人员"@zh .
+ex:注册资本 a owl:DatatypeProperty ; rdfs:label "registered capital"@en ;
+    rdfs:domain ex:公司 ; rdfs:range xsd:decimal .
+"#;
+        let p = project(ttl.as_bytes(), RdfFormat::Turtle).unwrap();
+        let mut keys: Vec<&str> = p.classes.iter().map(|c| c.key.as_str()).collect();
+        keys.sort();
+        assert_eq!(keys, ["company", "person"]);
+        assert_eq!(p.properties[0].key, "registered_capital");
+        // 没有 label 的仍退回局部名
+        assert_eq!(key_from_iri_or_label("http://x#Company", None), "company");
+    }
+
     /// schema.org 那一套的最小复刻：数据类型自报家门，属性用
     /// domainIncludes / rangeIncludes，全部只声明成 rdf:Property。
     const SCHEMA_ISH: &str = r#"
@@ -1715,6 +1763,42 @@ schema:employees a rdf:Property ; rdfs:label "employees" ;
             !p.unprojected.keys().any(|k| k.contains("inverseOf")),
             "**认了就不该再算进「暂未投影」**"
         );
+    }
+
+    /// `utopia:temporal` 要被读出来（0031）。导出端一直写它，导入端从前不读：
+    /// 一份本体自己说「这条关系是一个时刻」，导进来还是 `state`，#1242 的那条
+    /// 「非 state 的关系不经模型就能绑」对它永远不成立。
+    #[test]
+    fn a_property_annotated_with_utopia_temporal_keeps_the_value_it_declared() {
+        let ttl = r#"
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix utopia: <urn:utopia:ns:> .
+@prefix ex: <http://example.org/> .
+
+ex:Person a owl:Class .
+ex:attended a owl:ObjectProperty ; rdfs:label "attended" ; utopia:temporal "event" .
+ex:born_of a owl:ObjectProperty ; rdfs:label "born of" ; utopia:temporal "eternal" .
+ex:works_at a owl:ObjectProperty ; rdfs:label "works at" .
+ex:met a owl:ObjectProperty ; rdfs:label "met" ; utopia:temporal "sometimes" .
+"#;
+        let p = project(ttl.as_bytes(), RdfFormat::Turtle).expect("解析");
+        let by = |k: &str| {
+            p.properties
+                .iter()
+                .find(|x| x.key == k)
+                .unwrap_or_else(|| panic!("没有 {k}"))
+        };
+        assert_eq!(by("attended").temporal.as_deref(), Some("event"));
+        assert_eq!(by("born_of").temporal.as_deref(), Some("eternal"));
+        assert_eq!(
+            by("works_at").temporal,
+            None,
+            "没写就是没写，落库再按 state"
+        );
+        // 三个值以外的不猜：留空并按谓词报告出来，只有 `met` 那一条，预览页能说清它没进来
+        assert_eq!(by("met").temporal, None);
+        assert_eq!(p.unprojected.get("urn:utopia:ns:temporal"), Some(&1));
     }
 }
 

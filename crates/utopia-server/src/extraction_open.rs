@@ -34,6 +34,7 @@ use utopia_store::extraction_drops::reason;
 use utopia_store::graph::FactObject;
 use utopia_store::graph::Validity;
 use utopia_store::pending::{Outcome, Proposal};
+pub(crate) use utopia_store::resolution::name_key;
 use uuid::Uuid;
 
 /// 一块调 + 解析完后的中间产物，apply 半步读它落库（#588 cut 1）。
@@ -42,6 +43,49 @@ use uuid::Uuid;
 struct ChunkParsed {
     extraction: utopia_extract::open::OpenExtraction,
     name_vecs: HashMap<String, Vec<f32>>,
+}
+
+/// Identity clues belong to the statement's subject, not to every name in the chunk.
+/// Keep only grounded, single-sentence quotes with one subject owner. Overlapping
+/// quotes assigned to different subjects cannot tell us whose department was named.
+fn mention_evidence(
+    extraction: &utopia_extract::open::OpenExtraction,
+    text: &str,
+) -> HashMap<String, String> {
+    let quotes: Vec<_> = extraction
+        .statements
+        .iter()
+        .filter_map(|s| {
+            let quote = s.quote.as_deref()?.trim();
+            Some((name_key(&s.subject), quote, locate(text, quote)?))
+        })
+        .collect();
+    let mut evidence = HashMap::<String, String>::new();
+    for (subject, quote, (start, end)) in &quotes {
+        // Conservative about abbreviations too: a missed clue falls back to the
+        // existing resolver; joining separate sentences can attach to the wrong person.
+        let body = quote.trim_end_matches(['.', '!', '?', '。', '！', '？', '"', '”', '’']);
+        if body.contains(['.', '!', '?', '。', '！', '？', ';', '；'])
+            || !span_in_quote(subject, quote)
+            || quotes.iter().any(|(other, _, (a, b))| {
+                other != subject && ((a < end && start < b) || span_in_quote(other, quote))
+            })
+        {
+            continue;
+        }
+        let entry = evidence.entry(subject.clone()).or_default();
+        entry.push_str(quote);
+        entry.push('\n');
+    }
+    evidence
+}
+
+/// 回复为什么是半截的：端点撞上了 token 上限（#760），或护栏看见它在复读、停了读（#1301）。
+/// 两种都当半截处理，丢弃行要说清是哪一种——复读的去查上限，是找错了地方
+#[derive(Debug, Clone, Copy)]
+enum Cut {
+    Ceiling,
+    Repeating,
 }
 
 /// 一个分块的前半步：调模型、解析回复、算名字向量（#588 cut 1）。这半步不写图，
@@ -54,7 +98,7 @@ struct ChunkParsed {
 /// `Err` has two causes: no chat model, or an empty balance (#1095). An empty balance
 /// stops the document, and the error keeps its chain for `alerting::hopeless`.
 ///
-/// 被接管的检查（epoch）留在主循环顶上，不在这里：它要在调模型之前
+/// 被接管的检查（epoch）留在主循环，不在这里：调模型之前、回复落库之前都要核对。
 #[allow(clippy::too_many_arguments)]
 async fn call_and_parse_one_chunk(
     state: &AppState,
@@ -71,8 +115,8 @@ async fn call_and_parse_one_chunk(
     unextracted: &mut Vec<(i32, String)>,
 ) -> anyhow::Result<Option<ChunkParsed>> {
     // 推送来的陈述：块就是契约，解析它而不是问模型（0054）。下面从解析起一步不变
-    let (reply_text, cut_by_ceiling) = if pushed {
-        (chunk.text.clone(), false)
+    let (reply_text, cut) = if pushed {
+        (chunk.text.clone(), None)
     } else {
         let (settings, client) = match (settings, client) {
             (Some(s), Some(c)) => (s, c),
@@ -108,27 +152,35 @@ async fn call_and_parse_one_chunk(
             }
         };
         tracing::debug!(%document_id, seq = chunk.seq, reply = %reply.text, "开放抽取的原始回复");
-        // 端点说它是撞上 token 上限停的。解析器只看得见 JSON 少了尾巴，看不见
-        // 少的原因，所以这句话得从回复里带过来（#760）
-        let cut_by_ceiling = reply.hit_token_ceiling();
-        (reply.text, cut_by_ceiling)
+        // 解析器只看得见 JSON 少了尾巴，看不见少的原因，所以原因得从回复里带过来（#760）
+        let cut = if reply.repeating {
+            Some(Cut::Repeating)
+        } else if reply.hit_token_ceiling() {
+            Some(Cut::Ceiling)
+        } else {
+            None
+        };
+        (reply.text, cut)
     };
-    let extraction = match utopia_extract::open::parse_open_response(&reply_text) {
+    let mut extraction = match utopia_extract::open::parse_open_response(&reply_text) {
         Ok(x) => x,
         Err(e) => {
-            tracing::warn!(%document_id, seq = chunk.seq, error = %e, hit_token_ceiling = cut_by_ceiling, "开放抽取回复解析失败，跳过该分块");
-            // 一整块没进图，而原因不同：撞上上限是「答案太长」，改得动；
-            // 别的解析失败是「回复不合结构」。两种都写成同一句话就分不开了
-            let (why, detail) = if cut_by_ceiling {
-                (
+            tracing::warn!(%document_id, seq = chunk.seq, error = %e, hit_token_ceiling = matches!(cut, Some(Cut::Ceiling)), repeating = matches!(cut, Some(Cut::Repeating)), "开放抽取回复解析失败，跳过该分块");
+            // 一整块没进图，而原因不同：撞上上限是「答案太长」，改得动；复读是模型卡在一行上；
+            // 别的解析失败是「回复不合结构」。写成同一句话就分不开了
+            let (why, detail) = match cut {
+                Some(Cut::Ceiling) => (
                     "response hit the token ceiling and could not be parsed; this chunk did not enter the graph",
                     format!("#{}: hit the token ceiling; {e}", chunk.seq),
-                )
-            } else {
-                (
+                ),
+                Some(Cut::Repeating) => (
+                    "response started repeating itself and could not be parsed; this chunk did not enter the graph",
+                    format!("#{}: started repeating itself; {e}", chunk.seq),
+                ),
+                None => (
                     "response could not be parsed; this chunk did not enter the graph",
                     format!("#{}: {e}", chunk.seq),
-                )
+                ),
             };
             drop_signal(
                 state,
@@ -143,18 +195,36 @@ async fn call_and_parse_one_chunk(
             return Ok(None);
         }
     };
+    // 模型把值写成了宾语的，挪回值并各记一笔；推送来的是契约，不动（0054）
+    if !pushed {
+        for name in utopia_extract::open::values_are_not_things(&mut extraction) {
+            drop_signal(
+                state,
+                kb_id,
+                document_id,
+                reason::OBJECT_IS_VALUE,
+                "kept, with the object read as a value",
+                Some(&name),
+            )
+            .await;
+        }
+    }
     if extraction.truncated {
         drop_signal(
             state,
             kb_id,
             document_id,
             reason::TRUNCATED_REPLY,
-            if cut_by_ceiling {
-                "the open reply hit the token ceiling; kept up to the last complete item"
-            } else {
+            match cut {
+                Some(Cut::Ceiling) => {
+                    "the open reply hit the token ceiling; kept up to the last complete item"
+                }
+                Some(Cut::Repeating) => {
+                    "the reply started repeating itself; kept up to the last complete item"
+                }
                 // 回复正常结束而整体不合法：模型写坏了括号。逐条读出来的都收了，写坏的
                 // 条数在下面那条信号里
-                "the open reply was not valid JSON as a whole; read item by item"
+                None => "the open reply was not valid JSON as a whole; read item by item",
             },
             None,
         )
@@ -216,6 +286,7 @@ async fn apply_open_extraction(
     attested_at: Option<chrono::DateTime<chrono::Utc>>,
     bound_types: &HashMap<String, Uuid>,
     pushed: bool,
+    identity: bool,
     await_nod: bool,
     proposer: Proposer,
     pending_count: &mut usize,
@@ -230,6 +301,10 @@ async fn apply_open_extraction(
     touched_names: &mut HashSet<String>,
 ) -> anyhow::Result<()> {
     // ---- 东西：有名字的走身份消解，被描述的建成没有名字事实的实体 ----
+    // Object-only mentions and rejected quotes deliberately supply None, including
+    // to the old #331 tie/grey-zone paths: another subject's chunk is not their clue.
+    // With no owned clue, profile tiers and their ordinary review requests decide.
+    let evidence = mention_evidence(extraction, &chunk.text);
     let mut response_claims: HashMap<String, Vec<Uuid>> = HashMap::new();
     let mut local: HashMap<String, Uuid> = HashMap::new();
     // 被描述的东西：先记下名字和类别词，等陈述指到它再建（见 `place`）
@@ -255,7 +330,8 @@ async fn apply_open_extraction(
                 name,
                 ctx,
                 name_vecs.get(&key).map(Vec::as_slice),
-                Some(&chunk.text),
+                evidence.get(&key).map(String::as_str),
+                identity,
                 &mut response_claims,
                 handled_by_name,
                 ambiguous_bare_cache,
@@ -284,7 +360,7 @@ async fn apply_open_extraction(
                 )
                 .await;
             }
-            touched_names.insert(utopia_store::resolution::normalize_name(name).to_lowercase());
+            touched_names.insert(name_key(name));
             if !doc_entities.iter().any(|(x, _, _)| *x == id) {
                 doc_entities.push((id, kind.to_string(), name.to_string()));
                 known_by_name.entry(key.clone()).or_insert(id);
@@ -589,6 +665,7 @@ async fn apply_open_extraction(
             utopia_store::graph::add_statement_qualifier(
                 pool,
                 fact_id,
+                chunk.id,
                 role,
                 value.as_ref(),
                 *entity,
@@ -647,7 +724,7 @@ async fn apply_open_extraction(
         }
         // 一个名字不会同时是两样东西的名字：这一块或本文档前面已经把它认成
         // 另一个实体的，不记
-        let key = utopia_store::resolution::normalize_name(name).to_lowercase();
+        let key = name_key(name);
         let claimed = handled_by_name
             .get(&key)
             .is_some_and(|ids| ids.iter().any(|x| *x != id));
@@ -881,13 +958,6 @@ async fn embed_pending_names(
     Ok(items.len())
 }
 
-pub(crate) fn name_key(name: &str) -> String {
-    name.split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_lowercase()
-}
-
 /// 陈述里写的名字 → 实体。先看这一块列出的，再看本文档前面认下的（提示词里的清单）。
 ///
 /// **被描述的东西用到才建。** 模型会把段落里每个名词短语都列进 `e`：实测一个 25 篇的库里
@@ -943,6 +1013,8 @@ pub(crate) async fn run_open(
     proposer: Proposer,
     await_nod: bool,
     pushed: bool,
+    // 0071: the source's names are identities, so they get no name vectors
+    identity: bool,
 ) -> anyhow::Result<()> {
     let pool = &state.pool;
     let document_id = doc.id;
@@ -977,7 +1049,9 @@ pub(crate) async fn run_open(
 
     // 名字向量的嵌入客户端（0041 决定 3 通道 2）。没配嵌入模型就是 None：召回退回
     // 字面相等，抽取照常
-    let embed = settings.and_then(crate::llm_util::embed_client);
+    let embed = settings
+        .and_then(crate::llm_util::embed_client)
+        .filter(|_| !identity);
     // 文档自己说到的日期（0064 决定 1）：每一块报上来的，连它所在的标题路径。块与块之间
     // 不传——一条日期管到哪，看的是它自己那一块正文里的标题，块并行抽的时候照样成立（#588）
     let mut time_entries: Vec<utopia_extract::time::TimeEntry> = Vec::new();
@@ -1027,6 +1101,11 @@ pub(crate) async fn run_open(
             Some(p) => p,
             None => continue,
         };
+        // 模型回答期间，重建可能已删掉缓存里的实体（#1361）；旧回复不能写事实或标记分块完成。
+        if utopia_store::documents::extract_epoch(pool, document_id).await? != my_epoch {
+            tracing::info!(%document_id, "抽取任务已被新一轮接管，落库前退出");
+            return Ok(());
+        }
         let ChunkParsed {
             extraction,
             name_vecs,
@@ -1073,6 +1152,7 @@ pub(crate) async fn run_open(
             attested_at,
             &bound_types,
             pushed,
+            identity,
             await_nod,
             proposer,
             &mut pending_count,
@@ -1143,6 +1223,12 @@ pub(crate) async fn run_open(
         serde_json::json!({ "document_id": document_id }),
     )
     .await?;
+    // 这篇开抽时还没绑上、抽到一半才绑上的类别词：它的类补到这篇后半建的实体上
+    // （`bound_types` 是开抽时读的一份，判定落下时的投影看不见之后建的实体）
+    let caught_up = utopia_store::type_bindings::apply_bound(pool, kb_id).await?;
+    if caught_up > 0 {
+        tracing::info!(%document_id, entities = caught_up, "抽取途中绑上的类补到了后建的实体上");
+    }
     // 新出现的类别词绑到类（0044 对齐第一片）：库级，同库排着就不重复
     utopia_store::jobs::enqueue_unless_queued(
         pool,
@@ -1150,6 +1236,21 @@ pub(crate) async fn run_open(
         serde_json::json!({ "kb_id": kb_id }),
     )
     .await?;
+    // 推送来的文档（0054）：短语正好是一条声明了的关系的签名，本体当场判（#1242）；再排一份
+    // 物化，绑着的签名下新来的陈述不等对齐器跑完就成类型化行——没配对话模型的库，对齐器
+    // 一次也不会跑完。排着就不重复：连推一百篇只算一遍
+    if pushed {
+        let bound = crate::phrase_alignment::bind_declared(pool, kb_id, document_id).await?;
+        if bound > 0 {
+            tracing::info!(%document_id, bound, "推送的短语按声明的关系绑上");
+        }
+        utopia_store::jobs::enqueue_unless_queued(
+            pool,
+            utopia_store::phrase_bindings::MATERIALIZE_KIND,
+            serde_json::json!({ "kb_id": kb_id }),
+        )
+        .await?;
+    }
     // 队列里多了东西才叫醒人：Review 的计数与对话里那张确认卡都靠这一声
     if pending_count > 0 {
         tracing::info!(%document_id, pending_count, "记忆抽出的陈述进了待确认队列");
@@ -1157,6 +1258,10 @@ pub(crate) async fn run_open(
         state.emit_review(kb_id);
     }
 
+    // 身份来源（0071 决定 5）：散文先写下的名字向量，这篇给了它身份证据，删掉
+    if identity {
+        utopia_store::name_vectors::drop_for_document(pool, document_id).await?;
+    }
     // 名字向量：这篇新写的名字事实，向量补上（0041 决定 3 通道 2）。算不出来只记日志——
     // 文档已经抽完了，不能因为召回的辅助数据没算而把它标成 failed
     if let (Some(settings), Some(client)) = (settings, &embed) {
@@ -1199,6 +1304,10 @@ pub(crate) async fn run_open(
 #[cfg(test)]
 #[path = "extraction_open_known_flow_tests.rs"]
 mod known_flow_tests;
+
+#[cfg(test)]
+#[path = "extraction_open_identity_names_tests.rs"]
+mod identity_names_tests;
 
 #[cfg(test)]
 #[path = "extraction_open_out_of_credit_tests.rs"]

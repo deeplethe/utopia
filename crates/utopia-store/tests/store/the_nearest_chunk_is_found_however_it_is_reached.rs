@@ -192,11 +192,18 @@ struct Answers {
 
 async fn ask(pool: &PgPool, f: &Fixture) -> anyhow::Result<Answers> {
     use utopia_store::documents::vector_search;
-    let big_now = vector_search(pool, f.big, &query(), 10, None).await?;
-    let small_now = vector_search(pool, f.small, &query(), 10, None).await?;
-    let five = vector_search(pool, f.big, &[1.0, 0.0, 0.0, 0.0, 0.0], 10, None).await?;
-    let big_then =
-        vector_search(pool, f.big, &query(), 10, Some(t("2026-03-01T00:00:00Z"))).await?;
+    let big_now = vector_search(pool, f.big, &query(), 10, None, None).await?;
+    let small_now = vector_search(pool, f.small, &query(), 10, None, None).await?;
+    let five = vector_search(pool, f.big, &[1.0, 0.0, 0.0, 0.0, 0.0], 10, None, None).await?;
+    let big_then = vector_search(
+        pool,
+        f.big,
+        &query(),
+        10,
+        Some(t("2026-03-01T00:00:00Z")),
+        None,
+    )
+    .await?;
     Ok(Answers {
         nearest_in_big: big_now.first().copied(),
         small_limit_10: small_now,
@@ -249,6 +256,7 @@ async fn the_answers_agree_with_and_without_the_index() -> anyhow::Result<()> {
             &query(),
             2,
             Some(t("2026-03-01T00:00:00Z")),
+            None,
         )
         .await?;
         assert!(

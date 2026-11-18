@@ -27,11 +27,13 @@ import {
   Th,
   THead,
   Tr,
-  buttonLike,} from "../ui";
+  buttonLike,
+  localDate,
+} from "../ui";
 import { toast } from "../toast";
 import { copyAndSay } from "../clipboard";
+import { kbOptions } from "./kbGroups";
 
-const ymd = (iso: string) => iso.slice(0, 10);
 const EXPIRY_CHOICES = [30, 90, 365, 0] as const;
 
 /** Claude Code / Claude Desktop 一族的 Streamable HTTP 写法。每个库一个端点（0014：
@@ -74,21 +76,26 @@ function CopyButton({ text, small }: { text: string; small?: boolean }) {
 
 /** 刚发出来的那一枚：明文 + 配置片段，关掉就再也看不到。
     住在发令牌那个弹窗里——发放的下一秒就是"把它抄走"，中间不该有一次关窗 */
-function IssuedBody({
+export function IssuedBody({
   token,
   info,
   kbs,
+  preferredKbId,
 }: {
   token: string;
   info: TokenView;
   kbs: { id: string; name: string }[];
+  preferredKbId?: string;
 }) {
-  // 片段默认指向令牌限定的第一个库；没限定就取列表第一个
+  // 账户页仍记着上次打开的库；只在令牌允许的库里选，免得默认连到空的 General。
   const candidates = info.kb_ids?.length
     ? kbs.filter((k) => info.kb_ids!.includes(k.id))
     : kbs;
-  const [kbId, setKbId] = useState(candidates[0]?.id ?? kbs[0]?.id ?? "");
-  const kb = kbs.find((k) => k.id === kbId);
+  const [pickedKbId, setPickedKbId] = useState<string>();
+  const kb = candidates.find((k) => k.id === pickedKbId)
+    ?? candidates.find((k) => k.id === preferredKbId)
+    ?? candidates[0];
+  const kbId = kb?.id ?? "";
   const snippet = kb ? mcpSnippet(kb.id, kb.name, token) : "";
   return (
     <div>
@@ -108,7 +115,7 @@ function IssuedBody({
               size="sm"
               className="w-40"
               value={kbId}
-              onChange={setKbId}
+              onChange={setPickedKbId}
               options={candidates.map((k) => ({ value: k.id, label: k.name }))}
             />
           </span>
@@ -164,15 +171,15 @@ function TokenRow({
         {t.kb_ids?.length ? S.account.nBases(t.kb_ids.length) : S.account.allBases}
       </Td>
       <Td className="u-num text-small text-ink-2">
-        {t.last_used_at ? ymd(t.last_used_at) : S.account.neverUsed}
+        {t.last_used_at ? localDate(t.last_used_at) : S.account.neverUsed}
       </Td>
       <Td className="u-num text-small text-ink-2">
-        {t.expires_at ? ymd(t.expires_at) : S.account.noExpiry}
+        {t.expires_at ? localDate(t.expires_at) : S.account.noExpiry}
       </Td>
-      <Td className="u-num text-small text-ink-2">{ymd(t.created_at)}</Td>
+      <Td className="u-num text-small text-ink-2">{localDate(t.created_at)}</Td>
       <Td className="text-right">
         {revoked ? (
-          <Chip tone="danger">{S.account.revokedOn(ymd(t.revoked_at!))}</Chip>
+          <Chip tone="danger">{S.account.revokedOn(localDate(t.revoked_at!))}</Chip>
         ) : arm ? (
           <Button variant="danger" size="sm"
             disabled={busy}
@@ -196,7 +203,7 @@ function TokenRow({
 
 export function Tokens() {
   const queryClient = useQueryClient();
-  const { kbs } = useKb();
+  const { kb, kbs } = useKb();
   const list = useQuery({ queryKey: ["tokens"], queryFn: api.tokens });
 
   // 发令牌是个动作，不是这一页的常驻内容：表单住在弹窗里，页面上只有名单
@@ -325,7 +332,7 @@ export function Tokens() {
           }
         >
           {issued ? (
-            <IssuedBody token={issued.token} info={issued.info} kbs={kbs} />
+            <IssuedBody token={issued.token} info={issued.info} kbs={kbs} preferredKbId={kb?.id} />
           ) : (
             <div>
               <Field label={S.account.tokenName}>
@@ -372,7 +379,7 @@ export function Tokens() {
                 <MultiSearchSelect
                   className="w-full"
                   values={Array.from(picked)}
-                  options={kbs.map((k) => ({ value: k.id, label: k.name }))}
+                  options={kbOptions(kbs)}
                   placeholder={S.account.pickBases}
                   emptyHint={S.account.allBases}
                   onToggle={(id) => {

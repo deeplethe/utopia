@@ -73,24 +73,8 @@ async fn an_answer_that_cannot_be_saved_says_so_with_its_code() -> anyhow::Resul
     let Some(f) = fixture(Scripted::new(vec![TOOL, Reply::Text("Accepted answer.")])).await? else {
         return Ok(());
     };
-    let name = format!("reject_assistant_{}", f.kb.simple());
-    sqlx::raw_sql(&format!(
-        "CREATE FUNCTION {name}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN \
-         IF NEW.role='assistant' AND EXISTS(SELECT 1 FROM conversations \
-         WHERE id=NEW.conversation_id AND kb_id='{}') THEN \
-         RAISE EXCEPTION 'injected persistence failure'; END IF; RETURN NEW; END $$; \
-         CREATE TRIGGER {name} BEFORE INSERT ON conversation_messages \
-         FOR EACH ROW EXECUTE FUNCTION {name}();",
-        f.kb
-    ))
-    .execute(&f.pool)
-    .await?;
+    f.reject_answer_saves().await?;
     let sse = f.ask("What happened?").await?;
-    sqlx::raw_sql(&format!(
-        "DROP TRIGGER {name} ON conversation_messages; DROP FUNCTION {name}();"
-    ))
-    .execute(&f.pool)
-    .await?;
     assert_eq!(failure(&sse).0, "answer_not_saved");
     f.cleanup().await
 }

@@ -173,6 +173,32 @@ async fn a_secret_is_sealed_at_rest() -> anyhow::Result<()> {
             sources::get(&pool, src.id).await?.config["auth_header"],
             "Bearer t0k"
         );
+        // 只改几个键的那条路（Google Drive 的连接）照样封印，别的键原样留着
+        let patched = sources::patch_config(
+            &pool,
+            src.id,
+            &serde_json::json!({ "refresh_token": "1//grant" }),
+            &[],
+        )
+        .await?;
+        let stored = raw(
+            &pool,
+            "SELECT config->>'refresh_token' FROM sources WHERE id = $1",
+            src.id,
+        )
+        .await?
+        .unwrap();
+        assert!(secrets::is_sealed(&stored));
+        assert_eq!(
+            (
+                &patched.config["refresh_token"],
+                &patched.config["auth_header"]
+            ),
+            (
+                &serde_json::json!("1//grant"),
+                &serde_json::json!("Bearer t0k")
+            )
+        );
         sources::set_ingest_token(&pool, src.id, "utp_push_1").await?;
         let stored = raw(
             &pool,
