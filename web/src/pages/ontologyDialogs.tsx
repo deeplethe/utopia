@@ -292,6 +292,7 @@ export function PropertyDialog({
   existing,
   allTypes,
   allRelations,
+  allAttributes,
   initialDomain,
   onClose,
   onSaved,
@@ -304,6 +305,9 @@ export function PropertyDialog({
   /** 本库的关系（不含属性）。逆与子属性的下拉从这里取——**属性不在其中**，
    *  它的宾语是字面值，反过来无从谈起 */
   allRelations: RelationTypeView[];
+  /** 本库的属性定义，「边上的属性」的候选。单独传进来：从前这个下拉在
+   *  allRelations 里筛 kind=attribute，而那里恰恰没有属性，于是永远是空的（#1519） */
+  allAttributes: RelationTypeView[];
   /** 从一个类出发新建关系时，domain 预填成那个类——**只影响初始值**，
    *  不是约束：下面照旧是个可编辑的 MultiSearchSelect，填错了随手改 */
   initialDomain: string | null;
@@ -477,8 +481,8 @@ export function PropertyDialog({
             <div className="mb-1 text-small text-ink-2">{S.ontology.qualifiers}</div>
             <MultiSearchSelect
               values={qualifiers}
-              options={allRelations
-                .filter((r) => r.kind === "attribute" && r.id !== existing?.id)
+              options={allAttributes
+                .filter((r) => r.id !== existing?.id)
                 .map((r) => ({ value: r.id, label: r.label, indent: 0 }))}
               onToggle={(id) => toggleIn(setQualifiers, id)}
               placeholder={S.ontology.searchTypes}
