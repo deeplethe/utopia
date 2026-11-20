@@ -771,6 +771,7 @@ export function Ontology() {
           existing={edit.existing}
           allTypes={entity_types}
           allRelations={relations}
+          allAttributes={relation_types.filter((r) => r.kind === "attribute")}
           initialDomain={edit.initialDomain}
           onClose={() => setEdit(null)}
           onSaved={(createdId) => {
