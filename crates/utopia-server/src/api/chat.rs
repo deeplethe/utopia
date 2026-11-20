@@ -354,7 +354,7 @@ pub(super) fn base_tools() -> serde_json::Value {
                         "query": { "type": "string", "description": "Search query, phrased in the corpus language." },
                         "as_of": {
                             "type": "string",
-                            "description": "Optional RECORD-time moment (YYYY-MM-DD or RFC3339): search only what the knowledge base held at that moment — earlier versions of documents, documents deleted since. Full-text recall stays current, so hits are correct but may be incomplete. Omit for the current base."
+                            "description": "Optional RECORD-time moment (YYYY, YYYY-MM, YYYY-MM-DD, or a zoned time): search only what the knowledge base held at that moment — earlier versions of documents, documents deleted since. Full-text recall stays current, so hits are correct but may be incomplete. Omit for the current base."
                         }
                     },
                     "required": ["query"]
@@ -454,7 +454,7 @@ pub(super) fn base_tools() -> serde_json::Value {
                         },
                         "as_of": {
                             "type": "string",
-                            "description": "Optional RECORD-time moment (YYYY-MM-DD or RFC3339): the facts as the knowledge base held them at that moment, before later corrections, retractions and merges. Use for 'what did we think / know / have on record as of <date>'. Independent of `at`: `at` is when something was true, `as_of` is when we believed it. Omit for today's understanding."
+                            "description": "Optional RECORD-time moment (YYYY, YYYY-MM, YYYY-MM-DD, or a zoned time): the facts as the knowledge base held them at that moment, before later corrections, retractions and merges. Use for 'what did we think / know / have on record as of <date>'. Independent of `at`: `at` is when something was true, `as_of` is when we believed it. Omit for today's understanding."
                         },
                         "before": {
                             "type": "string",

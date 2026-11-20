@@ -902,6 +902,161 @@ async fn wrong_string_types_are_refused_and_audited_without_writing_memory() -> 
 }
 
 #[tokio::test]
+async fn search_chunks_rejects_invalid_as_of() -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    for invalid in [
+        json!("2025-02-30"),
+        json!("2026-01-01T12:30:00"),
+        json!(" "),
+        json!(20250101),
+        Value::Null,
+    ] {
+        let result = f
+            .call("search_chunks", json!({"query":"orchard","as_of":invalid}))
+            .await?;
+        assert_eq!(result["isError"], true, "invalid as_of {invalid}: {result}");
+        assert!(result.get("structuredContent").is_none(), "{result}");
+        assert!(
+            result["content"][0]["text"]
+                .as_str()
+                .is_some_and(|message| message.contains("as_of")),
+            "{result}"
+        );
+    }
+    f.clean().await
+}
+
+#[tokio::test]
+async fn graph_tools_reject_invalid_time_arguments() -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    let options = ["at", "before", "as_of", "since", "until"];
+    let graph_calls = [
+        (
+            "entity_facts",
+            json!({"entity_id":f.subject}),
+            options.as_slice(),
+        ),
+        ("neighbors", json!({"entity":f.subject}), options.as_slice()),
+        ("timeline", json!({"entity":f.subject}), options.as_slice()),
+        (
+            "paths_between",
+            json!({"from":f.subject,"to":f.object}),
+            &options[..3],
+        ),
+    ];
+    for (tool, args, fields) in graph_calls {
+        for &field in fields {
+            for value in [
+                json!("2025-02-30"),
+                json!("2026-01-01T12:30:00"),
+                json!(2025),
+                Value::Null,
+            ] {
+                let mut args = args.clone();
+                args[field] = value.clone();
+                let result = f.call(tool, args).await?;
+                assert_eq!(
+                    result["isError"], true,
+                    "{tool} accepted {field}={value}: {result}"
+                );
+                assert!(
+                    result["content"][0]["text"]
+                        .as_str()
+                        .is_some_and(|text| text.contains(&format!("`{field}`"))),
+                    "{tool} did not identify {field}: {result}",
+                );
+                assert!(result.get("structuredContent").is_none(), "{result}");
+            }
+        }
+    }
+    let overridden = json!({"entity_id":f.subject,"before":CORRECTION,"as_of":"not a date"});
+    let result = f.call("entity_facts", overridden.clone()).await?;
+    assert_eq!(result["isError"], true, "{result}");
+    assert!(result["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .contains("`as_of`"));
+    step_has(
+        &step_of(&f, &[], "entity_facts", overridden).await,
+        json!({"kind":"facts","status":"invalid","param":"as_of"}),
+    )?;
+    f.clean().await
+}
+
+#[tokio::test]
+async fn graph_tools_keep_historical_and_omitted_time_arguments() -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    for (tool, mut args, current, historical) in [
+        (
+            "neighbors",
+            json!({"entity":f.subject}),
+            "1 linked entities",
+            "no linked entities",
+        ),
+        (
+            "timeline",
+            json!({"entity":f.subject}),
+            "2 dated facts",
+            "no dated facts",
+        ),
+        (
+            "paths_between",
+            json!({"from":f.subject,"to":f.object}),
+            "1 path between",
+            "No path",
+        ),
+    ] {
+        let result = f.call(tool, args.clone()).await?;
+        assert_eq!(result["isError"], false, "{tool}: {result}");
+        assert!(
+            result["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains(current),
+            "{tool}: {result}"
+        );
+        args["as_of"] = json!("2026-02");
+        let result = f.call(tool, args).await?;
+        assert_eq!(result["isError"], false, "{tool}: {result}");
+        assert!(
+            result["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains(historical),
+            "{tool}: {result}"
+        );
+    }
+
+    sqlx::query("UPDATE facts SET valid_to='2026-03-01', valid_to_precision='day' WHERE id=$1")
+        .bind(f.attribute)
+        .execute(&f.state.pool)
+        .await?;
+    for (window, expected) in [
+        (
+            json!({"entity_id":f.subject,"since":"2026","until":"2026-01"}),
+            f.attribute,
+        ),
+        (
+            json!({"entity_id":f.subject,"since":"2026-04"}),
+            f.corrected,
+        ),
+    ] {
+        let result = f.call("entity_facts", window).await?;
+        assert_eq!(result["isError"], false, "{result}");
+        let facts = result["structuredContent"]["facts"].as_array().unwrap();
+        assert_eq!(facts.len(), 1, "{result}");
+        assert_eq!(uuid(&facts[0]["id"]), expected);
+    }
+    f.clean().await
+}
+
+#[tokio::test]
 async fn search_chunks_returns_chunk_and_document_ids_with_the_same_excerpt() -> anyhow::Result<()>
 {
     let Some(f) = Fixture::new().await? else {
@@ -909,6 +1064,7 @@ async fn search_chunks_returns_chunk_and_document_ids_with_the_same_excerpt() ->
     };
     let result = f.call("search_chunks", json!({"query":"orchard"})).await?;
     assert_eq!(result["isError"], false);
+    assert_eq!(result["structuredContent"]["as_of"], Value::Null);
     assert_eq!(result["structuredContent"]["limit"], 6);
     assert_eq!(result["structuredContent"]["limit_reached"], false);
     let chunk = &result["structuredContent"]["chunks"][0];
@@ -932,8 +1088,24 @@ async fn search_chunks_returns_chunk_and_document_ids_with_the_same_excerpt() ->
         .await?;
     assert_eq!(empty["structuredContent"]["chunks"], json!([]));
     assert_eq!(empty["isError"], false);
+    assert_eq!(empty["structuredContent"]["as_of"], "2025-01-01T00:00:00Z");
     assert_eq!(empty["structuredContent"]["limit_reached"], false);
     assert_eq!(empty["content"][0]["text"], "No results.");
+    for (as_of, expected) in [
+        ("2026", "2026-01-01T00:00:00Z"),
+        ("2026-02", "2026-02-01T00:00:00Z"),
+        ("2026-01-02T02:00:00.123+02:00", "2026-01-02T00:00:00.123Z"),
+    ] {
+        let historical = f
+            .call("search_chunks", json!({"query":"orchard","as_of":as_of}))
+            .await?;
+        assert_eq!(historical["isError"], false, "{as_of}: {historical}");
+        assert_eq!(historical["structuredContent"]["as_of"], expected);
+        assert_eq!(
+            uuid(&historical["structuredContent"]["chunks"][0]["chunk_id"]),
+            f.chunk
+        );
+    }
     let mut indexed = vec![(f.chunk.to_string(), "orchard ".repeat(120))];
     for seq in 2..8 {
         let id = Uuid::now_v7();
@@ -1147,7 +1319,7 @@ async fn entity_facts_keeps_identity_values_filters_and_both_clocks() -> anyhow:
     let empty = f
         .call(
             "entity_facts",
-            json!({"entity_id":f.subject,"at":"2025-01-01","as_of":CORRECTION}),
+            json!({"entity_id":f.subject,"at":"2025","as_of":CORRECTION}),
         )
         .await?;
     assert_eq!(empty["structuredContent"]["facts"], json!([]));
