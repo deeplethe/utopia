@@ -155,16 +155,18 @@ async function judgeAll(kb, items) {
     for (let i = 0; i < list.length; i += 25) {
       const part = list.slice(i, i + 25);
       const body = `Document (${part[0].file}):\n${text}\n\nStatements:\n${part.map((x, j) => `${j}. ${render(x)}`).join("\n")}`;
-      let res;
+      // 调用失败的一批、回复里漏掉的条，都记成 unjudged：原来直接跳过，一条没判的一轮报
+      // not_stated 0/0、门槛「过」，跟裁判好好的一轮看不出区别（#1518）
+      let res = {};
       try {
         res = await chat(ep, [{ role: "system", content: JUDGE }, { role: "user", content: body }]);
       } catch (e) {
         console.error(`${stamp()} 裁判调用失败：${e.message}`);
-        continue;
       }
-      for (const r of res.results || []) {
-        const it = part[r.i];
-        if (!it) continue;
+      const byI = new Map();
+      for (const r of res.results || []) if (!byI.has(Number(r.i))) byI.set(Number(r.i), r);
+      part.forEach((it, j) => {
+        const r = byI.get(j) || {};
         out.push({
           ...it,
           statement: render(it),
@@ -173,23 +175,30 @@ async function judgeAll(kb, items) {
           // 读不读得通：单看「主语 —短语→ 宾语」能不能明白在说什么（ReVerb 说的 uninformative 那一类）
           alone: typeof r.alone === "boolean" ? r.alone : null,
         });
-      }
-      console.error(`${stamp()} 判了 ${out.length}/${items.length}`);
+      });
+      console.error(`${stamp()} 判了 ${out.filter((j) => j.verdict !== "unjudged").length}/${items.length}`);
     }
   }
   return out;
 }
 
 function report(judged, total) {
-  const n = judged.length;
+  // 比例只按判了的算：未判的进了分母，丢一半样本 not_stated 的比例也跟着减半
+  const done = judged.filter((j) => j.verdict !== "unjudged");
+  const n = done.length;
   const count = (v) => judged.filter((j) => j.verdict === v).length;
   const pct = (a) => `${a}/${n}（${n ? ((100 * a) / n).toFixed(1) : 0}%）`;
   const kind = (k) => judged.filter((j) => j.verdict === "misworded" && j.kind === k).length;
   console.log(`\n开放陈述 ${total} 条，判了 ${n} 条：stated ${pct(count("stated"))}，misworded ${pct(count("misworded"))}（extrapolated ${kind("extrapolated")}，contradicted ${kind("contradicted")}），not_stated ${pct(count("not_stated"))}，未判 ${count("unjudged")}`);
-  console.log(`0044 的门槛：not_stated ≤ 2%${count("not_stated") / (n || 1) <= 0.02 ? "，过" : "，没过"}`);
+  if (!n) {
+    console.log("0044 的门槛：一条也没判成，过没过无从说起");
+    process.exitCode = 1;
+    return;
+  }
+  console.log(`0044 的门槛：not_stated ≤ 2%${count("not_stated") / n <= 0.02 ? "，过" : "，没过"}`);
   const fragments = judged.filter((j) => j.alone === false);
   console.log(`单看读不通（alone = false）：${pct(fragments.length)}`);
-  const bad = judged.filter((j) => j.verdict !== "stated").slice(0, 20);
+  const bad = done.filter((j) => j.verdict !== "stated").slice(0, 20);
   if (bad.length) {
     console.log("\n判不对的（样本）：");
     for (const j of bad) console.log(`  [${j.verdict}] ${j.statement}\n      证据：${j.evidence.slice(0, 160)}`);
@@ -205,7 +214,7 @@ if (args.calibrate) {
   const labels = JSON.parse(fs.readFileSync(args.calibrate, "utf8"));
   const byKb = new Map();
   for (const l of labels) (byKb.get(l.kb) || byKb.set(l.kb, []).get(l.kb)).push(l);
-  let agree = 0, n = 0;
+  let agree = 0, n = 0, unjudged = 0;
   for (const [kb, list] of byKb) {
     const { picked } = loadStatements(kb, Infinity, 1);
     const items = picked.filter((p) => list.some((l) => l.fact === p.fact));
@@ -213,13 +222,18 @@ if (args.calibrate) {
     for (const j of judged) {
       const human = list.find((l) => l.fact === j.fact)?.verdict;
       if (!human) continue;
+      // 裁判没判的不算和人不一致，单独报
+      if (j.verdict === "unjudged") {
+        unjudged++;
+        continue;
+      }
       n++;
       if ((human === "stated") === (j.verdict === "stated")) agree++;
       else console.log(`  不一致：人 ${human} / 裁判 ${j.verdict} — ${j.statement}`);
     }
   }
-  console.log(`\n二分一致 ${agree}/${n}`);
-  process.exit(0);
+  console.log(`\n二分一致 ${agree}/${n}，未判 ${unjudged}`);
+  process.exit(n ? 0 : 1);
 }
 
 const { total, picked } = loadStatements(KB, args.sample, args.seed);
