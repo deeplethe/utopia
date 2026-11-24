@@ -1764,6 +1764,25 @@ export const en = {
     importApplying: "Importing…",
     importApply: "Import",
     importCancel: "Cancel",
+    /* ---- 从 ohi.dev 找一份（OhiCatalogSearch）：查询离开这台机器之前要说清楚 ---- */
+    ohiHint:
+      "Or find one on ohi.dev, a public catalog of ontologies. The search and the download request go from your browser to ohi.dev. Nothing is sent until you search.",
+    ohiPlaceholder: "Name, prefix or IRI",
+    ohiSearch: "Search ohi.dev",
+    ohiSearching: "Searching…",
+    ohiDownloading: "Downloading…",
+    ohiNoMatch: "No ontology on ohi.dev matches this search.",
+    ohiOntology: "Ontology",
+    ohiPublisher: "Publisher",
+    ohiLicense: "License",
+    ohiPreview: "Preview",
+    ohiShown: (n: number, total: number) =>
+      `Showing ${n} of ${total}. Narrow the search to find the others.`,
+    ohiUnreachable:
+      "ohi.dev could not be reached from this browser. Choose a local file instead.",
+    ohiNoOwl: "This release has no OWL file to import.",
+    ohiTooLarge: (bytes: number) =>
+      `This release's OWL file is ${(bytes / 1024 / 1024).toFixed(1)} MB, over the 8 MB import limit.`,
     importParsed: (fmt: string, triples: number) =>
       `${fmt === "rdfxml" ? "RDF/XML" : "Turtle"} · ${triples.toLocaleString()} triples`,
     importNothing:

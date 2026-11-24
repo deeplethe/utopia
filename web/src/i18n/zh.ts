@@ -1567,6 +1567,24 @@ export const zh: Strings = {
     importApplying: "导入中…",
     importApply: "导入",
     importCancel: "取消",
+    /* ---- 从 ohi.dev 找一份（OhiCatalogSearch） ---- */
+    ohiHint:
+      "也可以在 ohi.dev（公开的本体目录）上找。搜索和下载请求由浏览器直接发往 ohi.dev。点搜索之前不会发出任何请求。",
+    ohiPlaceholder: "名称、前缀或 IRI",
+    ohiSearch: "在 ohi.dev 上搜索",
+    ohiSearching: "搜索中…",
+    ohiDownloading: "下载中…",
+    ohiNoMatch: "ohi.dev 上没有与之匹配的本体。",
+    ohiOntology: "本体",
+    ohiPublisher: "发布者",
+    ohiLicense: "许可",
+    ohiPreview: "预览",
+    ohiShown: (n: number, total: number) =>
+      `共 ${total} 个，显示前 ${n} 个。缩小搜索范围可以找到其余的。`,
+    ohiUnreachable: "这个浏览器连不上 ohi.dev。请改为选择本地文件。",
+    ohiNoOwl: "这一版没有可导入的 OWL 文件。",
+    ohiTooLarge: (bytes: number) =>
+      `这一版的 OWL 文件有 ${(bytes / 1024 / 1024).toFixed(1)} MB，超过了 8 MB 的导入上限。`,
     importParsed: (fmt: string, triples: number) =>
       `${fmt === "rdfxml" ? "RDF/XML" : "Turtle"} · ${triples.toLocaleString()} 个三元组`,
     importNothing: "没有可导入的内容——这个文件里没有找到类或属性。",

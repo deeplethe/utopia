@@ -11,6 +11,9 @@ importers:
       '@fontsource-variable/geist':
         specifier: ^5.3.0
         version: 5.3.0
+      '@neverblink/ohi':
+        specifier: ^0.18.7
+        version: 0.18.7
       '@sigma/edge-curve':
         specifier: 3.1.0
         version: 3.1.0(sigma@3.0.3(graphology-types@0.24.8))
@@ -479,6 +482,10 @@ packages:
     engines: {node: ^22.20 || ^24.12 || >=25}
     cpu: [x64]
     os: [linux]
+
+  '@neverblink/ohi@0.18.7':
+    resolution: {integrity: sha512-PnvsUZ/I2fzQRcFqmc4qTPlE8rQkVBWjpU3SYlCsljFVu7rcEKpKusU1ZBIPYS3M6HBpaNwzWFvqjP13Vu16Vg==}
+    engines: {node: '>=22'}
 
   '@nodelib/fs.scandir@2.1.5':
     resolution: {integrity: sha512-vq24Bq3ym5HEQm2NKCr3yXDwjc7vTsEThRDnkp2DK9p1uqLR+DHurm/NOTo0KG7HYHU7eppKZj3MyqYuMBf62g==}
@@ -3702,6 +3709,8 @@ snapshots:
 
   '@napi-rs/lzma-linux-x64-gnu@1.5.1':
     optional: true
+
+  '@neverblink/ohi@0.18.7': {}
 
   '@nodelib/fs.scandir@2.1.5':
     dependencies:

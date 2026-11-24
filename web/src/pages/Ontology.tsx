@@ -45,6 +45,7 @@ import { toast } from "../toast";
 import { OntologySchemaGraph, type SchemaSelection } from "./OntologySchemaGraph";
 import { RulesPanel } from "./RulesPanel";
 import { OntologyRegressionsPanel } from "./OntologyRegressionsPanel";
+import { OhiCatalogSearch } from "./OhiCatalogSearch";
 import {
   AttributeDialog,
   ClassDialog,
@@ -2431,6 +2432,9 @@ function ImportPanel({
           </span>
         )}
       </div>
+      {!file && (
+        <OhiCatalogSearch disabled={busy} onPick={choose} onError={onError} />
+      )}
 
       {plan && (
         <div className="mt-4">
