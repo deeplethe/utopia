@@ -112,12 +112,17 @@ pub async fn record(
 /// 相关子查询 `nf.subject_id = e.id` 不带库，规划器用不上这个索引，每次召回都要
 /// 扫全表的 facts——所有库的
 pub fn has_name_in(entity: &str, kb: usize, names: usize) -> String {
+    format!("{entity}.id IN ({})", named_ids(kb, names))
+}
+
+/// [`has_name_in`] 的子查询本身：有这些名字之一的实体的 id
+pub fn named_ids(kb: usize, names: usize) -> String {
     format!(
-        "{entity}.id IN (SELECT nf.subject_id FROM facts nf
+        "SELECT nf.subject_id FROM facts nf
                    JOIN relation_types nr ON nr.id = nf.predicate_id
                   WHERE nf.kb_id = ${kb} AND nr.kb_id = ${kb} AND nr.builtin AND nr.key = '{KNOWN_AS}'
                     AND nf.invalidated_at IS NULL AND nf.object_value IS NOT NULL
-                    AND lower(nf.object_value->>'value') = ANY(${names}))"
+                    AND lower(nf.object_value->>'value') = ANY(${names})"
     )
 }
 

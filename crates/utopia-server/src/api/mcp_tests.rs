@@ -1008,10 +1008,11 @@ async fn entity_facts_reads_back_a_statements_role_words() -> anyhow::Result<()>
         return Ok(());
     };
     sqlx::query(
-        "INSERT INTO statement_qualifiers(fact_id,role,value)
-         VALUES ($1,'lines','{\"value\":\"10-42\"}'::jsonb)",
+        "INSERT INTO statement_qualifiers(fact_id,role,value,chunk_id)
+         VALUES ($1,'lines','{\"value\":\"10-42\"}'::jsonb,$2)",
     )
     .bind(f.corrected)
+    .bind(f.chunk)
     .execute(&f.state.pool)
     .await?;
     let result = f
@@ -1027,7 +1028,8 @@ async fn entity_facts_reads_back_a_statements_role_words() -> anyhow::Result<()>
         .unwrap();
     assert_eq!(
         fact["statement_qualifiers"],
-        json!([{"role":"lines","value":{"value":"10-42"},"entity_id":null,"entity_name":null}])
+        json!([{"role":"lines","value":{"value":"10-42"},"entity_id":null,"entity_name":null,
+            "chunk_ids":[f.chunk]}])
     );
     f.clean().await
 }

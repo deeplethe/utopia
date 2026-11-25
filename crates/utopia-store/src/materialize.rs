@@ -190,31 +190,11 @@ async fn materialize_in_tx(
     .rows_affected();
 
     // 1. 删不再成立的来源：陈述死了、行死了、签名没绑着、属性或方向变了、陈述带了 mood
-    sqlx::query(&format!(
-        "DELETE FROM typed_fact_sources src
-          USING facts t
-          WHERE src.fact_id = t.id AND t.kb_id = $1
-            AND NOT EXISTS (
-                SELECT 1
-                  FROM facts s
-                  JOIN entities se ON se.id = s.subject_id
-             LEFT JOIN entities oe ON oe.id = s.object_id
-                  JOIN phrase_bindings b ON {MATCH}
-                 WHERE s.id = src.statement_id
-                   AND s.kb_id = $1
-                   AND s.invalidated_at IS NULL
-                   AND t.invalidated_at IS NULL
-                   AND b.status = 'bound'
-                   AND b.relation_type_id = t.predicate_id
-                   AND ((b.direction = 'forward' AND t.subject_id = s.subject_id)
-                     OR (b.direction = 'reverse' AND t.subject_id = s.object_id))
-                   AND NOT EXISTS (SELECT 1 FROM statement_qualifiers q
-                                    WHERE q.fact_id = s.id AND q.role = 'mood'))"
-    ))
-    .persistent(false)
-    .bind(kb_id)
-    .execute(&mut **tx)
-    .await?;
+    sqlx::query(&source_cleanup_sql())
+        .persistent(false)
+        .bind(kb_id)
+        .execute(&mut **tx)
+        .await?;
 
     // 1b. 隐含行的来源：规则不再批准、触发它的陈述死了或换了签名、实体没了或换了类别词，
     //     来源就删；与 1 同一条规矩，只是来源表是另一张（implied_fact_sources）
@@ -274,8 +254,7 @@ async fn materialize_in_tx(
           WHERE s.kb_id = $1 AND s.layer = 'open' AND s.invalidated_at IS NULL
             AND b.status = 'bound'
             AND (b.direction = 'forward' OR s.object_id IS NOT NULL)
-            AND NOT EXISTS (SELECT 1 FROM statement_qualifiers q
-                             WHERE q.fact_id = s.id AND q.role = 'mood')
+            AND {NO_MOOD}
             -- 勘误撤过的（陈述, 属性）不再算（0044 决定 7）：撤销要站得住
             AND NOT EXISTS (SELECT 1 FROM errata_actions ea
                              WHERE ea.statement_id = s.id AND ea.predicate_id = b.relation_type_id
@@ -283,7 +262,8 @@ async fn materialize_in_tx(
             AND NOT EXISTS (SELECT 1 FROM typed_fact_sources src JOIN facts t ON t.id = src.fact_id
                              WHERE src.statement_id = s.id AND t.invalidated_at IS NULL
                                AND t.predicate_id = b.relation_type_id)
-          ORDER BY s.id"
+          ORDER BY s.id",
+        NO_MOOD = no_mood_spoken(),
     ))
     .persistent(false)
     .bind(kb_id)
@@ -410,7 +390,7 @@ async fn materialize_in_tx(
         .bind(d.statement)
         .execute(&mut **tx)
         .await?;
-        // 证据与限定各抄一份：证据是同一段原文的同一处引文；限定照角色词原样带过去
+        // 证据每次都抄：证据是同一段原文的同一处引文
         sqlx::query(
             "INSERT INTO fact_evidence (fact_id, chunk_id, quote, document_id, doc_version,
                                         proposed_predicate, quote_start, quote_end)
@@ -423,9 +403,15 @@ async fn materialize_in_tx(
         .bind(d.statement)
         .execute(&mut **tx)
         .await?;
+        // 角色词只抄行还没有的角色（0070 决定 1 的修订）：并进已有行的陈述若对同一角色
+        // 说了别的值，抄过来这一行就同时读到两个值；别的值由决定 4 带过来
         sqlx::query(
-            "INSERT INTO statement_qualifiers (fact_id, role, value, entity_id)
-             SELECT $1, role, value, entity_id FROM statement_qualifiers WHERE fact_id = $2
+            "INSERT INTO statement_qualifiers (fact_id, role, value, entity_id, chunk_id)
+             SELECT $1, q.role, q.value, q.entity_id, q.chunk_id
+               FROM statement_qualifiers q
+              WHERE q.fact_id = $2
+                AND NOT EXISTS (SELECT 1 FROM statement_qualifiers n
+                                 WHERE n.fact_id = $1 AND n.role = q.role)
              ON CONFLICT DO NOTHING",
         )
         .bind(fact)
@@ -556,7 +542,7 @@ async fn imply_in_tx(
                                    AND pr.reading = r.reading AND pr.phrase = {TEXT}
           WHERE r.kb_id = $1 AND r.status = 'approved' AND r.trigger = 'phrase'
             AND {RULE_MATCH}
-            AND NOT EXISTS (SELECT 1 FROM statement_qualifiers q WHERE q.fact_id = s.id AND q.role = 'mood')
+            AND {NO_MOOD}
             AND (r.reading IS NULL OR pr.entity_id IS NOT NULL OR pr.value IS NOT NULL)
             AND NOT EXISTS (SELECT 1 FROM errata_actions ea
                              WHERE ea.statement_id = s.id AND ea.predicate_id = r.conclude_property_id
@@ -566,6 +552,7 @@ async fn imply_in_tx(
           ORDER BY s.id",
         TEXT = crate::implication_rules::object_text_sql(),
         RULE_MATCH = crate::implication_rules::RULE_MATCH,
+        NO_MOOD = no_mood_spoken(),
     ))
     .persistent(false)
     .bind(kb_id)
@@ -829,6 +816,14 @@ fn attribute_value(raw: &Value, datatype: Option<&str>, unit: Option<&str>) -> O
     Some(out)
 }
 
+/// 陈述 `s` 没有一个说着话的 `mood`（0070 决定 2）：重推丢掉了 mood，旧块上的 mood 就不再拦着
+fn no_mood_spoken() -> String {
+    format!(
+        "NOT EXISTS (SELECT 1 FROM statement_qualifiers q WHERE q.fact_id = s.id AND q.role = 'mood' AND {})",
+        crate::record_axis::role_word_speaks_now("q")
+    )
+}
+
 /// 类别词的归一（同 type_bindings）：这里要在 SQL 里对上实体的 specific_type
 fn kind_word_sql(col: &str) -> String {
     format!("lower(btrim(regexp_replace({col}, '\\s+', ' ', 'g')))")
@@ -844,6 +839,35 @@ pub async fn count(pool: &PgPool, kb_id: Uuid) -> AppResult<i64> {
     .bind(kb_id)
     .fetch_one(pool)
     .await?)
+}
+
+/// 步骤 1 的语句：仍然成立的来源只算一遍（CTE），再用反连接删掉其余的。
+/// 写成相关的 NOT EXISTS 时，规划器把绑定匹配估成一行，对每个来源重扫一遍：
+/// 69 万个来源的库上跑了十二小时，这样写两分钟。条件和删掉的行都没变。
+fn source_cleanup_sql() -> String {
+    format!(
+        "WITH holding AS MATERIALIZED (
+             SELECT src.fact_id, src.statement_id
+               FROM typed_fact_sources src
+               JOIN facts t ON t.id = src.fact_id AND t.kb_id = $1 AND t.invalidated_at IS NULL
+               JOIN facts s ON s.id = src.statement_id AND s.kb_id = $1
+                           AND s.invalidated_at IS NULL
+               JOIN entities se ON se.id = s.subject_id
+          LEFT JOIN entities oe ON oe.id = s.object_id
+               JOIN phrase_bindings b ON {MATCH}
+              WHERE b.status = 'bound'
+                AND b.relation_type_id = t.predicate_id
+                AND ((b.direction = 'forward' AND t.subject_id = s.subject_id)
+                  OR (b.direction = 'reverse' AND t.subject_id = s.object_id))
+                AND {NO_MOOD})
+         DELETE FROM typed_fact_sources src
+          USING facts t
+          WHERE src.fact_id = t.id AND t.kb_id = $1
+            AND NOT EXISTS (SELECT 1 FROM holding h
+                             WHERE h.fact_id = src.fact_id
+                               AND h.statement_id = src.statement_id)",
+        NO_MOOD = no_mood_spoken(),
+    )
 }
 
 #[cfg(test)]

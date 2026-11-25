@@ -469,13 +469,7 @@ pub async fn select(
     )
     .await?;
     if !body.folders.is_empty() {
-        let _ = utopia_store::sources::mark_queued(&state.pool, source_id).await;
-        utopia_store::jobs::enqueue(
-            &state.pool,
-            "sync_source",
-            json!({ "source_id": source_id }),
-        )
-        .await?;
+        utopia_store::sources::enqueue_sync_after_config_change(&state.pool, source_id).await?;
     }
     state.emit_source(kb_id);
     let _ = utopia_store::audit::record(

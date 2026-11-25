@@ -1,5 +1,5 @@
 //! 来源同步任务：url（网页抓取）/ rss（订阅，pubDate → doc_time）/
-//! github_issues / jira_issues（工单，更新时刻 → doc_time，正文里带状态变更史）/
+//! github_issues / gitlab_issues / jira_issues（工单，更新时刻 → doc_time，正文里带状态变更史）/
 //! s3（对象存储，LastModified → doc_time）。
 //! 全部走 sha256 去重（重复内容静默跳过），新文档进标准摄入管道（process_document）。
 //! folder 是纯容器（上传入内），api 是推送型——两者无拉取语义。
@@ -43,6 +43,13 @@ pub struct SyncStats {
     pub discovered: usize,
     pub queued_for_content: usize,
     pub content_terminal: usize,
+    /// 这一轮因为触顶而没走完，`since` 不能前进（#1212 / ADR 0072 的 Custom）
+    ///
+    /// 上一条成功那一轮的 `started_at` 是下一次的下界；本轮要是记 `ok`，下界就跨过了
+    /// 这批还没读到的条目，之后每一轮都够不着它们。这里标出来，`sync_source` 据此把
+    /// 游标留在原处，本轮的 created / updated 照旧记进审计。
+    pub incomplete: bool,
+    /// 这一轮读到的位置（GitHub / Jira 的更新时刻，ADR 0072）
     pub checkpoint: Option<DateTime<Utc>>,
 }
 
@@ -70,18 +77,40 @@ impl SyncStats {
     }
 }
 
-pub async fn sync_source(state: &AppState, source_id: Uuid) -> anyhow::Result<()> {
+/// 工单来源：进度是 `sources.sync_checkpoint` 里的时刻，与本轮的成功一起提交（0072）。
+/// 三处要问这一句，写成一处，加第四个工单来源时不会漏掉其中一处
+fn reads_by_timestamp(kind: SourceKind) -> bool {
+    matches!(
+        kind,
+        SourceKind::GithubIssues | SourceKind::GitlabIssues | SourceKind::JiraIssues
+    )
+}
+
+pub async fn sync_source(state: &AppState, source_id: Uuid) -> anyhow::Result<SyncStats> {
     let source = utopia_store::sources::get(&state.pool, source_id).await?;
     let kind = SourceKind::parse(&source.kind);
+    // #1212 / ADR 0072：下界取自**这个来源自己的游标**。
+    //
+    // - 工单来源（GitHub / Jira）：游标是消费到的更新时刻，且那一刻的整组都读完了。
+    // - custom：游标是**这一轮整条响应走完时**推进到的时刻（见下面 `round_started_at`）。
+    //
+    // **游标是源自己的一列，不是从跑次推出来的。** 早先的下界取自「上一条 `ok` 跑次的
+    // `started_at`」——那说的是「上一轮什么时候开始」，不是「上一轮读到哪」；一轮没读完
+    // 的时候，两者不是一回事，而下界一旦越过没读到的条目，之后每一轮都够不着它们。
+    //
+    // 游标存在源上，于是它能被**一次性清空**（ADR 0072 的 Recovery 一节）：老来源的
+    // 游标是 NULL，它们从头再来一遍，靠文档、版本与处理任务的去重，未变的内容不会
+    // 变成新版本。
     let since = match kind {
-        Some(SourceKind::Custom) => {
-            utopia_store::sources::last_successful_sync_start(&state.pool, source_id).await?
-        }
-        Some(SourceKind::GithubIssues | SourceKind::JiraIssues) => {
+        Some(kind) if kind == SourceKind::Custom || reads_by_timestamp(kind) => {
             utopia_store::sources::sync_checkpoint(&state.pool, source_id).await?
         }
         _ => None,
     };
+    // **这一轮开始的时刻。** custom 的游标推进到这里，而不是推进到「现在」：
+    // 运行期间到达的改动必须留在下一轮的窗口里（ADR 0072 的 Custom 一节
+    // 「preserving the existing protection for changes during the run」）。
+    let round_started_at = Utc::now();
     utopia_store::sources::mark_running(&state.pool, source_id).await?;
     let run_id = utopia_store::sources::start_run(&state.pool, source_id).await?;
     state.emit_source(source.kb_id);
@@ -94,6 +123,7 @@ pub async fn sync_source(state: &AppState, source_id: Uuid) -> anyhow::Result<()
         Some(SourceKind::GithubIssues) => sync_github_issues(state, &source, since).await,
         Some(SourceKind::GithubRepo) => sync_github_repo(state, &source).await,
         Some(SourceKind::GitlabRepo) => sync_gitlab_repo(state, &source).await,
+        Some(SourceKind::GitlabIssues) => sync_gitlab_issues(state, &source, since).await,
         Some(SourceKind::JiraIssues) => sync_jira_issues(state, &source, since).await,
         Some(SourceKind::S3 | SourceKind::AzureBlob | SourceKind::Gcs) => {
             sync_object_storage(state, &source).await
@@ -112,13 +142,63 @@ pub async fn sync_source(state: &AppState, source_id: Uuid) -> anyhow::Result<()
         None => Err(anyhow::anyhow!("unknown source kind `{}`", source.kind)),
     };
 
+    // 没走完这一轮：游标留在原处，但这一轮已经做成的部分照旧记进审计
+    // （ADR 0072 的「Keep the committed counts visible for incomplete runs」）。
+    // run 写 `failed` 而不是 `ok`：游标只在这一轮整条响应都走完时才前进，
+    // 所以这一轮没走完，下一轮就从原处接着读。
+    if let Ok(stats) = &outcome {
+        if stats.incomplete {
+            let err = format!(
+                "changed {MAX_NEW_PER_SYNC} items and stopped with more behind; \
+                 the checkpoint stays where it was, so the next sync resumes here"
+            );
+            utopia_store::sources::finish_run(
+                &state.pool,
+                run_id,
+                source_id,
+                Some(&err),
+                stats.created as i32,
+                stats.updated as i32,
+            )
+            .await?;
+            utopia_store::sources::finish_sync_quiet(
+                &state.pool,
+                source_id,
+                &err,
+                stats.total() as i32,
+            )
+            .await?;
+            state.emit_source(source.kb_id);
+            tracing::warn!(
+                %source_id,
+                kind = %source.kind,
+                created = stats.created,
+                updated = stats.updated,
+                discovered = stats.discovered,
+                "来源同步未读完，游标不前进"
+            );
+            return Ok(*stats);
+        }
+    }
     let outcome = match outcome {
-        Ok(stats)
-            if matches!(
-                kind,
-                Some(SourceKind::GithubIssues | SourceKind::JiraIssues)
-            ) =>
-        {
+        // custom：这一轮把**整条响应**都走完了，游标推进到**这一轮开始的时刻**。
+        // 不是推进到现在——运行期间到达的改动还在下一轮的窗口里，它们还没被走过。
+        // 触顶那一轮（`incomplete`）走不到这里：游标留在原处，下一轮从那儿接着读。
+        Ok(stats) if matches!(kind, Some(SourceKind::Custom)) => {
+            utopia_store::sources::finish_timestamp_sync(
+                &state.pool,
+                run_id,
+                source_id,
+                since,
+                Some(round_started_at),
+                stats.created as i32,
+                stats.updated as i32,
+            )
+            .await
+            .map(|()| stats)
+            .map_err(anyhow::Error::from)
+        }
+        Ok(stats) if kind.is_some_and(reads_by_timestamp) => {
             utopia_store::sources::finish_timestamp_sync(
                 &state.pool,
                 run_id,
@@ -136,10 +216,7 @@ pub async fn sync_source(state: &AppState, source_id: Uuid) -> anyhow::Result<()
     };
     match outcome {
         Ok(stats) => {
-            if !matches!(
-                kind,
-                Some(SourceKind::GithubIssues | SourceKind::JiraIssues)
-            ) {
+            if !kind.is_some_and(|k| k == SourceKind::Custom || reads_by_timestamp(k)) {
                 utopia_store::sources::finish_run(
                     &state.pool,
                     run_id,
@@ -168,7 +245,7 @@ pub async fn sync_source(state: &AppState, source_id: Uuid) -> anyhow::Result<()
                 content_terminal = stats.content_terminal,
                 "来源同步完成"
             );
-            Ok(())
+            Ok(stats)
         }
         Err(e) => {
             utopia_store::sources::finish_run(
@@ -203,11 +280,13 @@ pub enum IngestAction {
 
 /// 身份从哪来。`Path`：来源按位置认文档，同内容出现在新位置就是移动/改名，历史跟着走；
 /// `Declared`：调用方亲口给了 ID，身份就是它，绝不把另一个活着的 ID 的文档改成它；
-/// 只有已被墓碑标记的那篇可以接手（改名）。
+/// 只有已被墓碑标记的那篇可以接手（改名）。`StableId`：来源的 ID 不随移动或改名改变，
+/// 所以新 ID 不能凭文件名或内容接手另一篇，即使旧文件暂时不在同步范围里。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Identity {
     Path,
     Declared,
+    StableId,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -318,7 +397,7 @@ pub async fn ingest_item_with_outcome(
     // 主判定：逻辑身份；兜底：迁移前的历史文档（无 key）按文件名认领并补键
     let mut existing =
         utopia_store::documents::find_by_external_key(&state.pool, source_id, external_key).await?;
-    if existing.is_none() {
+    if existing.is_none() && identity != Identity::StableId {
         if let Some(legacy) =
             utopia_store::documents::find_legacy_by_filename(&state.pool, source_id, filename)
                 .await?
@@ -404,9 +483,14 @@ pub async fn ingest_item_with_outcome(
 
     // 同内容出现在新路径：识别为移动/改名，不重跑管道。声明的 ID 只接手已被墓碑标记的那篇
     // （先墓碑旧 ID、再推新 ID = 改名），活着的绝不改走
-    let moved = utopia_store::documents::find_by_source_sha(&state.pool, source_id, &sha256)
-        .await?
-        .filter(|doc| identity == Identity::Path || doc.missing_since.is_some());
+    let moved = match identity {
+        Identity::StableId => None,
+        Identity::Path | Identity::Declared => {
+            utopia_store::documents::find_by_source_sha(&state.pool, source_id, &sha256)
+                .await?
+                .filter(|doc| identity == Identity::Path || doc.missing_since.is_some())
+        }
+    };
     if let Some(doc) = moved {
         utopia_store::documents::update_location(&state.pool, doc.id, filename, external_key)
             .await?;
@@ -979,10 +1063,11 @@ async fn sync_github_repo_with_client(
     let mut stats = SyncStats::default();
     for (entry, key) in chosen.iter().zip(&keys) {
         // 没变的整条跳过：已落库的字节算出同一个 git SHA，就不必再花两次请求
+        // 回收站里的文档要走入库流程，即使上游内容没变也要恢复。
         let old =
             utopia_store::documents::find_by_external_key(&state.pool, source.id, key).await?;
         let unchanged = match old {
-            Some(d) if Some(d.size_bytes) == entry.size => state
+            Some(d) if d.deleted_at.is_none() && Some(d.size_bytes) == entry.size => state
                 .blob
                 .get(&d.sha256)
                 .await
@@ -1044,7 +1129,7 @@ async fn sync_gitlab_repo(state: &AppState, source: &Source) -> anyhow::Result<S
 }
 
 /// 带令牌发一个请求并判状态。GitLab 限流回 429，说清楚是限流，正确的动作是等或配令牌
-async fn gitlab_checked(
+pub(crate) async fn gitlab_checked(
     http: &reqwest::Client,
     method: reqwest::Method,
     url: reqwest::Url,
@@ -1065,6 +1150,115 @@ async fn gitlab_checked(
     Ok(resp)
 }
 
+/// `config.project`：gitlab_repo 与 gitlab_issues 认的是同一种项目路径
+fn gitlab_project(source: &Source) -> anyhow::Result<&str> {
+    let project = source.config["project"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "{} source is missing config.project (group/name)",
+                source.kind
+            )
+        })?;
+    // 子组可以有好几层，但每一段都得有字
+    if project.split('/').count() < 2 || project.split('/').any(str::is_empty) {
+        anyhow::bail!(
+            "config.project should look like group/name or group/subgroup/name, got {project:?}"
+        );
+    }
+    Ok(project)
+}
+
+/// GitLab 工单与合并请求（gitlab.com，#1327）：一张一篇文档，正文里带状态、标签、里程碑的
+/// 变更史。列表按更新时刻增量筛选，备注与事件逐工单读到末页，与 [`sync_github_issues`]
+/// 同一个形状。详见 [`crate::gitlab_issues`]。
+async fn sync_gitlab_issues(
+    state: &AppState,
+    source: &Source,
+    since: Option<DateTime<Utc>>,
+) -> anyhow::Result<SyncStats> {
+    let http = crate::http_fetch::client_for(
+        &reqwest::Url::parse("https://gitlab.com/")?,
+        crate::http_fetch::Reach::Content,
+        crate::http_fetch::Limits::default(),
+    )
+    .await?;
+    sync_gitlab_issues_with_client(state, source, since, &http, "https://gitlab.com/api/v4").await
+}
+
+// HTTP 接缝让回归测试走同一条同步与落库路径，生产固定访问 gitlab.com 的 API。
+async fn sync_gitlab_issues_with_client(
+    state: &AppState,
+    source: &Source,
+    since: Option<DateTime<Utc>>,
+    http: &reqwest::Client,
+    api_base: &str,
+) -> anyhow::Result<SyncStats> {
+    use crate::gitlab_issues as gl;
+    use chrono::SubsecRound as _;
+    let project = gitlab_project(source)?;
+    // 备注与事件没有令牌就是 401，公开项目也一样。先说清楚，不去发那个注定失败的请求，
+    // 也不退而求其次只收没有历史的正文：历史是这个来源存在的理由
+    let auth = source.config["auth_header"]
+        .as_str()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "gitlab_issues source needs config.auth_header: GitLab answers 401 for a \
+                 ticket's notes and events without a token, even on a public project"
+            )
+        })?;
+    // 合并请求默认不收，与 GitHub 的 include_pull_requests 同一个理由
+    let kinds: &[gl::Kind] = if source.config["include_merge_requests"]
+        .as_bool()
+        .unwrap_or(false)
+    {
+        &[gl::Kind::Issue, gl::Kind::MergeRequest]
+    } else {
+        &[gl::Kind::Issue]
+    };
+    let mut base = reqwest::Url::parse(api_base)?;
+    // 项目路径是一段：其中的 `/` 得成 `%2F`
+    base.path_segments_mut()
+        .map_err(|_| anyhow::anyhow!("API base cannot take a path"))?
+        .pop_if_empty()
+        .extend(["projects", project]);
+
+    let window = gl::fetch_window(http, &base, kinds, since, MAX_NEW_PER_SYNC, Some(auth)).await?;
+    let mut stats = SyncStats {
+        checkpoint: window.checkpoint,
+        ..SyncStats::default()
+    };
+    for (kind, item) in &window.tickets {
+        let details = gl::fetch_details(http, &base, *kind, item.iid, Some(auth)).await?;
+        let body = gl::render(*kind, item, &details);
+        // 工单与合并请求的 iid 各自从 1 数起，身份和文件名都得分得开
+        let key = format!("gitlab:{project}{}{}", kind.sigil(), item.iid);
+        let prefix = match kind {
+            gl::Kind::Issue => "",
+            gl::Kind::MergeRequest => "mr-",
+        };
+        let filename = format!("{prefix}{}-{}.md", item.iid, slugify(&item.title));
+        let action = ingest_item(
+            state,
+            source.kb_id,
+            source.id,
+            &key,
+            &filename,
+            "text/markdown",
+            body.as_bytes(),
+            // GitLab 的时刻带毫秒，落库前截到秒（0013 决定 6、7）
+            Some(item.updated_at.trunc_subsecs(0)),
+        )
+        .await?;
+        stats.absorb(action);
+    }
+    Ok(stats)
+}
+
 // HTTP 接缝让回归测试走同一条同步与落库路径，生产固定访问 gitlab.com 的 API。
 async fn sync_gitlab_repo_with_client(
     state: &AppState,
@@ -1073,19 +1267,7 @@ async fn sync_gitlab_repo_with_client(
     api_base: &str,
 ) -> anyhow::Result<SyncStats> {
     use crate::{github_repo as gr, gitlab_repo as gl};
-    let project = source.config["project"]
-        .as_str()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| {
-            anyhow::anyhow!("gitlab_repo source is missing config.project (group/name)")
-        })?;
-    // 子组可以有好几层，但每一段都得有字
-    if project.split('/').count() < 2 || project.split('/').any(str::is_empty) {
-        anyhow::bail!(
-            "config.project should look like group/name or group/subgroup/name, got {project:?}"
-        );
-    }
+    let project = gitlab_project(source)?;
     let auth = source.config["auth_header"]
         .as_str()
         .map(str::trim)
@@ -1133,15 +1315,16 @@ async fn sync_gitlab_repo_with_client(
     let mut stats = SyncStats::default();
     for (entry, key) in chosen.iter().zip(&keys) {
         // 没变的整条跳过：树里没有大小，但已落库的字节算出同一个 git SHA 就够了
+        // 回收站里的文档要走入库流程，即使上游内容没变也要恢复。
         let old =
             utopia_store::documents::find_by_external_key(&state.pool, source.id, key).await?;
         let unchanged = match old {
-            Some(d) => state
+            Some(d) if d.deleted_at.is_none() => state
                 .blob
                 .get(&d.sha256)
                 .await
                 .is_ok_and(|b| gr::git_blob_sha(&b) == entry.id),
-            None => false,
+            _ => false,
         };
         if unchanged {
             continue;
@@ -1345,9 +1528,30 @@ async fn sync_custom(
         .as_array()
         .ok_or_else(|| anyhow::anyhow!("Response is missing the items[] array"))?;
 
-    let mut stats = SyncStats::default();
+    // `discovered` 记响应里的条数，不是跑进来的条数——否则日志与警告会读成 `(0 > 200)`
+    let mut stats = SyncStats {
+        discovered: items.len(),
+        ..Default::default()
+    };
     let mut seen_keys: Vec<String> = Vec::new();
-    for item in items.iter().take(MAX_NEW_PER_SYNC) {
+    // **走完整个响应，只把有变的条目记在预算上**（ADR 0072 的 Custom 一节）。
+    // `take(MAX_NEW_PER_SYNC)` 是 ADR 明写在 Rejected 里的那条：它取走的永远是同样的
+    // 前 200 条，重试一万次也够不到第 201 条。这里每条都先问 `ingest_item`，只有
+    // `Created` / `Updated` 才计入 `changed`；`Unchanged` / `Moved` / `Duplicate`
+    // 让预算不被消耗，于是重试能把没变的前缀让过去、走到剩下的那几条。
+    let mut changed = 0usize;
+    for item in items.iter() {
+        // 预算满了就不再往下走——剩下的留在下一轮，且本轮 `incomplete` 让游标留在原处
+        if changed >= MAX_NEW_PER_SYNC {
+            stats.incomplete = true;
+            tracing::warn!(
+                source_id = %source.id,
+                imported = changed,
+                remaining = items.len().saturating_sub(seen_keys.len()),
+                "custom 本轮用满 {MAX_NEW_PER_SYNC} 条预算，还有条目没读到；游标不前进，下一轮接着走"
+            );
+            break;
+        }
         let Some(id) = item["id"].as_str().map(str::trim).filter(|s| !s.is_empty()) else {
             tracing::warn!(source_id = %source.id, "custom item 缺少 id，跳过");
             continue;
@@ -1379,6 +1583,10 @@ async fn sync_custom(
             doc_time,
         )
         .await?;
+        match action {
+            IngestAction::Created | IngestAction::Updated => changed += 1,
+            _ => {}
+        }
         stats.absorb(action);
         seen_keys.push(key);
     }
@@ -1620,8 +1828,18 @@ async fn sync_google_drive(state: &AppState, source: &Source) -> anyhow::Result<
     }
 
     let drive = google_drive::Drive::connect(&cfg, refresh).await?;
-    let listing = drive.walk(&folders).await?;
+    sync_google_drive_with_client(state, source, &drive, &folders).await
+}
 
+pub(crate) async fn sync_google_drive_with_client(
+    state: &AppState,
+    source: &Source,
+    drive: &crate::google_drive::Drive,
+    folders: &[String],
+) -> anyhow::Result<SyncStats> {
+    use crate::google_drive;
+
+    let listing = drive.walk(folders).await?;
     let known = google_drive::markers(&state.pool, source.id).await?;
     let mut stats = SyncStats::default();
     let mut seen_keys = Vec::with_capacity(listing.files.len());
@@ -1656,11 +1874,12 @@ async fn sync_google_drive(state: &AppState, source: &Source) -> anyhow::Result<
                 continue;
             }
         };
-        let action = ingest_item(
+        let outcome = ingest_item_with_outcome(
             state,
             source.kb_id,
             source.id,
             &key,
+            Identity::StableId,
             &content.filename,
             content.mime,
             &content.bytes,
@@ -1668,7 +1887,7 @@ async fn sync_google_drive(state: &AppState, source: &Source) -> anyhow::Result<
         )
         .await?;
         google_drive::remember(&state.pool, source.id, &f.id, &marker).await?;
-        stats.absorb(action);
+        stats.absorb(outcome.action);
     }
 
     if listing.truncated || !listing.unreachable.is_empty() {
@@ -1803,6 +2022,9 @@ mod github_sync_tests;
 #[cfg(test)]
 #[path = "github_repo_sync_tests.rs"]
 mod github_repo_sync_tests;
+#[cfg(test)]
+#[path = "gitlab_issues_sync_tests.rs"]
+mod gitlab_issues_sync_tests;
 #[cfg(test)]
 #[path = "gitlab_repo_sync_tests.rs"]
 mod gitlab_repo_sync_tests;

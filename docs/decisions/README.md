@@ -75,7 +75,7 @@ By domain; the domains are the files of [../design/](../design/README.md). **Sta
 | 0010 | [An unnamed relation stays empty](0010-no-relation-is-no-relation.md) | Implemented | partly (by 0044) |
 | 0037 | [A relation carries its own attributes](0037-a-relation-carries-its-own-attributes.md) | In progress | partly (by 0044) |
 | 0048 | [Provenance references stay inside the knowledge base](0048-provenance-references-stay-inside-the-knowledge-base.md) | Implemented |  |
-| 0070 | [A role word speaks while its chunk is live](0070-a-role-word-speaks-while-its-chunk-is-live.md) | Proposed |  |
+| 0070 | [A role word speaks while its chunk is live](0070-a-role-word-speaks-while-its-chunk-is-live.md) | In progress |  |
 
 ### [governance](../design/governance.md)
 
@@ -115,7 +115,7 @@ By domain; the domains are the files of [../design/](../design/README.md). **Sta
 | 0052 | [Document content is a read contract over the retained ledger](0052-document-content-is-a-read-contract.md) | Proposed |  |
 | 0054 | [A source may push statements in the open contract](0054-a-source-may-push-statements-in-the-open-contract.md) | Implemented |  |
 | 0065 | [The OCR reader chooses its provider](0065-readers-choose-their-provider.md) | Implemented |  |
-| 0072 | [A source checkpoint ends at a timestamp boundary](0072-a-source-checkpoint-ends-at-a-timestamp-boundary.md) | In progress |  |
+| 0072 | [A source checkpoint ends at a timestamp boundary](0072-a-source-checkpoint-ends-at-a-timestamp-boundary.md) | Implemented |  |
 | 0074 | [A Google Drive source is connected by a person](0074-a-google-drive-source-is-connected-by-a-person.md) | Implemented |  |
 | 0075 | [A ticket source says in the API where its reading stopped](0075-a-ticket-source-says-where-its-reading-stopped.md) | Implemented |  |
 
@@ -154,6 +154,7 @@ By domain; the domains are the files of [../design/](../design/README.md). **Sta
 | 0046 | [The app surface is MCP](0046-the-app-surface-is-mcp.md) | Accepted |  |
 | 0063 | [Stopping a chat ends the generation](0063-stopping-a-chat-ends-the-generation.md) | Implemented |  |
 | 0064 | [Extraction reads time as it goes](0064-extraction-reads-time-as-it-goes.md) | In progress |  |
+| 0067 | [Each task chooses its model](0067-each-task-chooses-its-model.md) | Accepted |  |
 
 ### process
 

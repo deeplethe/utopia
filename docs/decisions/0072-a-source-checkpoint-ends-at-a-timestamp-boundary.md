@@ -1,6 +1,6 @@
 # A source checkpoint ends at a timestamp boundary
 
-In progress 2026-10-25 (#1359, migration 0119); open: custom batch progression and recovery (#1397).
+Implemented 2026-11-10 (#1359, #1397, migration 0119).
 
 ## Context
 
@@ -120,9 +120,22 @@ protection for changes during the run. Keep the committed counts visible for
 incomplete runs. No source-update field, pagination token or saved response is
 added to the custom protocol; `doc_time` remains document time.
 
+> **Revision 2026-11-10.** The custom checkpoint is a value on the source
+> (`sources.sync_checkpoint`), not something derived from the audit history. It has
+> to be a value to be *cleared*, and this section's Recovery requirement asks for
+> exactly that: the old bound — the last `ok` run's start — is the one value that
+> cannot be cleared, since it cannot be rewritten without rewriting audit rows
+> the same paragraph says to preserve, and it proves nothing about the window (a
+> round that hit the budget was recorded `ok`, which is the bug). NULL means "no
+> bound", which is where every existing custom source starts after the upgrade:
+> the first round re-reads the whole window, and deduplication keeps unchanged
+> content from becoming a new version or a new job. A capped round is recorded as
+> failed but raises no sync-failed alert — it is not a broken connection, and the
+> next round resumes from the same place.
+
 The custom fix is being reviewed in
-[PR #1397](https://github.com/deeplethe/utopia/pull/1397). It does not resolve
-the GitHub and Jira parts of #1212.
+[PR #1397](https://github.com/deeplethe/utopia/pull/1397); the GitHub and Jira
+halves are [#1359](https://github.com/deeplethe/utopia/pull/1359).
 
 ## Recovery and tradeoffs
 
@@ -134,8 +147,11 @@ Resume incremental reads afterward.
 
 This design trades a hard per-run bound for progress through a timestamp group.
 It does not make a provider's paginated result an atomic snapshot. Concurrent
-updates and failures still need coverage before the implementation can claim
-that checkpoints never cross unread data.
+updates and failures are covered by regressions rather than by the design: a
+ticket that moves while a round is paging rejects that round's window and a
+stable retry recovers every issue (#1359), a custom item changed while a round
+is running is still read by the next one (#1397), and a failed round leaves the
+checkpoint where it was.
 
 ## Rejected approaches
 
