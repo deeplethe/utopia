@@ -420,3 +420,121 @@ async fn a_rebuild_after_the_epoch_check_does_not_fail_the_superseded_job() -> a
 async fn an_apply_error_without_a_replacement_epoch_is_still_returned() -> anyhow::Result<()> {
     interrupt_the_second_chunk(Interruption::PurgeDuringApply).await
 }
+
+/// 重抽一篇没改过的文档（#1513）。两块的向量隔得远（余弦 0.4，落在画像灰区）：第一次
+/// 抽，`Acme` 在第一块被认下，画像就是第一块；重抽时模型这一回在第一块没提它、到第二块
+/// 才列出它——从前清单从空的起步，第二块的 `Acme` 重新走跨文档消解，灰区宁分勿合，
+/// 于是多一个 `Acme` 和一条审核对。现在上一次认下的实体一开始就在清单上，第二块认回它
+async fn extract_twice(f: &Fx) -> anyhow::Result<()> {
+    sqlx::query(
+        "UPDATE chunks SET embedding = CASE seq WHEN 0 THEN '[1,0,0]'::vector
+                                                 ELSE '[0.4,0.9165,0]'::vector END
+          WHERE document_id = $1",
+    )
+    .bind(f.doc)
+    .execute(&f.pool)
+    .await?;
+    crate::extraction::extract_document(&f.state, f.doc, Proposer::default()).await?;
+    utopia_store::documents::queue_extraction_one(&f.pool, f.doc).await?;
+    crate::extraction::extract_document(&f.state, f.doc, Proposer::default()).await?;
+    Ok(())
+}
+
+/// 第一次：第一块列出 `Acme` 和一个被描述的东西；重抽：第一块什么也没说，第二块才列 `Acme`
+fn replies_then_a_rerun_that_names_acme_later() -> Vec<String> {
+    vec![
+        json!({
+            "e": [["Acme", "organization", 1], ["the harbour office", "office", 0]],
+            "s": [["Acme is based in London.", "Acme", "based in", "the harbour office", null, null, null, null]],
+            "n": []
+        })
+        .to_string(),
+        json!({
+            "e": [],
+            "s": [["Acme runs the harbour facility.", "Acme", "runs", null, "harbour", null, null, null]],
+            "n": []
+        })
+        .to_string(),
+        json!({"e": [], "s": [], "n": []}).to_string(),
+        json!({
+            "e": [["Acme", "organization", 1]],
+            "s": [["Acme runs the harbour facility.", "Acme", "runs", null, "harbour", null, null, null]],
+            "n": []
+        })
+        .to_string(),
+    ]
+}
+
+#[tokio::test]
+async fn reextracting_an_unchanged_document_reuses_the_entities_it_named() -> anyhow::Result<()> {
+    let Some(f) = Fx::new(replies_then_a_rerun_that_names_acme_later(), true, None).await? else {
+        return Ok(());
+    };
+    let run = async {
+        extract_twice(&f).await?;
+        let acme: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT id FROM entities
+              WHERE kb_id=$1 AND canonical_name='Acme' AND merged_into IS NULL",
+        )
+        .bind(f.kb)
+        .fetch_all(&f.pool)
+        .await?;
+        anyhow::ensure!(acme.len() == 1, "re-extract made a second Acme: {acme:?}");
+        let reviews: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM resolution_reviews WHERE kb_id=$1")
+                .bind(f.kb)
+                .fetch_one(&f.pool)
+                .await?;
+        anyhow::ensure!(
+            reviews == 0,
+            "re-extract queued {reviews} duplicate reviews"
+        );
+        let requests = f.model.requests.lock().unwrap();
+        anyhow::ensure!(requests.len() == 4, "two runs of two chunks");
+        let rerun_first = requests[2]["messages"][1]["content"].as_str().unwrap_or("");
+        anyhow::ensure!(
+            rerun_first.contains("- Acme (organization)"),
+            "the rerun's first chunk already knows Acme: {rerun_first}"
+        );
+        anyhow::ensure!(
+            !rerun_first.contains("harbour office"),
+            "a described thing is not carried over: {rerun_first}"
+        );
+        Ok(())
+    }
+    .await;
+    f.cleanup().await?;
+    run
+}
+
+/// 起步清单跟着合并走：上一次认下的实体后来被并进别人，重抽认的是存活者
+#[tokio::test]
+async fn the_rerun_seed_follows_a_merge_to_the_survivor() -> anyhow::Result<()> {
+    let Some(f) = Fx::new(replies(), true, None).await? else {
+        return Ok(());
+    };
+    let run = async {
+        crate::extraction::extract_document(&f.state, f.doc, Proposer::default()).await?;
+        let acme: Uuid =
+            sqlx::query_scalar("SELECT id FROM entities WHERE kb_id=$1 AND canonical_name='Acme'")
+                .bind(f.kb)
+                .fetch_one(&f.pool)
+                .await?;
+        let holdings = Uuid::now_v7();
+        sqlx::query("INSERT INTO entities(id,kb_id,canonical_name) VALUES ($1,$2,'Acme Holdings')")
+            .bind(holdings)
+            .bind(f.kb)
+            .execute(&f.pool)
+            .await?;
+        utopia_store::resolution::merge_entities(&f.pool, f.kb, acme, holdings, None, "test")
+            .await?;
+        let seed =
+            utopia_store::resolution::named_entities_of_document(&f.pool, f.kb, f.doc).await?;
+        let ids: Vec<Uuid> = seed.iter().map(|(id, _, _)| *id).collect();
+        anyhow::ensure!(ids == vec![holdings], "seed is the survivor only: {seed:?}");
+        Ok(())
+    }
+    .await;
+    f.cleanup().await?;
+    run
+}
