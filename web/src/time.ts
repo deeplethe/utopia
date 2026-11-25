@@ -18,7 +18,9 @@ export function fmtTime(
 ): string | null {
   if (!iso) return null;
   const d = new Date(iso);
-  const y = d.getUTCFullYear();
+  const year = d.getUTCFullYear();
+  // 编辑框会再交给 parseDateInput：公元 42 年也要保留四位，才能原样保存。
+  const y = year >= 0 ? String(year).padStart(4, "0") : String(year);
   const m = String(d.getUTCMonth() + 1).padStart(2, "0");
   const day = String(d.getUTCDate()).padStart(2, "0");
   if (precision === "year") return `${y}`;
