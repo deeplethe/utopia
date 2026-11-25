@@ -60,14 +60,26 @@ function judgeEndpoint(kb) {
   return { base, key, model };
 }
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// 限流（429）和端点出错（5xx）退避后重试，与 typed.mjs 同一个口径（#1518）：
+// 一次调用失败就丢一整批 25 条，而丢掉的不是随机样本——是同一块原文上的那些
 async function chat(ep, messages) {
-  const r = await fetch(`${ep.base.replace(/\/$/, "")}/chat/completions`, {
-    method: "POST",
-    headers: { "content-type": "application/json", ...(ep.key ? { authorization: `Bearer ${ep.key}` } : {}) },
-    body: JSON.stringify({ model: ep.model, messages, temperature: 0, max_tokens: 6000, response_format: { type: "json_object" } }),
-  });
-  const t = await r.text();
-  if (!r.ok) throw new Error(`${r.status} ${t.slice(0, 200)}`);
+  let r, t;
+  for (let attempt = 1; ; attempt++) {
+    r = await fetch(`${ep.base.replace(/\/$/, "")}/chat/completions`, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...(ep.key ? { authorization: `Bearer ${ep.key}` } : {}) },
+      body: JSON.stringify({ model: ep.model, messages, temperature: 0, max_tokens: 6000, response_format: { type: "json_object" } }),
+    });
+    t = await r.text();
+    if (r.ok) break;
+    if ((r.status === 429 || r.status >= 500) && attempt < 6) {
+      await sleep(Number(r.headers.get("retry-after")) * 1000 || 15000 * attempt);
+      continue;
+    }
+    throw new Error(`${r.status} ${t.slice(0, 200)}`);
+  }
   const content = JSON.parse(t).choices?.[0]?.message?.content || "";
   const s = content.indexOf("{"), e = content.lastIndexOf("}");
   return JSON.parse(content.slice(s, e + 1));
@@ -134,7 +146,7 @@ async function kindPass(kb, judged) {
     try {
       res = await chat(ep, [{ role: "system", content: KIND }, { role: "user", content: body }]);
     } catch (e) {
-      console.error(`${stamp()} kind 调用失败：${e.message}`);
+      console.error(`${stamp()} kind 调用失败：${e.message}（这 ${list.length} 条 misworded 不分类）`);
       continue;
     }
     for (const r of res.results || []) {
@@ -144,6 +156,8 @@ async function kindPass(kb, judged) {
   }
   return judged;
 }
+
+const unjudged = (it) => ({ ...it, statement: render(it), evidence: "", verdict: "unjudged", alone: null });
 
 async function judgeAll(kb, items) {
   const ep = judgeEndpoint(kb);
@@ -159,12 +173,17 @@ async function judgeAll(kb, items) {
       try {
         res = await chat(ep, [{ role: "system", content: JUDGE }, { role: "user", content: body }]);
       } catch (e) {
-        console.error(`${stamp()} 裁判调用失败：${e.message}`);
+        // 判不了也要记下来：从前这里 `continue`，这一批就从 out 里消失，
+        // 一条没判成的跑次照样报「过」（#1518）
+        console.error(`${stamp()} 裁判调用失败：${e.message}（这 ${part.length} 条记为未判）`);
+        for (const it of part) out.push(unjudged(it));
         continue;
       }
+      const seen = new Set();
       for (const r of res.results || []) {
         const it = part[r.i];
-        if (!it) continue;
+        if (!it || seen.has(r.i)) continue;
+        seen.add(r.i);
         out.push({
           ...it,
           statement: render(it),
@@ -174,6 +193,8 @@ async function judgeAll(kb, items) {
           alone: typeof r.alone === "boolean" ? r.alone : null,
         });
       }
+      // 模型漏掉的条目同样记为未判，不悄悄少掉
+      part.forEach((it, j) => seen.has(j) || out.push(unjudged(it)));
       console.error(`${stamp()} 判了 ${out.length}/${items.length}`);
     }
   }
@@ -181,15 +202,24 @@ async function judgeAll(kb, items) {
 }
 
 function report(judged, total) {
-  const n = judged.length;
   const count = (v) => judged.filter((j) => j.verdict === v).length;
+  // 比例只算判成了的：未判的不是 stated，算进分母会把 not_stated 的比例摊薄（#1518）
+  const n = judged.length - count("unjudged");
   const pct = (a) => `${a}/${n}（${n ? ((100 * a) / n).toFixed(1) : 0}%）`;
   const kind = (k) => judged.filter((j) => j.verdict === "misworded" && j.kind === k).length;
-  console.log(`\n开放陈述 ${total} 条，判了 ${n} 条：stated ${pct(count("stated"))}，misworded ${pct(count("misworded"))}（extrapolated ${kind("extrapolated")}，contradicted ${kind("contradicted")}），not_stated ${pct(count("not_stated"))}，未判 ${count("unjudged")}`);
-  console.log(`0044 的门槛：not_stated ≤ 2%${count("not_stated") / (n || 1) <= 0.02 ? "，过" : "，没过"}`);
+  console.log(`\n开放陈述 ${total} 条，抽 ${judged.length} 条，判成 ${n} 条：stated ${pct(count("stated"))}，misworded ${pct(count("misworded"))}（extrapolated ${kind("extrapolated")}，contradicted ${kind("contradicted")}），not_stated ${pct(count("not_stated"))}，未判 ${count("unjudged")}`);
+  if (n === 0) {
+    console.log("0044 的门槛：一条也没判成，判不了过没过");
+    process.exitCode = 1;
+  } else if (count("not_stated") / n <= 0.02) {
+    console.log("0044 的门槛：not_stated ≤ 2%，过");
+  } else {
+    console.log("0044 的门槛：not_stated ≤ 2%，没过");
+    process.exitCode = 1;
+  }
   const fragments = judged.filter((j) => j.alone === false);
   console.log(`单看读不通（alone = false）：${pct(fragments.length)}`);
-  const bad = judged.filter((j) => j.verdict !== "stated").slice(0, 20);
+  const bad = judged.filter((j) => !["stated", "unjudged"].includes(j.verdict)).slice(0, 20);
   if (bad.length) {
     console.log("\n判不对的（样本）：");
     for (const j of bad) console.log(`  [${j.verdict}] ${j.statement}\n      证据：${j.evidence.slice(0, 160)}`);
@@ -213,6 +243,10 @@ if (args.calibrate) {
     for (const j of judged) {
       const human = list.find((l) => l.fact === j.fact)?.verdict;
       if (!human) continue;
+      if (j.verdict === "unjudged") {
+        console.log(`  未判：${j.statement}`);
+        continue;
+      }
       n++;
       if ((human === "stated") === (j.verdict === "stated")) agree++;
       else console.log(`  不一致：人 ${human} / 裁判 ${j.verdict} — ${j.statement}`);

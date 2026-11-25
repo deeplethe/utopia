@@ -36,23 +36,39 @@ import { kbOptions } from "./kbGroups";
 
 const EXPIRY_CHOICES = [30, 90, 365, 0] as const;
 
-/** Claude Code / Claude Desktop 一族的 Streamable HTTP 写法。每个库一个端点（0014：
- *  令牌限定到库，端点也按库分），所以片段里要把库选出来 */
-function mcpSnippet(kbId: string, kbName: string, token: string): string {
+function mcpName(kbName: string): string {
   const slug = kbName
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "") || "kb";
+  return `utopia-${slug}`;
+}
+
+function mcpUrl(kbId: string): string {
+  return `${window.location.origin}/api/v1/kbs/${kbId}/mcp`;
+}
+
+/** Claude Code / Claude Desktop 一族的 Streamable HTTP 写法。每个库一个端点（0014：
+ *  令牌限定到库，端点也按库分），所以片段里要把库选出来 */
+function mcpSnippet(kbId: string, kbName: string, token: string): string {
   const cfg = {
     mcpServers: {
-      [`utopia-${slug}`]: {
+      [mcpName(kbName)]: {
         type: "http",
-        url: `${window.location.origin}/api/v1/kbs/${kbId}/mcp`,
+        url: mcpUrl(kbId),
         headers: { Authorization: `Bearer ${token}` },
       },
     },
   };
   return JSON.stringify(cfg, null, 2);
+}
+
+/** Codex 从环境变量读令牌，不把它写进 config.toml（#1494） */
+function codexSnippet(kbId: string, kbName: string, token: string): string {
+  return [
+    `export UTOPIA_TOKEN=${token}`,
+    `codex mcp add ${mcpName(kbName)} --url ${mcpUrl(kbId)} --bearer-token-env-var UTOPIA_TOKEN`,
+  ].join("\n");
 }
 
 function CopyButton({ text, small }: { text: string; small?: boolean }) {
@@ -97,6 +113,7 @@ export function IssuedBody({
     ?? candidates[0];
   const kbId = kb?.id ?? "";
   const snippet = kb ? mcpSnippet(kb.id, kb.name, token) : "";
+  const codex = kb ? codexSnippet(kb.id, kb.name, token) : "";
   return (
     <div>
       <div className="flex items-center gap-2">
@@ -128,6 +145,15 @@ export function IssuedBody({
         </pre>
         <div className="absolute top-1.5 right-1.5">
           <CopyButton text={snippet} small />
+        </div>
+      </div>
+      <p className="mt-3 text-small text-ink-2">{S.account.mcpCodexHint}</p>
+      <div className="mt-2 relative">
+        <pre className="rounded-panel bg-well px-3 py-2 font-mono text-small text-ink-2 overflow-x-auto u-scroll">
+          {codex}
+        </pre>
+        <div className="absolute top-1.5 right-1.5">
+          <CopyButton text={codex} small />
         </div>
       </div>
     </div>

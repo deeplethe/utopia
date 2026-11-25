@@ -258,6 +258,7 @@ export const en = {
     mcpTitle: "MCP client configuration",
     mcpHint:
       "For Claude Code, Claude Desktop and other Streamable HTTP clients. This snippet connects to one knowledge base, even if the token allows all bases. Check the selected base before copying. Other clients spell the keys differently.",
+    mcpCodexHint: "Codex reads the token from an environment variable:",
     mcpBase: "Base",
     yourTokens: "Your tokens",
     noTokens: "No tokens yet.",
