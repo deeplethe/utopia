@@ -295,6 +295,7 @@ async fn apply_open_extraction(
     human_reviews_found: &mut bool,
     doc_entities: &mut Vec<(Uuid, String, String)>,
     known_by_name: &mut HashMap<String, Uuid>,
+    seeded: &HashMap<String, Uuid>,
     described: &mut HashMap<String, Uuid>,
     handled_by_name: &mut HashMap<String, Vec<Uuid>>,
     ambiguous_bare_cache: &mut HashMap<String, Uuid>,
@@ -323,22 +324,34 @@ async fn apply_open_extraction(
             let bound = bound_types
                 .get(&utopia_store::type_bindings::normalize(kind))
                 .copied();
-            let id = resolve_handle(
-                pool,
-                kb_id,
-                bound,
-                name,
-                ctx,
-                name_vecs.get(&key).map(Vec::as_slice),
-                evidence.get(&key).map(String::as_str),
-                identity,
-                &mut response_claims,
-                handled_by_name,
-                ambiguous_bare_cache,
-                needs_adjudication,
-                human_reviews_found,
-            )
-            .await?;
+            // 上一次抽这篇时认下的、名字只对着一个实体的：认回它（#1513，见 `run_open`）
+            let id = match seeded.get(&key) {
+                Some(&id) => {
+                    let claims = handled_by_name.entry(key.clone()).or_default();
+                    if !claims.contains(&id) {
+                        claims.push(id);
+                    }
+                    id
+                }
+                None => {
+                    resolve_handle(
+                        pool,
+                        kb_id,
+                        bound,
+                        name,
+                        ctx,
+                        name_vecs.get(&key).map(Vec::as_slice),
+                        evidence.get(&key).map(String::as_str),
+                        identity,
+                        &mut response_claims,
+                        handled_by_name,
+                        ambiguous_bare_cache,
+                        needs_adjudication,
+                        human_reviews_found,
+                    )
+                    .await?
+                }
+            };
             // 模型说它是什么（「a British film」里的 film）：存成它自己的说法，
             // 类的绑定等对齐来做
             if !kind.is_empty() {
@@ -1033,8 +1046,27 @@ pub(crate) async fn run_open(
 
     // 本文档已认下的**有名字的**实体，按首次出现排序，送进后续分块的提示词；
     // 陈述按名字指它们。被描述的东西不进清单：「一家医院」在下一块里指的未必是同一家
-    let mut doc_entities: Vec<(Uuid, String, String)> = Vec::new();
+    //
+    // 重抽不从空清单起步（#1513）：上一次从这篇文档认下的有名字的实体先放进来。否则
+    // 每个提及重新走跨文档消解，灰区、同名并列宁分勿合，一篇没改过的文档重抽一次就多出
+    // 一批同名同类的实体和审核对。`seeded` 是其中名字只对应一个实体的那些：模型在 `e`
+    // 里再列一遍这个名字时直接认回它，不再消解；同名对着两个实体（人分开过的）照常消解
+    let mut doc_entities =
+        utopia_store::resolution::named_entities_of_document(pool, kb_id, document_id).await?;
     let mut known_by_name: HashMap<String, Uuid> = HashMap::new();
+    let mut seeded: HashMap<String, Option<Uuid>> = HashMap::new();
+    for (id, _, name) in &doc_entities {
+        let key = name_key(name);
+        known_by_name.entry(key.clone()).or_insert(*id);
+        seeded
+            .entry(key)
+            .and_modify(|only| *only = None)
+            .or_insert(Some(*id));
+    }
+    let seeded: HashMap<String, Uuid> = seeded
+        .into_iter()
+        .filter_map(|(key, only)| only.map(|id| (key, id)))
+        .collect();
     // 类别词已经绑到类的（0044 对齐第一片）：提及带着类去消解，同名不同类才分得开
     let bound_types = utopia_store::type_bindings::bound_map(pool, kb_id).await?;
     // 被描述的东西按描述文字在本文档内复用：同一块里「the northern wing」说了三次是一个东西
@@ -1161,6 +1193,7 @@ pub(crate) async fn run_open(
             &mut human_reviews_found,
             &mut doc_entities,
             &mut known_by_name,
+            &seeded,
             &mut described,
             &mut handled_by_name,
             &mut ambiguous_bare_cache,

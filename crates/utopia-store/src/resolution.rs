@@ -1526,6 +1526,56 @@ pub async fn existing_by_name(
     Ok(id)
 }
 
+/// 这篇文档上一次抽取认下的**有名字的**实体：`(id, 类别词, 本名)`，按在文档里首次出现的
+/// 分块排序（#1513）。
+///
+/// 重抽从这里起步，而不是从空清单起步：从前每次重抽，每个提及都重新走一遍跨文档消解，
+/// 而消解在画像灰区、同名并列时宁分勿合——一篇没改过的文档重抽一次，就多出一批同名
+/// 同类的实体和一批审核对。
+///
+/// 认的是还活着的事实的证据落在这篇文档的分块上（含旧版本被取代的分块）的主语和宾语，
+/// 名字事实也算；并掉的跟着 `merged_into` 走到存活者。被描述的东西不进来：「一家医院」
+/// 在这篇里指的是哪一家，下一次抽要重新看上下文
+pub async fn named_entities_of_document(
+    pool: &PgPool,
+    kb_id: Uuid,
+    document_id: Uuid,
+) -> AppResult<Vec<(Uuid, String, String)>> {
+    let rows: Vec<(Uuid, String, String, i32)> = sqlx::query_as(
+        "WITH RECURSIVE touched AS (
+             SELECT t.id AS entity_id, min(c.seq) AS first_seq
+               FROM fact_evidence fe
+               JOIN facts f ON f.id = fe.fact_id
+               JOIN chunks c ON c.id = fe.chunk_id
+               CROSS JOIN LATERAL (VALUES (f.subject_id), (f.object_id)) AS t(id)
+              WHERE fe.document_id = $2 AND f.kb_id = $1
+                AND f.invalidated_at IS NULL AND t.id IS NOT NULL
+              GROUP BY t.id
+         ), up(start, id, depth) AS (
+             SELECT entity_id, entity_id, 0 FROM touched
+             UNION ALL
+             SELECT up.start, e.merged_into, up.depth + 1
+               FROM up JOIN entities e ON e.id = up.id
+              WHERE e.merged_into IS NOT NULL AND up.depth < 16
+         )
+         SELECT s.id, coalesce(s.specific_type, ''), s.canonical_name, min(t.first_seq)
+           FROM up
+           JOIN entities s ON s.id = up.id
+           JOIN touched t ON t.entity_id = up.start
+          WHERE s.kb_id = $1 AND s.merged_into IS NULL AND s.description IS NULL
+          GROUP BY s.id, s.specific_type, s.canonical_name
+          ORDER BY min(t.first_seq), s.id",
+    )
+    .bind(kb_id)
+    .bind(document_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, kind, name, _)| (id, kind, name))
+        .collect())
+}
+
 pub async fn refresh_disambiguators(pool: &PgPool, kb_id: Uuid, name: &str) -> AppResult<()> {
     let group: Vec<(Uuid,)> = sqlx::query_as(
         "SELECT id FROM entities
