@@ -68,6 +68,9 @@ node scripts/bench/recall.mjs --kb <id> --reprocess          # 改了解析器�
 node scripts/bench/judge_open.mjs --kb <id> --sample 200     # 开放陈述有多少不是原文说的（门槛 2%）
 ```
 
+`judge_open.mjs` 的比例只按判成了的条目算：裁判调用失败（429 / 5xx 退避重试六次之后）或模型漏掉的条目记为
+「未判」，单独报数，不进分母。一条也没判成、或没过门槛，退出码是 1（#1518）。
+
 量「后面的分块看不到前面的分块认下了什么」对输出的影响（#588，分块并发调模型之前要知道的数）：
 服务端带 `UTOPIA_EXTRACT_KNOWN_IN_PROMPT=false` 起，照常跑 `recall.mjs`，与不带时的几轮比。
 这个开关只动提示词，落库时按名字认回前面分块的实体照旧。
