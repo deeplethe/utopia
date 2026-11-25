@@ -18,7 +18,8 @@
 //! 一问一答，没有服务端主动推的东西；SSE 是给通知用的，这一版不需要。
 
 use axum::extract::{Path, State};
-use axum::http::HeaderMap;
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde_json::{json, Value};
 use utopia_core::models::Role;
@@ -168,7 +169,27 @@ fn rpc_err(id: Option<Value>, code: i64, message: &str) -> Json<Value> {
     }))
 }
 
+/// **通知不回响应体（#1494）。** JSON-RPC 里没有 `id` 的就是通知；Streamable HTTP 规定
+/// 服务端收下通知回 `202 Accepted`、不带体。从前这里回 200 加一个 `id: null` 的结果，
+/// Claude Code 不计较，Codex（rmcp）把它当成坏响应断开。认证照旧先做：一枚坏令牌发的
+/// 通知仍是 401，不因为不用回答就放行
 pub async fn handle(
+    State(state): State<AppState>,
+    Path(kb_id): Path<Uuid>,
+    headers: HeaderMap,
+    Json(req): Json<Value>,
+) -> ApiResult<Response> {
+    if req.is_object() && req.get("id").is_none() {
+        authorize(&state, &headers, kb_id).await?;
+        return Ok(StatusCode::ACCEPTED.into_response());
+    }
+    Ok(respond(State(state), Path(kb_id), headers, Json(req))
+        .await?
+        .into_response())
+}
+
+/// 一条带 `id` 的请求：回一个 JSON-RPC 响应
+async fn respond(
     State(state): State<AppState>,
     Path(kb_id): Path<Uuid>,
     headers: HeaderMap,
@@ -188,9 +209,6 @@ pub async fn handle(
                 "serverInfo": { "name": "utopia", "version": env!("CARGO_PKG_VERSION") },
             }),
         ),
-        // 通知没有 id，按规范不该回响应体；但 HTTP 这一侧总得回点什么，
-        // 回 202 语义更准，这里为了保持处理器签名统一回一个空结果
-        "notifications/initialized" | "notifications/cancelled" => ok(None, json!({})),
         "ping" => ok(id, json!({})),
         // **列表跟着这枚令牌变。** 写不了的令牌看不见 `remember`——
         // 列出一个调不动的工具，等于让对面的 agent 反复试
