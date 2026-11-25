@@ -10,6 +10,15 @@ import { dsSpecs } from "./Settings";
  * 其余几档当时没炸，只因为它们用模板串把 `undefined` 安静地拼了进去。
  * 所以断言对所有档一起做，新加引擎时自动落进这张网。 */
 describe("dsSpecs", () => {
+  it.each(["postgres", "mysql", "clickhouse", "trino"])("brackets IPv6 hosts in %s connection strings", (id) => {
+    const spec = dsSpecs().find((s) => s.id === id)!;
+    const values = { host: "2001:db8::1", port: "15432", user: "reader", password: "p@ss", database: "sales", catalog: "sales" };
+    const url = new URL(spec.build(values));
+    expect(url.hostname).toBe("[2001:db8::1]");
+    expect(url.port).toBe("15432");
+    expect(spec.build({ ...values, host: "[2001:db8::1]" })).toBe(url.href);
+  });
+
   it("空表单不抛", () => {
     for (const spec of dsSpecs()) {
       expect(() => spec.build({}), `${spec.id} 在空表单上抛了`).not.toThrow();
