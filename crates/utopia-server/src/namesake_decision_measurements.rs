@@ -52,6 +52,7 @@ impl Fx {
         governance: bool,
         gold_same: bool,
         reverse: bool,
+        extra_quote: Option<&str>,
     ) -> anyhow::Result<Value> {
         let order = if reverse { [1, 0] } else { [0, 1] };
         let mut holders = [Uuid::nil(); 2];
@@ -80,6 +81,33 @@ impl Fx {
                 .bind(self.chunks[i])
                 .execute(&self.pool)
                 .await?;
+            if let (0, Some(quote)) = (i, extra_quote) {
+                // 多条事实可以来自同一块，调查请求需要看到各自的原文。
+                let fact = Uuid::now_v7();
+                sqlx::query("UPDATE chunks SET text = text || ' ' || $1 WHERE id = $2")
+                    .bind(quote)
+                    .bind(self.chunks[i])
+                    .execute(&self.pool)
+                    .await?;
+                sqlx::query(
+                    "INSERT INTO facts(id,kb_id,subject_id,layer,phrase,object_value,confidence)
+                     VALUES ($1,$2,$3,'open','joined',$4,0.1)",
+                )
+                .bind(fact)
+                .bind(self.kb)
+                .bind(holders[i])
+                .bind(json!({"value":"the engineering lab"}))
+                .execute(&self.pool)
+                .await?;
+                utopia_store::graph::add_evidence(
+                    &self.pool,
+                    fact,
+                    self.chunks[i],
+                    Some(quote),
+                    None,
+                )
+                .await?;
+            }
         }
         sqlx::query("UPDATE knowledge_bases SET governance=$1 WHERE id=$2")
             .bind(governance)
@@ -320,7 +348,7 @@ async fn namesake_decision_measurements_have_only_the_named_gold_errors() -> any
                     };
                     let run = tokio::time::timeout(
                         Duration::from_secs(15),
-                        f.measure_decision(path, governance, gold_same, reverse),
+                        f.measure_decision(path, governance, gold_same, reverse, None),
                     )
                     .await;
                     f.cleanup().await?;
@@ -372,5 +400,53 @@ async fn namesake_decision_measurements_have_only_the_named_gold_errors() -> any
         "namesake gold expectation mismatch: {}",
         mismatches.join("; ")
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn two_quotes_from_one_chunk_reach_the_adjudication_request() -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = sqlx::PgPool::connect(&url).await?;
+    let case = Case {
+        id: "quotes_from_one_chunk",
+        check: Check::Adjudicator { literal: true },
+    };
+    let quote = "Alex Lee joined the engineering lab.";
+    for governance in [false, true] {
+        let org = Uuid::now_v7();
+        let f = match Fx::new(&pool, &case, org).await {
+            Ok(f) => f,
+            Err(error) => {
+                sqlx::query("DELETE FROM organizations WHERE id=$1")
+                    .bind(org)
+                    .execute(&pool)
+                    .await?;
+                return Err(error);
+            }
+        };
+        let result = tokio::time::timeout(
+            Duration::from_secs(15),
+            f.measure_decision(Path::Quotes, governance, false, false, Some(quote)),
+        )
+        .await;
+        f.cleanup().await?;
+        let row = result??;
+        let tool_results = row["tool_results"].as_array().unwrap();
+        let passages = tool_results
+            .iter()
+            .find(|result| result["side"] == "A")
+            .and_then(|result| result["content"].as_str())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "missing Record A quotes in the actual model request (governance={governance})"
+                )
+            })?;
+        anyhow::ensure!(
+            passages.contains(&format!("[directory-0.txt] {quote}")),
+            "missing second passage from the same chunk (governance={governance}): {passages}"
+        );
+    }
     Ok(())
 }

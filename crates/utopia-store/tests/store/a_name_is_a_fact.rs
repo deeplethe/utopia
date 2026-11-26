@@ -411,7 +411,8 @@ async fn a_bare_name_is_not_a_quote_and_a_deleted_document_keeps_the_name() -> a
             .map(|(_, q)| q)
             .collect();
         assert!(quotes.iter().all(|q| q != "海洋探测器1号"), "{quotes:?}");
-        assert_eq!(quotes.len(), 1, "一块一段：{quotes:?}");
+        assert_eq!(quotes.len(), 2, "同一块的不同句子都保留：{quotes:?}");
+        assert_eq!(quotes[1], "简称海探1", "名字证据仍排在普通事实之后");
         assert_eq!(quotes[0], "于2026年下水", "同一块里真正的句子优先");
 
         utopia_store::documents::delete(&pool, f.kb, doc, None).await?;
@@ -434,4 +435,63 @@ async fn a_bare_name_is_not_a_quote_and_a_deleted_document_keeps_the_name() -> a
     .await;
     teardown(&pool, &f).await?;
     run
+}
+
+/// 一块里的第二句话不能被第一句话挤掉；重复事实不能挤掉别的来源。
+#[tokio::test]
+async fn distinct_quotes_in_one_chunk_survive_without_duplicate_facts_using_the_budget(
+) -> anyhow::Result<()> {
+    let Some(url) = utopia_store::test_db::url() else {
+        return Ok(());
+    };
+    let pool = PgPool::connect(&url).await?;
+    for reverse in [false, true] {
+        let f = seed(&pool).await?;
+        let run = async {
+            let person = mention(&pool, &f, "Alex Lee").await?.entity_id;
+            let other = mention(&pool, &f, "Another Person").await?.entity_id;
+            let quotes = ["Alex Lee received the management award.",
+                "Alex Lee received the engineering award."];
+            let mut first_chunk = Uuid::nil();
+            for index in 0..7 {
+                let (doc, chunk) = (Uuid::now_v7(), Uuid::now_v7());
+                sqlx::query("INSERT INTO documents(id,kb_id,filename,sha256) VALUES ($1,$2,$3,$4)")
+                    .bind(doc).bind(f.kb).bind(format!("source-{index}.txt"))
+                    .bind(doc.to_string()).execute(&pool).await?;
+                let text = if index == 0 { quotes.join(" ") } else { format!("Source {index} mentions Alex Lee.") };
+                sqlx::query("INSERT INTO chunks(id,kb_id,document_id,seq,text) VALUES ($1,$2,$3,0,$4)")
+                    .bind(chunk).bind(f.kb).bind(doc).bind(&text).execute(&pool).await?;
+                if index == 0 { first_chunk = chunk; }
+                let count = if index == 0 { 4 } else { 1 };
+                for n in if reverse { (0..count).rev().collect::<Vec<_>>() } else { (0..count).collect() } {
+                    let fact = Uuid::now_v7();
+                    // 两句各由两条事实引用，第二句还覆盖实体作为宾语的读取。
+                    let object_side = index == 0 && n % 2 == 1;
+                    sqlx::query("INSERT INTO facts(id,kb_id,subject_id,object_id,layer,phrase,confidence) VALUES ($1,$2,$3,$4,'open','mentions',0.9)")
+                        .bind(fact).bind(f.kb).bind(if object_side { other } else { person })
+                        .bind(if object_side { person } else { other })
+                        .execute(&pool).await?;
+                    graph::add_evidence(&pool, fact, chunk,
+                        Some(if index == 0 { quotes[n % 2] } else { &text }), None).await?;
+                }
+            }
+            let stale = Uuid::now_v7();
+            sqlx::query("INSERT INTO facts(id,kb_id,subject_id,layer,phrase,object_value,invalidated_at) VALUES ($1,$2,$3,'open','stale','{\"value\":\"old\"}'::jsonb,now())")
+                .bind(stale).bind(f.kb).bind(person).execute(&pool).await?;
+            graph::add_evidence(&pool, stale, first_chunk, Some("obsolete evidence"), None).await?;
+            let all = utopia_store::governance::quotes_of(&pool, f.kb, person, 20).await?;
+            assert_eq!(all.len(), 8, "不同引文保留，重复和作废事实不增加条目：{all:?}");
+            for q in quotes { assert_eq!(all.iter().filter(|(_, quote)| quote == q).count(), 1); }
+            let limited = utopia_store::governance::quotes_of(&pool, f.kb, person, 6).await?;
+            assert_eq!(limited.len(), 6);
+            let sources: std::collections::HashSet<_> = limited.iter().map(|(doc, _)| doc).collect();
+            assert_eq!(sources.len(), 6, "先分配各块第一段，不能让一个长块耗尽预算");
+            assert_eq!(limited, utopia_store::governance::quotes_of(&pool, f.kb, person, 6).await?, "同分时顺序也稳定");
+            assert!(utopia_store::governance::quotes_of(&pool, Uuid::now_v7(), person, 6).await?.is_empty());
+            anyhow::Ok(())
+        }.await;
+        teardown(&pool, &f).await?;
+        run?;
+    }
+    Ok(())
 }
