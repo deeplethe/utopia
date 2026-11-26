@@ -50,6 +50,7 @@ By domain; the domains are the files of [../design/](../design/README.md). **Sta
 | | Record | Status | Overtaken |
 |---|---|---|---|
 | 0006 | [Ontology scale and the extraction prompt](0006-ontology-scale-and-the-prompt.md) | Superseded | fully (by 0044) |
+| 0076 | [A model reply points to each source mention](0076-a-model-reply-points-to-each-source-mention.md) | Proposed |  |
 
 ### [identity](../design/identity.md)
 
