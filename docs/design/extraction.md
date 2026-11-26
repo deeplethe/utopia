@@ -143,8 +143,13 @@ NULL-predicate dedup hole of [0010].
 
 **What it skips.** The ontology lists and per-chunk retrieval, predicate matching, the temporal
 reconcile, signature checks, type resolution and ontology bootstrap [#731, #736]. Identity still
-runs per handle (`resolve_handle`, namesake reviews, the govern and adjudicate enqueues); a chunk of
-origin `described` keeps its confidence ceiling [0040]. Until alignment, a base holds open
+runs per handle (`resolve_handle`, namesake reviews, the govern and adjudicate enqueues), but a
+re-extraction does not start from an empty known list: the named entities that live facts from this
+document's chunks (any version) already sit on, followed through merges and without described
+things, are known from the first chunk, and a listed name that matches exactly one of them is taken
+back without resolving again, so re-extracting an unchanged document reuses its entities instead of
+splitting them in the grey zone (#1513); a chunk of origin `described` keeps its confidence ceiling
+[0040]. Until alignment, a base holds open
 statements and no typed facts, so timelines, conflicts and signature queues stay empty.
 
 **Memory documents** take the same path; their statements wait in `pending_facts` with phrase,
