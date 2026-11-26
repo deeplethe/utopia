@@ -2,7 +2,23 @@ import type { SourceView } from "../api";
 
 /** 逗号分隔的 glob 拆成列表。留空给 undefined：JSON 里不出现这个键，后端按默认规则筛 */
 export const globList = (value: string) => {
-  const list = value.split(",").map((g) => g.trim()).filter(Boolean);
+  // glob 的 [,] 能匹配文件名里的逗号；拆列表时不能把字符组也拆开。
+  // ] 在组的第一位（或 ! 后第一位）是字面字符，后一个 ] 才闭合。
+  const parts: string[] = [];
+  let start = 0;
+  let characterClass = -1;
+  for (let i = 0; i < value.length; i++) {
+    if (value[i] === "[" && characterClass < 0) characterClass = i;
+    else if (value[i] === "]" && characterClass >= 0 &&
+      i > characterClass + (value[characterClass + 1] === "!" ? 2 : 1)) {
+      characterClass = -1;
+    } else if (value[i] === "," && characterClass < 0) {
+      parts.push(value.slice(start, i));
+      start = i + 1;
+    }
+  }
+  parts.push(value.slice(start));
+  const list = parts.map((g) => g.trim()).filter(Boolean);
   return list.length ? list : undefined;
 };
 

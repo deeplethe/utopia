@@ -1,5 +1,11 @@
 import { expect, it } from "vitest";
-import { githubRepoConfig } from "./githubRepoConfig";
+import { githubRepoConfig, globList } from "./githubRepoConfig";
+
+it.each(["notes[,]2026.md", "docs/[a,b]*.md", "docs/[]a,]*.md"])(
+  "keeps the comma in the glob character class of %s", (pattern) => {
+    expect(globList(`${pattern}, README.md`)).toEqual([pattern, "README.md"]);
+  },
+);
 
 it("keeps what the edit form does not show, and a cleared glob list falls back to the default", () => {
   const saved = { repo: "o/r", include: ["docs/**"], exclude: ["drafts/**"], max_file_bytes: 2000 };
