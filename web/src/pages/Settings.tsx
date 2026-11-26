@@ -481,6 +481,8 @@ const enc = (v?: string) => encodeURIComponent(v ?? "");
 /** `user:pass@` 那一段：两处都可能为空（Trino 允许无密码） */
 const auth = (user?: string, pass?: string) =>
   pass ? `${enc(user)}:${enc(pass)}@` : user ? `${enc(user)}@` : "";
+// A host field accepts an address, while a URL needs brackets around IPv6.
+const urlHost = (host = "") => host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
 
 export function dsSpecs(): EngineSpec[] {
   const D = S.settings.datasources;
@@ -496,7 +498,7 @@ export function dsSpecs(): EngineSpec[] {
         { key: "password", label: D.fPassword, secret: true },
       ],
       build: (v) =>
-        `postgres://${auth(v.user, v.password)}${v.host}:${v.port || "5432"}/${enc(v.database)}`,
+        `postgres://${auth(v.user, v.password)}${urlHost(v.host)}:${v.port || "5432"}/${enc(v.database)}`,
     },
     {
       id: "mysql",
@@ -509,7 +511,7 @@ export function dsSpecs(): EngineSpec[] {
         { key: "password", label: D.fPassword, secret: true },
       ],
       build: (v) =>
-        `mysql://${auth(v.user, v.password)}${v.host}:${v.port || "3306"}/${enc(v.database)}`,
+        `mysql://${auth(v.user, v.password)}${urlHost(v.host)}:${v.port || "3306"}/${enc(v.database)}`,
     },
     {
       id: "clickhouse",
@@ -526,7 +528,7 @@ export function dsSpecs(): EngineSpec[] {
       // 只填了密码就是 default 用户的密码：没有用户名，服务端不会把密码发出去
       build: (v) =>
         `clickhouse://${auth(v.user || (v.password ? "default" : ""), v.password)}` +
-        `${v.host}:${v.port || "8123"}` +
+        `${urlHost(v.host)}:${v.port || "8123"}` +
         (v.database ? `/${enc(v.database)}` : ""),
     },
     {
@@ -541,7 +543,7 @@ export function dsSpecs(): EngineSpec[] {
         { key: "password", label: D.fPassword, optional: true, secret: true },
       ],
       build: (v) =>
-        `trino://${auth(v.user, v.password)}${v.host}:${v.port || "8080"}/${enc(v.catalog)}` +
+        `trino://${auth(v.user, v.password)}${urlHost(v.host)}:${v.port || "8080"}/${enc(v.catalog)}` +
         (v.schema ? `/${enc(v.schema)}` : ""),
     },
     {
