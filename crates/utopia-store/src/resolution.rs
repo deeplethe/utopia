@@ -1526,6 +1526,56 @@ pub async fn existing_by_name(
     Ok(id)
 }
 
+/// 这篇文档上一次抽取认下的**有名字的**实体：`(id, 类别词, 本名)`，按在文档里首次出现的
+/// 分块排序（#1513）。
+///
+/// 重抽从这里起步，而不是从空清单起步：从前每次重抽，每个提及都重新走一遍跨文档消解，
+/// 而消解在画像灰区、同名并列时宁分勿合——一篇没改过的文档重抽一次，就多出一批同名
+/// 同类的实体和一批审核对。
+///
+/// 认的是还活着的事实的证据落在这篇文档的分块上（含旧版本被取代的分块）的主语和宾语，
+/// 名字事实也算；并掉的跟着 `merged_into` 走到存活者。被描述的东西不进来：「一家医院」
+/// 在这篇里指的是哪一家，下一次抽要重新看上下文
+pub async fn named_entities_of_document(
+    pool: &PgPool,
+    kb_id: Uuid,
+    document_id: Uuid,
+) -> AppResult<Vec<(Uuid, String, String)>> {
+    let rows: Vec<(Uuid, String, String, i32)> = sqlx::query_as(
+        "WITH RECURSIVE touched AS (
+             SELECT t.id AS entity_id, min(c.seq) AS first_seq
+               FROM fact_evidence fe
+               JOIN facts f ON f.id = fe.fact_id
+               JOIN chunks c ON c.id = fe.chunk_id
+               CROSS JOIN LATERAL (VALUES (f.subject_id), (f.object_id)) AS t(id)
+              WHERE fe.document_id = $2 AND f.kb_id = $1
+                AND f.invalidated_at IS NULL AND t.id IS NOT NULL
+              GROUP BY t.id
+         ), up(start, id, depth) AS (
+             SELECT entity_id, entity_id, 0 FROM touched
+             UNION ALL
+             SELECT up.start, e.merged_into, up.depth + 1
+               FROM up JOIN entities e ON e.id = up.id
+              WHERE e.merged_into IS NOT NULL AND up.depth < 16
+         )
+         SELECT s.id, coalesce(s.specific_type, ''), s.canonical_name, min(t.first_seq)
+           FROM up
+           JOIN entities s ON s.id = up.id
+           JOIN touched t ON t.entity_id = up.start
+          WHERE s.kb_id = $1 AND s.merged_into IS NULL AND s.description IS NULL
+          GROUP BY s.id, s.specific_type, s.canonical_name
+          ORDER BY min(t.first_seq), s.id",
+    )
+    .bind(kb_id)
+    .bind(document_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, kind, name, _)| (id, kind, name))
+        .collect())
+}
+
 pub async fn refresh_disambiguators(pool: &PgPool, kb_id: Uuid, name: &str) -> AppResult<()> {
     let group: Vec<(Uuid,)> = sqlx::query_as(
         "SELECT id FROM entities
@@ -2467,17 +2517,19 @@ struct MergeRow {
 /// 搬过的事实，连同从它们改写出来的每一行（顺着 supersedes 往下走到底，作废的也算）
 async fn with_rewrites(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    kb_id: Uuid,
     roots: &[Uuid],
 ) -> AppResult<Vec<Uuid>> {
     Ok(sqlx::query_scalar(
         "WITH RECURSIVE chain(id) AS (
              SELECT unnest($1::uuid[])
              UNION
-             SELECT f.id FROM facts f JOIN chain c ON f.supersedes = c.id
+             SELECT f.id FROM facts f JOIN chain c ON f.supersedes = c.id AND f.kb_id = $2
          )
          SELECT id FROM chain",
     )
     .bind(roots)
+    .bind(kb_id)
     .fetch_all(&mut **tx)
     .await?)
 }
@@ -2525,10 +2577,10 @@ pub async fn revert_merge(pool: &PgPool, kb_id: Uuid, merge_id: Uuid) -> AppResu
     .bind(m.target_id)
     .fetch_all(&mut *tx)
     .await?;
-    let touched: Vec<Uuid> = with_rewrites(&mut tx, &m.moved_subject_facts)
+    let touched: Vec<Uuid> = with_rewrites(&mut tx, kb_id, &m.moved_subject_facts)
         .await?
         .into_iter()
-        .chain(with_rewrites(&mut tx, &m.moved_object_facts).await?)
+        .chain(with_rewrites(&mut tx, kb_id, &m.moved_object_facts).await?)
         .chain(m.invalidated_facts.iter().copied())
         .collect();
     let timelines =
@@ -2536,8 +2588,8 @@ pub async fn revert_merge(pool: &PgPool, kb_id: Uuid, merge_id: Uuid) -> AppResu
             .await?;
     crate::temporal::lock_timelines(&mut tx, kb_id, &timelines).await?;
     // 锁上之后再走一遍：等锁的时候，引擎可能刚从它们改写出新的一行
-    let subject_rows = with_rewrites(&mut tx, &m.moved_subject_facts).await?;
-    let object_rows = with_rewrites(&mut tx, &m.moved_object_facts).await?;
+    let subject_rows = with_rewrites(&mut tx, kb_id, &m.moved_subject_facts).await?;
+    let object_rows = with_rewrites(&mut tx, kb_id, &m.moved_object_facts).await?;
 
     sqlx::query("UPDATE facts SET subject_id = $1 WHERE id = ANY($2) AND subject_id = ANY($3)")
         .bind(m.source_id)
@@ -2582,13 +2634,14 @@ pub async fn revert_merge(pool: &PgPool, kb_id: Uuid, merge_id: Uuid) -> AppResu
         "WITH RECURSIVE chain(fact_id, chunk_id) AS (
              SELECT * FROM unnest($1::uuid[], $2::uuid[])
              UNION
-             SELECT f.id, c.chunk_id FROM facts f JOIN chain c ON f.supersedes = c.fact_id
+             SELECT f.id, c.chunk_id FROM facts f JOIN chain c ON f.supersedes = c.fact_id AND f.kb_id = $3
          )
          DELETE FROM fact_evidence fe USING chain c
           WHERE fe.fact_id = c.fact_id AND fe.chunk_id = c.chunk_id",
     )
     .bind(&m.copied_evidence_facts)
     .bind(&m.copied_evidence_chunks)
+    .bind(kb_id)
     .execute(&mut *tx)
     .await?;
     sqlx::query("UPDATE facts SET invalidated_at = NULL WHERE id = ANY($1)")

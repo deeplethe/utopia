@@ -454,6 +454,10 @@ struct Claims {
     /// 都登不进来。只有 `true` / `"true"` 算核实过，其它一律不算
     #[serde(default, deserialize_with = "lenient_true")]
     email_verified: bool,
+    /// Microsoft Entra sends no `email_verified`. Its optional claim `xms_edov` says the
+    /// owner of the email's domain is verified, which is what an allowed domain needs.
+    #[serde(default, rename = "xms_edov", deserialize_with = "lenient_true")]
+    email_domain_owner_verified: bool,
     #[serde(default)]
     name: Option<String>,
 }
@@ -481,7 +485,8 @@ fn display_name(claim: Option<&str>, email: &str) -> String {
 fn provisioned_email(claims: &Claims, allowed_domains: &[String]) -> Option<String> {
     let email = claims.email.as_deref()?.trim().to_lowercase();
     let (_, domain) = email.rsplit_once('@')?;
-    (claims.email_verified && allowed_domains.iter().any(|d| d == domain)).then_some(email)
+    let verified = claims.email_verified || claims.email_domain_owner_verified;
+    (verified && allowed_domains.iter().any(|d| d == domain)).then_some(email)
 }
 
 /// 按 `kid` 找钥匙；令牌不带 `kid` 时，只有 JWKS 里恰好一把 RSA 钥匙才用它
@@ -1120,6 +1125,37 @@ mod tests {
         assert_eq!(
             super::provisioned_email(&claims("ann@re-cinq.com", true), &[]),
             None
+        );
+    }
+
+    #[test]
+    fn an_entra_email_counts_as_verified_only_when_its_domain_owner_is_verified() {
+        let provisioned = |domain_owner_verified: serde_json::Value| {
+            let mut claims = serde_json::json!({
+                "sub": "person-1", "iat": 0, "aud": "utopia-test", "email": "ann@re-cinq.com",
+            });
+            if !domain_owner_verified.is_null() {
+                claims["xms_edov"] = domain_owner_verified;
+            }
+            super::provisioned_email(
+                &serde_json::from_value::<super::Claims>(claims).unwrap(),
+                &["re-cinq.com".to_string()],
+            )
+        };
+        assert_eq!(
+            [
+                serde_json::json!(true),
+                serde_json::json!("true"),
+                serde_json::json!(false),
+                serde_json::Value::Null,
+            ]
+            .map(provisioned),
+            [
+                Some("ann@re-cinq.com".to_string()),
+                Some("ann@re-cinq.com".to_string()),
+                None,
+                None
+            ]
         );
     }
 

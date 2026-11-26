@@ -41,6 +41,15 @@ answer was in a log line.
    the client does not need to know the kinds to know whether the field means
    anything.
 
+   **Revised 2026-11-10** — the column now also carries a **custom** source's
+   bound. It is not the same kind of value: for GitHub and Jira it is a provider
+   update time, for custom it is a wall-clock moment. It is the same job though —
+   **the lower bound the next read uses** — and it is a value on the source, so it
+   can be cleared once. Custom's bound used to be derived from the audit history
+   (the last `ok` run's `started_at`), and that could neither prove the window
+   was complete — a capped round recorded `ok` as well — nor be cleared, because
+   clearing it would mean rewriting the very rows this record says to preserve.
+
 4. **It says where the reading stopped, not when the round ran.** `last_sync_at` is
    the round's time and exists for every kind. The checkpoint is a position in the
    provider's timeline and exists only for the kinds that have one. The two answer

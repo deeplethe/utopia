@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { parseDateInput } from "./time";
+import { fmtTime, parseDateInput } from "./time";
+
+it.each(["0042", "0042-03", "0042-03-01", "0042-03-01T10Z", "0042-03-01T10:15Z", "0042-03-01T10:15:30Z"])(
+  "keeps the fact editor's date %s valid when it is reopened", (input) => {
+    const parsed = parseDateInput(input)!;
+    expect(fmtTime(parsed.iso, parsed.precision)).toBe(input);
+  },
+);
 
 describe("parseDateInput", () => {
   it.each([
