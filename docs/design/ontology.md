@@ -36,7 +36,11 @@ the person ticks one in the creation dialog [0008, 0009]. Five packs ship inside
 of about twenty rows, additive and without undo [0008]. An OWL file (Turtle or RDF/XML) is stored
 verbatim in the blob store and projected into the tables by a re-runnable derivation that reports
 what it did not project; a dry run precedes every import; individuals are never imported as facts
-[0001]. A **scenario pack** [0073] is the top-down start the standard packs are not: a small
+[0001]. The importer reads one file of at most 8 MB and does not follow `owl:imports`, so an
+ontology split over several files is merged first (`riot --output=ttl` over the files, or ROBOT
+`merge`), or taken as a release already merged into one file from a catalog such as
+[ohi.dev](https://ohi.dev), where FIBO production is one 6 MB Turtle file (#923). A **scenario
+pack** [0073] is the top-down start the standard packs are not: a small
 vocabulary written for one kind of corpus (企业档案, 合同链, 人事档案 ship first), with definitions
 written for the aligner, datatypes and units already right, and the competency questions that
 corpus is read for. It is one JSON file embedded in the binary, bilingual, installed at creation
