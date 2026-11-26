@@ -167,13 +167,30 @@ impl Fixture {
             "authorization",
             format!("Bearer {}", self.token).parse().unwrap(),
         );
-        handle(
+        respond(
             State(self.state.clone()),
             Path(kb),
             headers,
             Json(json!({"jsonrpc":"2.0","id":1,"method":method,"params":params})),
         )
         .await
+    }
+
+    /// 一条通知（没有 `id`），经过路由真正挂着的那个处理器
+    async fn notify(&self, token: &str, method: &str) -> axum::response::Response {
+        let mut headers = HeaderMap::new();
+        headers.insert("authorization", format!("Bearer {token}").parse().unwrap());
+        match handle(
+            State(self.state.clone()),
+            Path(self.kb),
+            headers,
+            Json(json!({"jsonrpc":"2.0","method":method})),
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(e) => axum::response::IntoResponse::into_response(e),
+        }
     }
 
     async fn call(&self, name: &str, args: Value) -> anyhow::Result<Value> {
@@ -753,6 +770,37 @@ async fn concurrent_exports_on_a_minimum_pool_still_record_their_audits() -> any
     let c2 = f.state.pool.acquire().await?;
     drop(c2);
     drop(c1);
+    f.clean().await
+}
+
+#[tokio::test]
+async fn a_notification_is_accepted_with_no_body_and_still_needs_a_token() -> anyhow::Result<()> {
+    let Some(f) = Fixture::new().await? else {
+        return Ok(());
+    };
+    for method in [
+        "notifications/initialized",
+        "notifications/cancelled",
+        "notifications/roots/list_changed",
+    ] {
+        let response = f.notify(&f.token.clone(), method).await;
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::ACCEPTED,
+            "{method}"
+        );
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX).await?;
+        assert!(body.is_empty(), "{method}: {body:?}");
+    }
+    let refused = f.notify("not-a-token", "notifications/initialized").await;
+    assert_eq!(refused.status(), axum::http::StatusCode::UNAUTHORIZED);
+    // 带 id 的请求照旧回 JSON-RPC
+    let pong = f
+        .request(f.kb, "ping", json!({}))
+        .await
+        .map_err(|_| anyhow::anyhow!("ping"))?
+        .0;
+    assert_eq!(pong["id"], 1);
     f.clean().await
 }
 
