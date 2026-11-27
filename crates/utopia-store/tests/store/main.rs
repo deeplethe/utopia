@@ -157,6 +157,7 @@ mod negative_binding_definition_edit;
 mod no_predicate_still_shows;
 mod ontology_regressions;
 mod phrase_signature_evidence;
+mod queue_depth_counts_every_job_it_can_place;
 mod rejecting_a_statement_retires_its_typed_row;
 mod review_stages;
 mod rss_full_content;
