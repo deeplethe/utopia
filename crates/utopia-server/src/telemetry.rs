@@ -1,0 +1,304 @@
+use opentelemetry::metrics::{Meter, MeterProvider, ObservableGauge};
+use opentelemetry::trace::TracerProvider;
+use opentelemetry::KeyValue;
+use opentelemetry_otlp::{MetricExporter, SpanExporter};
+use opentelemetry_sdk::metrics::{PeriodicReader, SdkMeterProvider};
+use opentelemetry_sdk::trace::{SdkTracer, SdkTracerProvider};
+use opentelemetry_sdk::Resource;
+use std::sync::{Arc, RwLock};
+use tracing::Subscriber;
+use tracing_opentelemetry::OpenTelemetryLayer;
+use tracing_subscriber::registry::LookupSpan;
+use utopia_core::AppResult;
+use utopia_store::jobs::QueueDepthRow;
+
+#[derive(Clone, Default)]
+pub struct QueueSnapshot(Arc<RwLock<Vec<QueueDepthRow>>>);
+
+impl QueueSnapshot {
+    pub fn replace(&self, rows: Vec<QueueDepthRow>) {
+        *self.0.write().unwrap() = rows;
+    }
+
+    pub async fn refresh(&self, pool: &sqlx::PgPool) -> AppResult<()> {
+        self.replace(utopia_store::jobs::queue_depth_by_base(pool).await?);
+        Ok(())
+    }
+}
+
+pub fn observe_queue_size(meter: &Meter, snapshot: &QueueSnapshot) -> ObservableGauge<i64> {
+    let snapshot = snapshot.clone();
+    meter
+        .i64_observable_gauge("utopia.jobs.queue.size")
+        .with_callback(move |observer| {
+            for row in snapshot.0.read().unwrap().iter() {
+                observer.observe(row.count, &queue_attributes(row));
+            }
+        })
+        .build()
+}
+
+pub fn otlp_endpoint(env: impl Fn(&str) -> Option<String>) -> Option<String> {
+    env("OTEL_EXPORTER_OTLP_ENDPOINT").filter(|endpoint| !endpoint.trim().is_empty())
+}
+
+const DEFAULT_SERVICE_NAME: &str = "utopia-server";
+
+pub struct Telemetry {
+    meter_provider: SdkMeterProvider,
+    tracer_provider: SdkTracerProvider,
+}
+
+impl Telemetry {
+    pub fn meter(&self) -> Meter {
+        self.meter_provider.meter(DEFAULT_SERVICE_NAME)
+    }
+}
+
+impl Drop for Telemetry {
+    fn drop(&mut self) {
+        if let Err(e) = self.meter_provider.shutdown() {
+            tracing::warn!(error = %e, "metrics provider shutdown failed");
+        }
+        if let Err(e) = self.tracer_provider.shutdown() {
+            tracing::warn!(error = %e, "tracer provider shutdown failed");
+        }
+    }
+}
+
+/// Exports over OTLP/gRPC when `OTEL_EXPORTER_OTLP_ENDPOINT` is set; the other
+/// `OTEL_*` variables (interval, headers, resource attributes) are read by the SDK.
+pub fn init<S>() -> anyhow::Result<Option<(Telemetry, OpenTelemetryLayer<S, SdkTracer>)>>
+where
+    S: Subscriber + for<'span> LookupSpan<'span>,
+{
+    if otlp_endpoint(|name| std::env::var(name).ok()).is_none() {
+        return Ok(None);
+    }
+    let mut resource = Resource::builder();
+    if std::env::var_os("OTEL_SERVICE_NAME").is_none() {
+        resource = resource.with_service_name(DEFAULT_SERVICE_NAME);
+    }
+    let resource = resource.build();
+
+    let meter_provider = SdkMeterProvider::builder()
+        .with_resource(resource.clone())
+        .with_reader(
+            PeriodicReader::builder(MetricExporter::builder().with_tonic().build()?).build(),
+        )
+        .build();
+    let tracer_provider = SdkTracerProvider::builder()
+        .with_resource(resource)
+        .with_batch_exporter(SpanExporter::builder().with_tonic().build()?)
+        .build();
+    let layer =
+        tracing_opentelemetry::layer().with_tracer(tracer_provider.tracer(DEFAULT_SERVICE_NAME));
+    Ok(Some((
+        Telemetry {
+            meter_provider,
+            tracer_provider,
+        },
+        layer,
+    )))
+}
+
+fn queue_attributes(row: &QueueDepthRow) -> [KeyValue; 3] {
+    let base = row
+        .kb_id
+        .map_or_else(|| "none".to_string(), |id| id.to_string());
+    [
+        KeyValue::new("kb", base),
+        KeyValue::new("lane", row.lane.to_string()),
+        KeyValue::new("status", row.status.clone()),
+    ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{observe_queue_size, otlp_endpoint, QueueSnapshot};
+    use chrono::Utc;
+    use opentelemetry::metrics::MeterProvider;
+    use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData};
+    use opentelemetry_sdk::metrics::{InMemoryMetricExporter, SdkMeterProvider};
+    use std::collections::BTreeSet;
+    use utopia_store::jobs::QueueDepthRow;
+    use uuid::Uuid;
+
+    #[test]
+    fn no_endpoint_leaves_export_off() {
+        assert_eq!(otlp_endpoint(|_| None), None);
+    }
+
+    #[test]
+    fn a_blank_endpoint_leaves_export_off() {
+        assert_eq!(otlp_endpoint(|_| Some("  ".to_string())), None);
+    }
+
+    #[test]
+    fn an_endpoint_turns_export_on() {
+        let lookup = |name: &str| {
+            (name == "OTEL_EXPORTER_OTLP_ENDPOINT").then(|| "http://collector:4317".to_string())
+        };
+        assert_eq!(
+            otlp_endpoint(lookup),
+            Some("http://collector:4317".to_string())
+        );
+    }
+
+    #[test]
+    fn two_queue_rows_export_two_points_labelled_by_base_lane_and_status() {
+        let exporter = InMemoryMetricExporter::default();
+        let provider = SdkMeterProvider::builder()
+            .with_periodic_exporter(exporter.clone())
+            .build();
+        let snapshot = QueueSnapshot::default();
+        let _gauge = observe_queue_size(&provider.meter("utopia"), &snapshot);
+        let kb_id = Uuid::new_v4();
+        snapshot.replace(vec![
+            queue_row(Some(kb_id), 1, "queued", 3),
+            queue_row(None, 2, "running", 5),
+        ]);
+
+        provider.force_flush().unwrap();
+
+        let expected = BTreeSet::from([
+            (kb_id.to_string(), "1".to_string(), "queued".to_string(), 3),
+            (
+                "none".to_string(),
+                "2".to_string(),
+                "running".to_string(),
+                5,
+            ),
+        ]);
+        assert_eq!(exported_points(&exporter), expected);
+    }
+
+    fn queue_row(kb_id: Option<Uuid>, lane: i16, status: &str, count: i64) -> QueueDepthRow {
+        QueueDepthRow {
+            kb_id,
+            lane,
+            status: status.into(),
+            count,
+            oldest: Utc::now(),
+        }
+    }
+
+    type ExportedPoint = (String, String, String, i64);
+
+    fn exported_points(exporter: &InMemoryMetricExporter) -> BTreeSet<ExportedPoint> {
+        exporter
+            .get_finished_metrics()
+            .unwrap()
+            .iter()
+            .flat_map(|resource| resource.scope_metrics())
+            .flat_map(|scope| scope.metrics())
+            .filter_map(|metric| match metric.data() {
+                AggregatedMetrics::I64(MetricData::Gauge(gauge)) => Some(gauge),
+                _ => None,
+            })
+            .flat_map(|gauge| gauge.data_points())
+            .map(|point| {
+                let attr = |key: &str| {
+                    point
+                        .attributes()
+                        .find(|kv| kv.key.as_str() == key)
+                        .map(|kv| kv.value.to_string())
+                        .unwrap()
+                };
+                (attr("kb"), attr("lane"), attr("status"), point.value())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_base_whose_queue_emptied_drops_out_of_the_next_export() {
+        let exporter = InMemoryMetricExporter::default();
+        let provider = SdkMeterProvider::builder()
+            .with_periodic_exporter(exporter.clone())
+            .build();
+        let snapshot = QueueSnapshot::default();
+        let _gauge = observe_queue_size(&provider.meter("utopia"), &snapshot);
+        let emptied_kb = Uuid::new_v4();
+        let busy_kb = Uuid::new_v4();
+        snapshot.replace(vec![
+            queue_row(Some(emptied_kb), 1, "queued", 3),
+            queue_row(Some(busy_kb), 2, "running", 5),
+        ]);
+        provider.force_flush().unwrap();
+        exporter.reset();
+
+        snapshot.replace(vec![queue_row(Some(busy_kb), 2, "running", 5)]);
+        provider.force_flush().unwrap();
+
+        let expected = BTreeSet::from([(
+            busy_kb.to_string(),
+            "2".to_string(),
+            "running".to_string(),
+            5,
+        )]);
+        assert_eq!(exported_points(&exporter), expected);
+    }
+
+    #[tokio::test]
+    async fn a_refresh_exports_the_queued_job_of_a_new_base() -> anyhow::Result<()> {
+        let Some(url) = utopia_store::test_db::url() else {
+            return Ok(());
+        };
+        let pool = sqlx::PgPool::connect(&url).await?;
+        let (org, ws, kb_id) = (Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
+        sqlx::query("INSERT INTO organizations (id, name) VALUES ($1, 'queue-refresh-test')")
+            .bind(org)
+            .execute(&pool)
+            .await?;
+        sqlx::query(
+            "INSERT INTO workspaces (id, org_id, name) VALUES ($1, $2, 'queue-refresh-test')",
+        )
+        .bind(ws)
+        .bind(org)
+        .execute(&pool)
+        .await?;
+        sqlx::query(
+            "INSERT INTO knowledge_bases (id, workspace_id, name) VALUES ($1, $2, 'queue-refresh-test')",
+        )
+        .bind(kb_id)
+        .bind(ws)
+        .execute(&pool)
+        .await?;
+
+        let run = async {
+            sqlx::query("INSERT INTO jobs (kind, payload) VALUES ('noop', $1)")
+                .bind(serde_json::json!({ "kb_id": kb_id }))
+                .execute(&pool)
+                .await?;
+            let exporter = InMemoryMetricExporter::default();
+            let provider = SdkMeterProvider::builder()
+                .with_periodic_exporter(exporter.clone())
+                .build();
+            let snapshot = QueueSnapshot::default();
+            let _gauge = observe_queue_size(&provider.meter("utopia"), &snapshot);
+
+            snapshot.refresh(&pool).await?;
+            provider.force_flush()?;
+
+            let own_points: BTreeSet<_> = exported_points(&exporter)
+                .into_iter()
+                .filter(|(kb, ..)| *kb == kb_id.to_string())
+                .collect();
+            let expected =
+                BTreeSet::from([(kb_id.to_string(), "0".to_string(), "queued".to_string(), 1)]);
+            assert_eq!(own_points, expected);
+            Ok::<_, anyhow::Error>(())
+        }
+        .await;
+
+        let _ = sqlx::query("DELETE FROM jobs WHERE payload->>'kb_id' = $1")
+            .bind(kb_id.to_string())
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("DELETE FROM organizations WHERE id = $1")
+            .bind(org)
+            .execute(&pool)
+            .await;
+        run
+    }
+}
