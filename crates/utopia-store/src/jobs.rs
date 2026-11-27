@@ -342,6 +342,32 @@ pub async fn failed_count(pool: &PgPool, kb_id: Option<Uuid>) -> AppResult<i64> 
     Ok(sqlx::query_scalar(&sql).bind(kb_id).fetch_one(pool).await?)
 }
 
+#[derive(Debug, sqlx::FromRow)]
+pub struct QueueDepthRow {
+    pub kb_id: Option<Uuid>,
+    pub lane: i16,
+    pub status: String,
+    pub count: i64,
+    pub oldest: chrono::DateTime<chrono::Utc>,
+}
+
+/// Queued and running jobs counted per base, lane and status in one query.
+pub async fn queue_depth_by_base(pool: &PgPool) -> AppResult<Vec<QueueDepthRow>> {
+    Ok(sqlx::query_as(
+        "SELECT COALESCE(k.id, d.kb_id, s.kb_id) AS kb_id,
+                job_priority(j.kind) AS lane, j.status, count(*) AS count,
+                min(j.run_at) AS oldest
+           FROM jobs j
+           LEFT JOIN knowledge_bases k ON k.id::text = j.payload->>'kb_id'
+           LEFT JOIN documents d ON d.id::text = j.payload->>'document_id'
+           LEFT JOIN sources s ON s.id::text = j.payload->>'source_id'
+          WHERE j.status = 'running' OR (j.status = 'queued' AND j.run_at <= now())
+          GROUP BY 1, 2, 3",
+    )
+    .fetch_all(pool)
+    .await?)
+}
+
 /// 一个任务此刻的样子，给「我刚排下去的那件事跑完了没」这个问题用（0051）。
 #[derive(Debug, Clone, serde::Serialize, sqlx::FromRow)]
 pub struct JobStatus {
