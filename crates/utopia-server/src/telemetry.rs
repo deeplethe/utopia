@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use opentelemetry::metrics::{Meter, MeterProvider, ObservableGauge};
 use opentelemetry::trace::TracerProvider;
 use opentelemetry::KeyValue;
@@ -5,7 +6,7 @@ use opentelemetry_otlp::{MetricExporter, SpanExporter};
 use opentelemetry_sdk::metrics::{PeriodicReader, SdkMeterProvider};
 use opentelemetry_sdk::trace::{SdkTracer, SdkTracerProvider};
 use opentelemetry_sdk::Resource;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLock, RwLockReadGuard};
 use tracing::Subscriber;
 use tracing_opentelemetry::OpenTelemetryLayer;
 use tracing_subscriber::registry::LookupSpan;
@@ -20,6 +21,10 @@ impl QueueSnapshot {
         *self.0.write().unwrap() = rows;
     }
 
+    fn rows(&self) -> RwLockReadGuard<'_, Vec<QueueDepthRow>> {
+        self.0.read().unwrap()
+    }
+
     pub async fn refresh(&self, pool: &sqlx::PgPool) -> AppResult<()> {
         self.replace(utopia_store::jobs::queue_depth_by_base(pool).await?);
         Ok(())
@@ -31,8 +36,26 @@ pub fn observe_queue_size(meter: &Meter, snapshot: &QueueSnapshot) -> Observable
     meter
         .i64_observable_gauge("utopia.jobs.queue.size")
         .with_callback(move |observer| {
-            for row in snapshot.0.read().unwrap().iter() {
+            for row in snapshot.rows().iter() {
                 observer.observe(row.count, &queue_attributes(row));
+            }
+        })
+        .build()
+}
+
+pub fn observe_oldest_wait(
+    meter: &Meter,
+    snapshot: &QueueSnapshot,
+    now: impl Fn() -> DateTime<Utc> + Send + Sync + 'static,
+) -> ObservableGauge<f64> {
+    let snapshot = snapshot.clone();
+    meter
+        .f64_observable_gauge("utopia.jobs.queue.oldest_wait")
+        .with_unit("s")
+        .with_callback(move |observer| {
+            for row in snapshot.rows().iter().filter(|row| row.status == "queued") {
+                let wait = (now() - row.oldest).num_milliseconds() as f64 / 1000.0;
+                observer.observe(wait, &queue_attributes(row));
             }
         })
         .build()
@@ -115,10 +138,10 @@ fn queue_attributes(row: &QueueDepthRow) -> [KeyValue; 3] {
 
 #[cfg(test)]
 mod tests {
-    use super::{observe_queue_size, otlp_endpoint, QueueSnapshot};
-    use chrono::Utc;
+    use super::{observe_oldest_wait, observe_queue_size, otlp_endpoint, QueueSnapshot};
+    use chrono::{Duration, Utc};
     use opentelemetry::metrics::MeterProvider;
-    use opentelemetry_sdk::metrics::data::{AggregatedMetrics, MetricData};
+    use opentelemetry_sdk::metrics::data::{AggregatedMetrics, GaugeDataPoint, MetricData};
     use opentelemetry_sdk::metrics::{InMemoryMetricExporter, SdkMeterProvider};
     use std::collections::BTreeSet;
     use utopia_store::jobs::QueueDepthRow;
@@ -185,6 +208,17 @@ mod tests {
 
     type ExportedPoint = (String, String, String, i64);
 
+    fn labels<T>(point: &GaugeDataPoint<T>) -> (String, String, String) {
+        let attr = |key: &str| {
+            point
+                .attributes()
+                .find(|kv| kv.key.as_str() == key)
+                .map(|kv| kv.value.to_string())
+                .unwrap()
+        };
+        (attr("kb"), attr("lane"), attr("status"))
+    }
+
     fn exported_points(exporter: &InMemoryMetricExporter) -> BTreeSet<ExportedPoint> {
         exporter
             .get_finished_metrics()
@@ -198,14 +232,61 @@ mod tests {
             })
             .flat_map(|gauge| gauge.data_points())
             .map(|point| {
-                let attr = |key: &str| {
-                    point
-                        .attributes()
-                        .find(|kv| kv.key.as_str() == key)
-                        .map(|kv| kv.value.to_string())
-                        .unwrap()
-                };
-                (attr("kb"), attr("lane"), attr("status"), point.value())
+                let (kb, lane, status) = labels(point);
+                (kb, lane, status, point.value())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_job_queued_ninety_seconds_ago_reports_a_ninety_second_wait() {
+        let exporter = InMemoryMetricExporter::default();
+        let provider = SdkMeterProvider::builder()
+            .with_periodic_exporter(exporter.clone())
+            .build();
+        let snapshot = QueueSnapshot::default();
+        let now = Utc::now();
+        let _gauge = observe_oldest_wait(&provider.meter("utopia"), &snapshot, move || now);
+        let kb_id = Uuid::new_v4();
+        snapshot.replace(vec![
+            QueueDepthRow {
+                oldest: now - Duration::seconds(90),
+                ..queue_row(Some(kb_id), 0, "queued", 3)
+            },
+            QueueDepthRow {
+                oldest: now - Duration::seconds(600),
+                ..queue_row(Some(kb_id), 0, "running", 1)
+            },
+        ]);
+
+        provider.force_flush().unwrap();
+
+        let expected = vec![(
+            kb_id.to_string(),
+            "0".to_string(),
+            "queued".to_string(),
+            90.0,
+        )];
+        assert_eq!(exported_wait_points(&exporter), expected);
+    }
+
+    fn exported_wait_points(
+        exporter: &InMemoryMetricExporter,
+    ) -> Vec<(String, String, String, f64)> {
+        exporter
+            .get_finished_metrics()
+            .unwrap()
+            .iter()
+            .flat_map(|resource| resource.scope_metrics())
+            .flat_map(|scope| scope.metrics())
+            .filter_map(|metric| match metric.data() {
+                AggregatedMetrics::F64(MetricData::Gauge(gauge)) => Some(gauge),
+                _ => None,
+            })
+            .flat_map(|gauge| gauge.data_points())
+            .map(|point| {
+                let (kb, lane, status) = labels(point);
+                (kb, lane, status, point.value())
             })
             .collect()
     }

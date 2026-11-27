@@ -139,6 +139,7 @@ async fn main() -> anyhow::Result<()> {
     if let Some(telemetry) = &telemetry {
         let queue_snapshot = telemetry::QueueSnapshot::default();
         telemetry::observe_queue_size(&telemetry.meter(), &queue_snapshot);
+        telemetry::observe_oldest_wait(&telemetry.meter(), &queue_snapshot, chrono::Utc::now);
         let queue_pool = pool.clone();
         tokio::spawn(async move {
             let mut tick = tokio::time::interval(std::time::Duration::from_secs(30));
