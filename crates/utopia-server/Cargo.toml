@@ -55,8 +55,13 @@ base64.workspace = true
 subtle.workspace = true
 rig-agent = { version = "0.42", default-features = false }
 rig-core = { version = "0.42", default-features = false }
+opentelemetry.workspace = true
+opentelemetry_sdk.workspace = true
+opentelemetry-otlp.workspace = true
+tracing-opentelemetry.workspace = true
 
 [dev-dependencies]
 wiremock = "0.6.5"
+opentelemetry_sdk = { workspace = true, features = ["testing"] }
 # 静态托管那一段的单测：不连库地把请求推进 Router
 tower = { version = "0.5", features = ["util"] }

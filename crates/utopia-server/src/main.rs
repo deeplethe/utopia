@@ -43,6 +43,7 @@ mod rss_full_content;
 mod scenario_packs;
 mod search_recovery;
 mod state;
+mod telemetry;
 mod ticket;
 #[cfg(test)]
 mod ticket_golden_tests;
@@ -54,6 +55,8 @@ mod webdav;
 
 use state::AppState;
 use std::sync::Arc;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 use utopia_core::config::AppConfig;
 use utopia_search::SearchIndex;
@@ -102,10 +105,11 @@ fn explain_db_error(e: anyhow::Error) -> anyhow::Error {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     dotenvy::dotenv().ok();
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,utopia=debug".into()),
-        )
+    let (telemetry, otel_layer) = telemetry::init()?.unzip();
+    tracing_subscriber::registry()
+        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info,utopia=debug".into()))
+        .with(tracing_subscriber::fmt::layer())
+        .with(otel_layer)
         .init();
 
     let cfg = AppConfig::load()?;
@@ -131,6 +135,23 @@ async fn main() -> anyhow::Result<()> {
     let pool = utopia_store::db::connect(&cfg.database_url, cfg.db_max_connections)
         .await
         .map_err(explain_db_error)?;
+
+    if let Some(telemetry) = &telemetry {
+        let queue_snapshot = telemetry::QueueSnapshot::default();
+        telemetry::observe_queue_size(&telemetry.meter(), &queue_snapshot);
+        telemetry::observe_oldest_wait(&telemetry.meter(), &queue_snapshot, chrono::Utc::now);
+        let queue_pool = pool.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(30));
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                tick.tick().await;
+                if let Err(e) = queue_snapshot.refresh(&queue_pool).await {
+                    tracing::warn!(error = %e, "queue size refresh failed");
+                }
+            }
+        });
+    }
 
     // 凭据封印钥匙：环境变量优先，否则数据目录下的 secret.key（首次启动生成）。
     // **钥匙不进库**——库泄漏不等于凭据泄漏，是这一层的全部意义。空串按未设置处理，
@@ -178,7 +199,10 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    let state = AppState::new(pool.clone(), &cfg, search, jwt_secret);
+    let mut state = AppState::new(pool.clone(), &cfg, search, jwt_secret);
+    state.model_calls = telemetry
+        .as_ref()
+        .map(|telemetry| telemetry::ModelCallMetrics::new(&telemetry.meter()));
     api::oidc_routes::warn_about_password_login(&state);
     api::oidc_routes::warn_about_scopes();
 

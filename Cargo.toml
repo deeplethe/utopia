@@ -22,6 +22,10 @@ repository = "https://github.com/deeplethe/utopia"
 utopia-core = { path = "crates/utopia-core" }
 utopia-store = { path = "crates/utopia-store" }
 
+opentelemetry = "0.33.1"
+opentelemetry_sdk = { version = "0.33.1", features = ["metrics", "trace"] }
+opentelemetry-otlp = { version = "0.33.1", default-features = false, features = ["grpc-tonic", "metrics", "trace"] }
+tracing-opentelemetry = { version = "0.34", default-features = false }
 tokio = { version = "1", features = ["full"] }
 axum = { version = "0.8", features = ["multipart"] }
 axum-extra = { version = "0.10", features = ["cookie"] }

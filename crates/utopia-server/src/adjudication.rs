@@ -174,7 +174,10 @@ pub async fn adjudicate_entities(state: &AppState, kb_id: Uuid) -> anyhow::Resul
     let _serial = lock.lock().await;
     let kb = utopia_store::kbs::get(&state.pool, kb_id).await?;
     let settings = utopia_store::settings::get(&state.pool, kb.workspace_id).await?;
-    let client = settings.as_ref().and_then(llm_util::chat_client);
+    let client = settings
+        .as_ref()
+        .and_then(llm_util::chat_client)
+        .map(|client| state.observed(client, kb_id));
     let model = settings
         .as_ref()
         .and_then(|s| s.chat_model.clone())
