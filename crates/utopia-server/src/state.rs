@@ -46,6 +46,7 @@ pub struct AppState {
     /// 表的 owner 的连接串：迁移身份与运行身份分开时才有（`UTOPIA_MIGRATION_URL`）。
     /// 运行期只有建向量索引用它，用完即关（`vector_index::build_as_owner`，#1120）
     pub owner_database_url: Option<String>,
+    pub model_calls: Option<crate::telemetry::ModelCallMetrics>,
 }
 
 impl AppState {
@@ -81,6 +82,16 @@ impl AppState {
             events,
             live: Arc::new(crate::live::Registry::default()),
             owner_database_url: cfg.migration_url.clone(),
+            model_calls: None,
+        }
+    }
+
+    pub fn observed(&self, client: utopia_llm::LlmClient, kb: Uuid) -> utopia_llm::LlmClient {
+        match &self.model_calls {
+            Some(metrics) => {
+                client.with_observer(crate::telemetry::observe_model_calls(metrics.clone(), kb))
+            }
+            None => client,
         }
     }
 

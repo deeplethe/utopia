@@ -199,7 +199,10 @@ async fn main() -> anyhow::Result<()> {
         }
     };
 
-    let state = AppState::new(pool.clone(), &cfg, search, jwt_secret);
+    let mut state = AppState::new(pool.clone(), &cfg, search, jwt_secret);
+    state.model_calls = telemetry
+        .as_ref()
+        .map(|telemetry| telemetry::ModelCallMetrics::new(&telemetry.meter()));
     api::oidc_routes::warn_about_password_login(&state);
     api::oidc_routes::warn_about_scopes();
 

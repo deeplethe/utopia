@@ -274,6 +274,31 @@ pub fn context_too_long(err: &anyhow::Error) -> Option<&ContextTooLong> {
     err.chain().find_map(|e| e.downcast_ref::<ContextTooLong>())
 }
 
+pub fn error_class(err: &anyhow::Error) -> &'static str {
+    if out_of_credit(err).is_some() {
+        return "out_of_credit";
+    }
+    if rate_limited(err).is_some() {
+        return "rate_limited";
+    }
+    if unavailable(err).is_some() {
+        return "unavailable";
+    }
+    if context_too_long(err).is_some() {
+        return "context_too_long";
+    }
+    if rejected(err).is_some() {
+        return "rejected";
+    }
+    if is_unreachable(err) {
+        return "unreachable";
+    }
+    if transient(err).is_some() {
+        return "transient";
+    }
+    "other"
+}
+
 /// `Retry-After` 的整数秒形态。
 ///
 /// 规范还允许 HTTP-date，这里**不解析**：为一个很少有人发的头引一个日期库不划算，
@@ -434,8 +459,21 @@ impl SseBuffer {
     }
 }
 
+/// One finished model call, as reported to the client's observer.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CallRecord {
+    pub model: String,
+    pub task: String,
+    pub duration: Duration,
+    pub outcome: &'static str,
+    pub usage: Option<Usage>,
+}
+
+pub type CallObserver = std::sync::Arc<dyn Fn(&CallRecord) + Send + Sync>;
+
 #[derive(Clone)]
 pub struct LlmClient {
+    observer: Option<CallObserver>,
     http: reqwest::Client,
     base_url: String,
     api_key: Option<String>,
@@ -554,6 +592,11 @@ impl LlmClient {
         self
     }
 
+    pub fn with_observer(mut self, observer: CallObserver) -> Self {
+        self.observer = Some(observer);
+        self
+    }
+
     fn with_effort(&self, mut body: serde_json::Value) -> serde_json::Value {
         if let Some(e) = &self.reasoning_effort {
             body["reasoning_effort"] = json!(e);
@@ -584,6 +627,7 @@ impl LlmClient {
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key: api_key.map(String::from),
             model: model.to_string(),
+            observer: None,
             reasoning_effort: None,
             context_window: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(u32::MAX)),
             tools_without_effort: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -636,6 +680,27 @@ impl LlmClient {
         messages: &[ChatMessage],
         temperature: Option<f32>,
     ) -> anyhow::Result<String> {
+        let started = std::time::Instant::now();
+        let result = self.chat_once(messages, temperature).await;
+        if let Some(observer) = &self.observer {
+            observer(&CallRecord {
+                model: self.model.clone(),
+                task: call_label(messages),
+                duration: started.elapsed(),
+                outcome: result
+                    .as_ref()
+                    .map_or_else(|err| error_class(err), |_| "ok"),
+                usage: result.as_ref().ok().map(|(_, usage)| *usage),
+            });
+        }
+        result.map(|(content, _)| content)
+    }
+
+    async fn chat_once(
+        &self,
+        messages: &[ChatMessage],
+        temperature: Option<f32>,
+    ) -> anyhow::Result<(String, Usage)> {
         use std::sync::atomic::Ordering;
         let mut body =
             self.with_effort(json!({ "model": self.model, "messages": messages, "stream": false }));
@@ -671,9 +736,15 @@ impl LlmClient {
         };
         let body: serde_json::Value = resp.json().await.map_err(Unreachable)?;
         log_usage(&self.model, &call_label(messages), &body);
+        let usage = Usage {
+            prompt_tokens: body["usage"]["prompt_tokens"].as_u64().unwrap_or_default(),
+            completion_tokens: body["usage"]["completion_tokens"]
+                .as_u64()
+                .unwrap_or_default(),
+        };
         body["choices"][0]["message"]["content"]
             .as_str()
-            .map(|s| strip_reasoning(s).to_string())
+            .map(|s| (strip_reasoning(s).to_string(), usage))
             .ok_or_else(|| anyhow::anyhow!("Unexpected LLM response shape: {body}"))
     }
 
@@ -3714,5 +3785,135 @@ data: [DONE]
         };
         assert_eq!(turn.tool_calls.len(), 1);
         assert_eq!(turn.tool_calls[0].arguments, "{\"name\":\"Acme\"}");
+    }
+
+    /// 每一类模型调用失败各有一个固定的标签，指标按它分桶；其余落到 `other`。
+    #[tokio::test]
+    async fn each_model_failure_maps_to_its_class_label() {
+        let failures = [
+            anyhow::Error::new(RateLimited {
+                status: 429,
+                retry_after: None,
+                detail: "slow down".into(),
+            }),
+            anyhow::Error::new(OutOfCredit {
+                status: 402,
+                detail: "balance is empty".into(),
+            }),
+            anyhow::Error::new(Unavailable {
+                status: 503,
+                retry_after: None,
+                detail: "bad gateway".into(),
+            }),
+            anyhow::Error::new(Unreachable(a_real_transport_error().await)),
+            anyhow::Error::new(ContextTooLong {
+                status: 400,
+                reason: "400 Bad Request".into(),
+                detail: "too many tokens".into(),
+                window: None,
+            }),
+            anyhow::Error::new(Rejected {
+                kind: "LLM".into(),
+                status: 401,
+                reason: "401 Unauthorized".into(),
+                detail: "bad key".into(),
+            }),
+            anyhow::Error::new(Interrupted { got: 12 }),
+            anyhow::anyhow!("boom"),
+        ];
+
+        let labels: Vec<&str> = failures.iter().map(error_class).collect();
+
+        assert_eq!(
+            labels,
+            vec![
+                "rate_limited",
+                "out_of_credit",
+                "unavailable",
+                "unreachable",
+                "context_too_long",
+                "rejected",
+                "transient",
+                "other",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_successful_chat_reports_ok_and_its_token_counts_to_the_observer() {
+        let reply = r#"{"choices":[{"message":{"content":"hello"}}],"usage":{"prompt_tokens":11,"completion_tokens":7}}"#;
+        let (addr, _server) = an_http_response("200 OK", "application/json", reply).await;
+        let records = std::sync::Arc::new(std::sync::Mutex::new(Vec::<CallRecord>::new()));
+        let sink = records.clone();
+        let client = client_at(addr).with_observer(std::sync::Arc::new(move |record| {
+            sink.lock().unwrap().push(record.clone())
+        }));
+        let messages = [ChatMessage {
+            role: "user".into(),
+            content: "hi".into(),
+        }];
+
+        client.chat_at(&messages, None).await.unwrap();
+
+        let reported: Vec<CallRecord> = records
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|record| CallRecord {
+                duration: Duration::ZERO,
+                ..record.clone()
+            })
+            .collect();
+        assert_eq!(
+            reported,
+            [CallRecord {
+                model: client.model.clone(),
+                task: call_label(&messages),
+                duration: Duration::ZERO,
+                outcome: "ok",
+                usage: Some(Usage {
+                    prompt_tokens: 11,
+                    completion_tokens: 7
+                }),
+            }]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_rate_limited_chat_reports_rate_limited_and_no_tokens_to_the_observer() {
+        let (addr, _server) =
+            an_http_response("429 Too Many Requests", "text/plain", "slow down").await;
+        let records = std::sync::Arc::new(std::sync::Mutex::new(Vec::<CallRecord>::new()));
+        let sink = records.clone();
+        let client = client_at(addr).with_observer(std::sync::Arc::new(move |record| {
+            sink.lock().unwrap().push(record.clone())
+        }));
+        let messages = [ChatMessage {
+            role: "user".into(),
+            content: "hi".into(),
+        }];
+
+        let outcome = client.chat_at(&messages, None).await;
+
+        assert!(outcome.is_err());
+        let reported: Vec<CallRecord> = records
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|record| CallRecord {
+                duration: Duration::ZERO,
+                ..record.clone()
+            })
+            .collect();
+        assert_eq!(
+            reported,
+            [CallRecord {
+                model: client.model.clone(),
+                task: call_label(&messages),
+                duration: Duration::ZERO,
+                outcome: "rate_limited",
+                usage: None,
+            }]
+        );
     }
 }

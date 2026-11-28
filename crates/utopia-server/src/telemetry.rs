@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use opentelemetry::metrics::{Meter, MeterProvider, ObservableGauge};
+use opentelemetry::metrics::{Counter, Histogram, Meter, MeterProvider, ObservableGauge};
 use opentelemetry::trace::TracerProvider;
 use opentelemetry::KeyValue;
 use opentelemetry_otlp::{MetricExporter, SpanExporter};
@@ -12,6 +12,7 @@ use tracing_opentelemetry::OpenTelemetryLayer;
 use tracing_subscriber::registry::LookupSpan;
 use utopia_core::AppResult;
 use utopia_store::jobs::QueueDepthRow;
+use uuid::Uuid;
 
 #[derive(Clone, Default)]
 pub struct QueueSnapshot(Arc<RwLock<Vec<QueueDepthRow>>>);
@@ -125,6 +126,72 @@ where
     )))
 }
 
+#[derive(Clone)]
+pub struct ModelCallMetrics {
+    duration: Histogram<f64>,
+    tokens: Counter<u64>,
+}
+
+impl ModelCallMetrics {
+    pub fn new(meter: &Meter) -> Self {
+        Self {
+            duration: meter
+                .f64_histogram("utopia.llm.call.duration")
+                .with_unit("s")
+                .build(),
+            tokens: meter.u64_counter("utopia.llm.tokens").build(),
+        }
+    }
+}
+
+pub struct ModelCall<'a> {
+    pub model: &'a str,
+    pub task: &'a str,
+    pub kb: Uuid,
+    pub duration: std::time::Duration,
+    pub outcome: &'a str,
+    pub usage: Option<utopia_llm::Usage>,
+}
+
+pub fn record_model_call(metrics: &ModelCallMetrics, call: &ModelCall) {
+    let attributes = vec![
+        KeyValue::new("model", call.model.to_string()),
+        KeyValue::new("task", call.task.to_string()),
+        KeyValue::new("kb", call.kb.to_string()),
+        KeyValue::new("outcome", call.outcome.to_string()),
+    ];
+    metrics
+        .duration
+        .record(call.duration.as_secs_f64(), &attributes);
+    let Some(usage) = call.usage else {
+        return;
+    };
+    for (kind, count) in [
+        ("prompt", usage.prompt_tokens),
+        ("completion", usage.completion_tokens),
+    ] {
+        let mut labelled = attributes.clone();
+        labelled.push(KeyValue::new("kind", kind));
+        metrics.tokens.add(count, &labelled);
+    }
+}
+
+pub fn observe_model_calls(metrics: ModelCallMetrics, kb: Uuid) -> utopia_llm::CallObserver {
+    Arc::new(move |record| {
+        record_model_call(
+            &metrics,
+            &ModelCall {
+                model: &record.model,
+                task: &record.task,
+                kb,
+                duration: record.duration,
+                outcome: record.outcome,
+                usage: record.usage,
+            },
+        )
+    })
+}
+
 fn queue_attributes(row: &QueueDepthRow) -> [KeyValue; 3] {
     let base = row
         .kb_id
@@ -138,12 +205,17 @@ fn queue_attributes(row: &QueueDepthRow) -> [KeyValue; 3] {
 
 #[cfg(test)]
 mod tests {
-    use super::{observe_oldest_wait, observe_queue_size, otlp_endpoint, QueueSnapshot};
+    use super::{
+        observe_model_calls, observe_oldest_wait, observe_queue_size, otlp_endpoint,
+        record_model_call, ModelCall, ModelCallMetrics, QueueSnapshot,
+    };
     use chrono::{Duration, Utc};
     use opentelemetry::metrics::MeterProvider;
     use opentelemetry_sdk::metrics::data::{AggregatedMetrics, GaugeDataPoint, MetricData};
     use opentelemetry_sdk::metrics::{InMemoryMetricExporter, SdkMeterProvider};
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::time::Duration as StdDuration;
+    use utopia_llm::Usage;
     use utopia_store::jobs::QueueDepthRow;
     use uuid::Uuid;
 
@@ -381,5 +453,139 @@ mod tests {
             .execute(&pool)
             .await;
         run
+    }
+
+    type Labels = BTreeMap<String, String>;
+
+    fn labels_of<'a>(attributes: impl Iterator<Item = &'a opentelemetry::KeyValue>) -> Labels {
+        attributes
+            .map(|kv| (kv.key.to_string(), kv.value.to_string()))
+            .collect()
+    }
+
+    type Durations = Vec<(Labels, u64, f64)>;
+    type Tokens = BTreeSet<(Labels, u64)>;
+
+    fn exported_model_call(exporter: &InMemoryMetricExporter) -> (Durations, Tokens) {
+        let mut durations = Vec::new();
+        let mut tokens = BTreeSet::new();
+        for metric in exporter
+            .get_finished_metrics()
+            .unwrap()
+            .iter()
+            .flat_map(|resource| resource.scope_metrics())
+            .flat_map(|scope| scope.metrics())
+        {
+            match (metric.name(), metric.data()) {
+                ("utopia.llm.call.duration", AggregatedMetrics::F64(MetricData::Histogram(h))) => {
+                    durations.extend(
+                        h.data_points().map(|point| {
+                            (labels_of(point.attributes()), point.count(), point.sum())
+                        }),
+                    );
+                }
+                ("utopia.llm.tokens", AggregatedMetrics::U64(MetricData::Sum(sum))) => {
+                    tokens.extend(
+                        sum.data_points()
+                            .map(|point| (labels_of(point.attributes()), point.value())),
+                    );
+                }
+                _ => {}
+            }
+        }
+        (durations, tokens)
+    }
+
+    #[test]
+    fn a_successful_call_records_its_time_and_both_token_counts() {
+        let exporter = InMemoryMetricExporter::default();
+        let provider = SdkMeterProvider::builder()
+            .with_periodic_exporter(exporter.clone())
+            .build();
+        let metrics = ModelCallMetrics::new(&provider.meter("utopia"));
+        let kb_id = Uuid::new_v4();
+
+        record_model_call(
+            &metrics,
+            &ModelCall {
+                model: "gpt-x",
+                task: "extraction",
+                kb: kb_id,
+                duration: StdDuration::from_millis(1500),
+                outcome: "ok",
+                usage: Some(Usage {
+                    prompt_tokens: 120,
+                    completion_tokens: 30,
+                }),
+            },
+        );
+        provider.force_flush().unwrap();
+
+        let call = |extra: Option<(&str, &str)>| {
+            let mut labels = Labels::from([
+                ("model".to_string(), "gpt-x".to_string()),
+                ("task".to_string(), "extraction".to_string()),
+                ("kb".to_string(), kb_id.to_string()),
+                ("outcome".to_string(), "ok".to_string()),
+            ]);
+            labels.extend(extra.map(|(key, value)| (key.to_string(), value.to_string())));
+            labels
+        };
+        let (durations, tokens) = exported_model_call(&exporter);
+
+        assert_eq!(durations, vec![(call(None), 1, 1.5)]);
+        assert_eq!(
+            tokens,
+            BTreeSet::from([
+                (call(Some(("kind", "prompt"))), 120),
+                (call(Some(("kind", "completion"))), 30),
+            ])
+        );
+    }
+
+    #[test]
+    fn an_observer_for_a_base_records_the_reported_call_under_that_base() {
+        let exporter = InMemoryMetricExporter::default();
+        let provider = SdkMeterProvider::builder()
+            .with_periodic_exporter(exporter.clone())
+            .build();
+        let metrics = ModelCallMetrics::new(&provider.meter("utopia"));
+        let kb_id = Uuid::new_v4();
+        let observer = observe_model_calls(metrics, kb_id);
+
+        observer(&utopia_llm::CallRecord {
+            model: "gpt-x".to_string(),
+            task: "extract".to_string(),
+            duration: StdDuration::from_secs(2),
+            outcome: "ok",
+            usage: Some(Usage {
+                prompt_tokens: 11,
+                completion_tokens: 7,
+            }),
+        });
+        provider.force_flush().unwrap();
+
+        let call = |extra: Option<(&str, &str)>| {
+            let mut labels = Labels::from([
+                ("model".to_string(), "gpt-x".to_string()),
+                ("task".to_string(), "extract".to_string()),
+                ("kb".to_string(), kb_id.to_string()),
+                ("outcome".to_string(), "ok".to_string()),
+            ]);
+            labels.extend(extra.map(|(key, value)| (key.to_string(), value.to_string())));
+            labels
+        };
+        let (durations, tokens) = exported_model_call(&exporter);
+
+        assert_eq!(
+            (durations, tokens),
+            (
+                vec![(call(None), 1, 2.0)],
+                BTreeSet::from([
+                    (call(Some(("kind", "prompt"))), 11),
+                    (call(Some(("kind", "completion"))), 7),
+                ])
+            )
+        );
     }
 }
